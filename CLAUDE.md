@@ -46,5 +46,6 @@ User runs bypass-permissions mode. Keep ALL work inside this directory; verify s
 - [x] Video plan drafted in Notion ("Vibe Coding Blender") — avatar decided, built, split into ~/Fable Fox (2026-07-02)
 - [x] Architect/worker workflow validated on the Fable Fox pixel optimizer — 6 spec→implement→verify Opus increments, zero deviations (2026-07-02)
 - [x] Game plan generated — architecture decisions (modal operators, BMesh-lite, color-ID picking, snapshot undo, DOM panels, matcap), module map, 4-phase task registry in PLAN.md (2026-07-05)
-- [ ] **NEXT: Phase 0 — Fable builds core** (scaffold → math → mesh → camera → render loop → operators → undo → picking; exit = orbitable matcap cube, click-select, G-translate with undo)
-- [ ] Phase 1 Opus batch (object mode), Phase 2 (edit mode), Phase 3 (ship demo)
+- [x] Phase 0 core built & verified — viewport with grid/axes, matcap cube, orbit/pan/zoom, click-select with orange outline, modal G-translate with axis locks, undo/redo. 18 unit tests + 12-check headless e2e (`node e2e/smoke.mjs`). Run with `npm run dev`. (2026-07-05)
+- [ ] **NEXT: Phase 1 Opus batch (object mode)** — Fable writes tasks/P1-*.md specs referencing the real Phase 0 code, then Workflow dispatch (implement → verify)
+- [ ] Phase 2 (edit mode), Phase 3 (ship demo)

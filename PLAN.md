@@ -46,18 +46,20 @@ src/
 ### Phase 0 — Core (Fable builds; defines every interface workers touch)
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| P0-1 | Vite+TS scaffold, canvas, GL2 context, resize/DPR | fable | — | pending |
-| P0-2 | Math lib: vec3/mat4/quat/ray + tests | fable | P0-1 | pending |
-| P0-3 | GL wrappers: Shader, VAO/Buffer | fable | P0-1 | pending |
-| P0-4 | EditableMesh (BMesh-lite) + cube + mesh→GPU upload | fable | P0-2 | pending |
-| P0-5 | Orbit camera + perspective projection | fable | P0-2 | pending |
-| P0-6 | Render loop: grid pass + matcap mesh pass — **default cube on screen** | fable | P0-3,4,5 | pending |
-| P0-7 | Operator interface + modal input dispatch | fable | P0-6 | pending |
-| P0-8 | Command/UndoStack + Ctrl-Z/Ctrl-Shift-Z | fable | P0-7 | pending |
-| P0-9 | Picking pass (color-ID) + object click-select | fable | P0-6 | pending |
+| P0-1 | Vite+TS scaffold, canvas, GL2 context, resize/DPR | fable | — | verified |
+| P0-2 | Math lib: vec3/mat4/quat/ray + tests | fable | P0-1 | verified |
+| P0-3 | GL wrappers: Shader, VAO/Buffer | fable | P0-1 | verified |
+| P0-4 | EditableMesh (BMesh-lite) + cube + mesh→GPU upload | fable | P0-2 | verified |
+| P0-5 | Orbit camera + perspective projection | fable | P0-2 | verified |
+| P0-6 | Render loop: grid pass + matcap mesh pass — **default cube on screen** | fable | P0-3,4,5 | verified |
+| P0-7 | Operator interface + modal input dispatch | fable | P0-6 | verified |
+| P0-8 | Command/UndoStack + Ctrl-Z/Ctrl-Shift-Z | fable | P0-7 | verified |
+| P0-9 | Picking pass (color-ID) + object click-select | fable | P0-6 | verified |
 
 **Phase 0 exit criteria:** orbitable viewport, grid, matcap cube, click to select
 (orange outline), one working modal operator (G translate) with undo.
+**✅ Met 2026-07-05.** 18 unit tests + 12-check headless e2e (`node e2e/smoke.mjs`,
+needs the dev server running — CDP-driven, no deps). Production build: 28.6 kB JS.
 
 ### Phase 1 — Object Mode (Opus batch; specs reference Phase 0 code)
 | ID | Task | Owner | Depends | Status |

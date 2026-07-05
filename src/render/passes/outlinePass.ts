@@ -1,0 +1,103 @@
+import { Shader } from '../gl/Shader';
+import { EmptyVao } from '../gl/VertexArray';
+import { Framebuffer } from '../gl/Framebuffer';
+import type { Mat4 } from '../../core/math/mat4';
+
+/**
+ * Selection outline: selected objects are drawn as white silhouettes into a
+ * mask FBO, then a fullscreen edge-detect pass draws Blender-orange where the
+ * mask has an edge. Silhouette-only, ignores depth — matches Blender's look.
+ */
+
+const MASK_VERT = /* glsl */ `#version 300 es
+layout(location = 0) in vec3 a_position;
+uniform mat4 u_mvp;
+void main() { gl_Position = u_mvp * vec4(a_position, 1.0); }`;
+
+const MASK_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+out vec4 outColor;
+void main() { outColor = vec4(1.0); }`;
+
+const EDGE_VERT = /* glsl */ `#version 300 es
+// Fullscreen triangle from gl_VertexID — no attributes
+void main() {
+  vec2 pos = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+  gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+const EDGE_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+uniform sampler2D u_mask;
+uniform vec2 u_texelSize;
+out vec4 outColor;
+void main() {
+  vec2 uv = gl_FragCoord.xy * u_texelSize;
+  float center = texture(u_mask, uv).r;
+  float w = 1.5;
+  float n = 0.0;
+  n = max(n, texture(u_mask, uv + vec2( w, 0.0) * u_texelSize).r);
+  n = max(n, texture(u_mask, uv + vec2(-w, 0.0) * u_texelSize).r);
+  n = max(n, texture(u_mask, uv + vec2(0.0,  w) * u_texelSize).r);
+  n = max(n, texture(u_mask, uv + vec2(0.0, -w) * u_texelSize).r);
+  n = max(n, texture(u_mask, uv + vec2( w,  w) * u_texelSize).r);
+  n = max(n, texture(u_mask, uv + vec2(-w, -w) * u_texelSize).r);
+  float edge = n - center; // 1 just outside the silhouette, 0 elsewhere
+  if (edge < 0.1) discard;
+  outColor = vec4(0.996, 0.451, 0.062, edge); // Blender selection orange
+}`;
+
+export class OutlinePass {
+  private readonly maskShader: Shader;
+  private readonly edgeShader: Shader;
+  private readonly maskFbo: Framebuffer;
+  private readonly fullscreen: EmptyVao;
+
+  constructor(private readonly gl: WebGL2RenderingContext, width: number, height: number) {
+    this.maskShader = new Shader(gl, MASK_VERT, MASK_FRAG, 'outline-mask');
+    this.edgeShader = new Shader(gl, EDGE_VERT, EDGE_FRAG, 'outline-edge');
+    this.maskFbo = new Framebuffer(gl, width, height, false);
+    this.fullscreen = new EmptyVao(gl);
+  }
+
+  resize(width: number, height: number): void {
+    this.maskFbo.resize(width, height);
+  }
+
+  /** Phase 1: render silhouettes. Call drawObject per selected object between begin/end. */
+  beginMask(): void {
+    const gl = this.gl;
+    this.maskFbo.bind();
+    gl.disable(gl.DEPTH_TEST);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    this.maskShader.use();
+  }
+
+  maskObject(mvp: Mat4): void {
+    this.maskShader.setMat4('u_mvp', mvp);
+  }
+
+  endMask(canvasWidth: number, canvasHeight: number): void {
+    const gl = this.gl;
+    this.maskFbo.unbind();
+    gl.viewport(0, 0, canvasWidth, canvasHeight);
+    gl.enable(gl.DEPTH_TEST);
+  }
+
+  /** Phase 2: composite the orange edge onto the default framebuffer. */
+  renderEdges(): void {
+    const gl = this.gl;
+    this.edgeShader.use();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.maskFbo.texture);
+    this.edgeShader.setInt('u_mask', 0);
+    this.edgeShader.setVec2('u_texelSize', 1 / this.maskFbo.width, 1 / this.maskFbo.height);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.fullscreen.drawTriangles(3);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST);
+  }
+}
