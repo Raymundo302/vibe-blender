@@ -1,0 +1,102 @@
+# PLAN.md — Task Registry & Architecture
+
+> **This file is the source of truth for build state.** Every task has a status:
+> `pending` / `spec-ready` / `built` / `verified` / `failed`. Workers update their own
+> task's status when done; verify passes promote `built` → `verified`.
+> Specs live in `tasks/<ID>.md` and are written **just-in-time** (after their
+> dependencies exist, so they reference real code, not imagined shapes).
+
+## Architecture Decisions (locked 2026-07-05)
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| A1 | **Modal operator system** as the tool architecture | Blender's core insight: tools like G/R/S are *modal operators* — they capture input, show a preview, then confirm/cancel. One `Operator` interface powers every tool. This is THE load-bearing abstraction; Fable builds it. |
+| A2 | **EditableMesh = BMesh-lite** (verts + edges + faces with adjacency maps) | Extrude/inset/loop-cut need edge/face adjacency queries. Full half-edge is overkill and error-prone for workers; adjacency maps rebuilt after topology edits are simple and fast at demo scale. |
+| A3 | **GPU color-ID picking** for objects AND mesh elements | One picking pass handles everything (objects, verts, edges, faces, gizmo handles). No CPU ray-triangle code to get subtly wrong. |
+| A4 | **Undo = per-command undo data; mesh ops snapshot the mesh** | Uniform `Command` interface. Topology ops deep-copy the mesh (cheap at demo scale, always correct). Transform ops store before/after. No fragile inverse-operation code. |
+| A5 | **UI panels are DOM (HTML/CSS overlay), viewport is canvas** | Workers are productive in DOM immediately; only the 3D viewport needs WebGL. Blender-dark theme via CSS. |
+| A6 | **Matcap shading** as the default viewport look | Blender's studio look with a single texture lookup — no lighting system needed until later. |
+| A7 | **Renderer = thin GL wrappers + explicit passes** (grid, mesh, wireframe, overlay, picking) | No scene-graph magic. Each pass is a file a worker can own. |
+| A8 | Build tool: **Vite + TypeScript strict**, zero runtime deps | Refresh-the-browser iteration; "from scratch" credibility. |
+
+## Module Map
+
+```
+src/
+  core/
+    math/        vec3, mat4, quat, ray, transform     [Fable]
+    mesh/        EditableMesh, primitives, mesh→GPU   [Fable core, Opus primitives]
+    scene/       Scene, SceneObject, selection state  [Fable]
+    undo/        Command, UndoStack                   [Fable]
+    operator/    Operator interface, modal dispatch   [Fable]  ← A1
+  render/
+    gl/          context, Shader, VAO/Buffer wrappers [Fable]
+    passes/      grid, mesh(matcap), wireframe,
+                 overlay, picking                     [Opus]
+  camera/        orbit camera (orbit/pan/zoom/focus)  [Fable]
+  input/         mouse+keyboard → operator dispatch   [Fable]
+  tools/         translate/rotate/scale, extrude,
+                 inset, loop-cut, ...                 [Opus]
+  ui/            outliner, properties, header, toasts [Opus]
+  io/            OBJ import/export, scene JSON        [Opus]
+```
+
+## Task Registry
+
+### Phase 0 — Core (Fable builds; defines every interface workers touch)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P0-1 | Vite+TS scaffold, canvas, GL2 context, resize/DPR | fable | — | pending |
+| P0-2 | Math lib: vec3/mat4/quat/ray + tests | fable | P0-1 | pending |
+| P0-3 | GL wrappers: Shader, VAO/Buffer | fable | P0-1 | pending |
+| P0-4 | EditableMesh (BMesh-lite) + cube + mesh→GPU upload | fable | P0-2 | pending |
+| P0-5 | Orbit camera + perspective projection | fable | P0-2 | pending |
+| P0-6 | Render loop: grid pass + matcap mesh pass — **default cube on screen** | fable | P0-3,4,5 | pending |
+| P0-7 | Operator interface + modal input dispatch | fable | P0-6 | pending |
+| P0-8 | Command/UndoStack + Ctrl-Z/Ctrl-Shift-Z | fable | P0-7 | pending |
+| P0-9 | Picking pass (color-ID) + object click-select | fable | P0-6 | pending |
+
+**Phase 0 exit criteria:** orbitable viewport, grid, matcap cube, click to select
+(orange outline), one working modal operator (G translate) with undo.
+
+### Phase 1 — Object Mode (Opus batch; specs reference Phase 0 code)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P1-1 | Primitives: plane, uv-sphere, cylinder, torus, ico-sphere | opus | P0-4 | pending |
+| P1-2 | R rotate + S scale modal operators (axis-lock X/Y/Z, numeric input) | opus | P0-7,8 | pending |
+| P1-3 | Transform gizmo (move arrows; picking-based handles) | opus | P0-9 | pending |
+| P1-4 | Outliner panel (list, click-select, rename, delete, visibility) | opus | P0-9 | pending |
+| P1-5 | Properties panel (live transform values, editable) | opus | P0-8 | pending |
+| P1-6 | Add-menu (Shift-A), duplicate (Shift-D), delete (X) | opus | P1-1 | pending |
+| P1-7 | Header bar: mode indicator, Blender-dark CSS theme | opus | P1-4 | pending |
+
+### Phase 2 — Edit Mode (the "is it really Blender?" phase)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P2-1 | Edit-mode state + vert/edge/face select (Tab, 1/2/3 keys) | fable | P0-9 | pending |
+| P2-2 | Element picking pass (verts/edges/faces as ID colors) | opus | P2-1 | pending |
+| P2-3 | G/R/S on selected elements (reuse P0-7 operators) | opus | P2-1 | pending |
+| P2-4 | Extrude (E) — faces/edges, with modal drag | opus | P2-3 | pending |
+| P2-5 | Inset (I) | opus | P2-4 | pending |
+| P2-6 | Delete verts/edges/faces, merge verts | opus | P2-1 | pending |
+| P2-7 | Loop cut (Ctrl-R) — quad-strip walk | fable | P2-2 | pending |
+| P2-8 | Box select (B), select-all (A), invert | opus | P2-2 | pending |
+
+### Phase 3 — Ship the Demo
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P3-1 | OBJ export + import | opus | P0-4 | pending |
+| P3-2 | Scene save/load (JSON) | opus | P0-8 | pending |
+| P3-3 | Shading modes: matcap / wireframe / flat+studio-light toggle | opus | P0-6 | pending |
+| P3-4 | Shortcut cheat-sheet overlay, splash, polish pass | opus | P1-7 | pending |
+| P3-5 | Static build + deploy (link for video description) | fable | all | pending |
+
+## Dispatch Protocol (per batch)
+1. Fable writes `tasks/<ID>.md` specs for the batch — exact file paths, interfaces to
+   conform to, out-of-scope list, acceptance criteria the worker can self-check.
+2. Workflow: implement (Opus, low/medium effort) → verify each against acceptance
+   criteria + out-of-scope file-change check (high effort) → failures re-dispatched.
+3. Workers append one line to `tasks/<ID>.md` on completion (`## Result`) and flip
+   their status here. Every worker prompt includes: *"if the spec is ambiguous or
+   wrong, stop and report rather than improvising."*
+4. Fable reviews integration, commits the batch, updates this file, Notion checkpoint.
