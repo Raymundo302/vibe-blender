@@ -155,3 +155,22 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 | P7-3 | Edge slide (GG): slide selected verts along adjacent rail edges | opus | — | verified |
 | P7-4 | Grid snapping: Shift+Tab toggle + Ctrl-hold during G, topbar magnet indicator | opus | — | verified |
 | P7-5 | Duplicate in edit mode (Shift+D): copy selected faces inside the mesh + ride G | opus | — | verified |
+
+### Phase 8 — Camera, lights, materials & render engine (2026-07-06)
+New architecture decisions:
+| # | Decision | Rationale |
+|---|----------|-----------|
+| A9 | SceneObject.kind ('mesh'/'light'/'camera'); non-mesh kinds carry an EMPTY EditableMesh + a data payload | Every existing mesh code path no-ops on empty meshes — zero refactor risk. Lights/cameras get billboard icons + pick footprints instead of triangles. |
+| A10 | Materials are a scene-level library; objects reference by id | Blender semantics (shared materials), trivial serialization, one uniform upload per draw. |
+| A11 | Two render paths: 'rendered' viewport mode = forward PBR raster (Eevee-lite); F12 = progressive path tracer in a Web Worker (Cycles-lite) | The raster mode is interactive; the path tracer is the "we wrote a render engine" video moment and is pure TS (unit-testable, no GL). |
+
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F8-1 | Object kinds + LightData/CameraData/Material core, scene library, activeCamera lifecycle | fable | — | verified |
+| F8-2 | RenderedPass (GGX, 8 lights) + collectLights + 4th shading mode + IconPass (billboards & picking) | fable | F8-1 | verified |
+| F8-3 | Add-menu Light/Camera entries, kind-aware Scene.duplicate, worker stubs | fable | F8-1 | verified |
+| P8-1 | Light properties tab (type/color/power/spot params, undoable) | opus | F8-3 | spec-ready |
+| P8-3 | Material properties tab (library slot UI + PBR params, undoable) | opus | F8-3 | spec-ready |
+| P8-4 | Render engine: progressive path tracer (F12, Web Worker, BVH, render window) | opus | F8-3 | spec-ready |
+| P8-2 | Camera objects: frustum display, Numpad0 view-through, Camera tab | opus | batch 1 | spec-ready |
+| P8-5 | Scene format v3 (lights/cameras/materials), outliner kind glyphs, join guard | opus | batch 1 | spec-ready |
