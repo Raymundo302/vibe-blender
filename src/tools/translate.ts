@@ -22,6 +22,11 @@ export class TranslateOperator implements Operator {
   private axis: AxisLock = null;
   private lastPointer: PointerState = { x: 0, y: 0 };
 
+  /** `axis` presets the axis lock (used by the gizmo handle drag); default free. */
+  constructor(axis: AxisLock = null) {
+    this.axis = axis;
+  }
+
   start(ctx: OperatorContext, pointer: PointerState): boolean {
     const selected = ctx.scene.selectedObjects;
     if (selected.length === 0) return false;

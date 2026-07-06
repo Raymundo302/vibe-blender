@@ -32,6 +32,9 @@ export class InputManager {
   private pointer: PointerState = { x: 0, y: 0 };
   private orbiting = false;
   private panning = false;
+  /** True while an LMB drag on a gizmo handle owns the active operator. Unlike
+   *  keyboard-G (click confirms), a gizmo drag confirms on pointer *release*. */
+  private gizmoDrag = false;
   private addMenu: AddMenu | null = null;
 
   constructor(
@@ -54,7 +57,10 @@ export class InputManager {
 
   startOperator(op: Operator): void {
     if (this.activeOp) return;
-    if (op.start(this.ctx, this.pointer)) this.activeOp = op;
+    if (op.start(this.ctx, this.pointer)) {
+      this.activeOp = op;
+      this.renderer.gizmoVisible = false; // hide the gizmo while a tool is modal
+    }
   }
 
   private endOperator(confirm: boolean): void {
@@ -62,6 +68,7 @@ export class InputManager {
     if (confirm) this.activeOp.confirm(this.ctx);
     else this.activeOp.cancel(this.ctx);
     this.activeOp = null;
+    this.renderer.gizmoVisible = true;
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -85,13 +92,21 @@ export class InputManager {
     }
 
     if (e.button === 0) {
-      const id = this.renderer.pick(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
-      if (id === null) {
+      const hit = this.renderer.pick(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
+      if (hit === null) {
         if (!e.shiftKey) this.ctx.scene.deselectAll();
+      } else if (hit.kind === 'gizmo') {
+        // Grab a handle: keep the selection, start an axis-locked Move that
+        // confirms on release (see gizmoDrag). Capture the pointer so we still
+        // get the move/up events if the cursor leaves the canvas.
+        this.canvas.setPointerCapture(e.pointerId);
+        this.startOperator(new TranslateOperator(hit.axis));
+        if (this.activeOp) this.gizmoDrag = true;
+        else if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
       } else if (e.shiftKey) {
-        this.ctx.scene.toggleSelect(id);
+        this.ctx.scene.toggleSelect(hit.id);
       } else {
-        this.ctx.scene.selectOnly(id);
+        this.ctx.scene.selectOnly(hit.id);
       }
     }
   }
@@ -114,6 +129,15 @@ export class InputManager {
     if (e.button === 1) {
       this.orbiting = false;
       this.panning = false;
+      if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+    }
+    if (e.button === 0) {
+      // Releasing a gizmo drag confirms the move. endOperator is a no-op if the
+      // op was already cancelled (Esc/RMB) mid-drag, so this is safe either way.
+      if (this.gizmoDrag) {
+        this.gizmoDrag = false;
+        this.endOperator(true);
+      }
       if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     }
   }
