@@ -578,4 +578,16 @@ runE2e(async (t) => {
   t.check('Subsurf level 3 evaluates in < 200ms', p46perf.dt < 200, `${p46perf.dt.toFixed(1)}ms`);
 
   await t.screenshot('/tmp/p4-6-subsurf.png');
+
+  // --- P6-1: shade smooth ---
+  await t.evaluate(`(() => { const s = window.__app.scene; s.selectOnly(s.objects[0].id); })()`);
+  t.check('shade-smooth checkbox present',
+    await t.until(`!!document.querySelector('[data-action="shade-smooth"]')`, 5000));
+  await t.evaluate(`(() => { const cb = document.querySelector('[data-action="shade-smooth"]'); cb.checked = true; cb.dispatchEvent(new Event('change')); })()`);
+  await t.sleep(150);
+  t.check('toggle sets shadeSmooth on the object',
+    await t.evaluate(`window.__app.scene.objects[0].shadeSmooth === true`));
+  t.check('scene file persists shadeSmooth',
+    await t.evaluate(`JSON.parse(window.__app.io.serialize()).objects[0].shadeSmooth === true`));
+  await t.evaluate(`(() => { const cb = document.querySelector('[data-action="shade-smooth"]'); cb.checked = false; cb.dispatchEvent(new Event('change')); })()`);
 });

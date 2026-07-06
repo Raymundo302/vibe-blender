@@ -6,6 +6,8 @@ import type { Modifier } from '../modifiers/Modifier';
 export class SceneObject {
   transform = new Transform();
   visible = true;
+  /** Shade Smooth (per-vertex normals) vs Flat (Blender default). */
+  shadeSmooth = false;
   /** Non-destructive modifier stack, evaluated top-to-bottom. */
   readonly modifiers: Modifier[] = [];
   /** Bump after ANY stack mutation (add/remove/reorder/param/enable). */

@@ -67,6 +67,7 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
     objects: scene.objects.map((obj) => ({
       name: obj.name,
       visible: obj.visible,
+      shadeSmooth: obj.shadeSmooth,
       transform: {
         position: vec(obj.transform.position),
         rotation: quat(obj.transform.rotation),
@@ -104,6 +105,7 @@ interface ModifierData {
 interface ObjectData {
   name: string;
   visible: boolean;
+  shadeSmooth?: boolean;
   position: [number, number, number];
   rotation: [number, number, number, number];
   scale: [number, number, number];
@@ -188,6 +190,7 @@ function parseObject(o: unknown, i: number): ObjectData {
   return {
     name: obj.name,
     visible: obj.visible,
+    shadeSmooth: obj.shadeSmooth === true, // absent in v1/v2 files → flat
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
@@ -288,6 +291,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   for (const { od, mesh, modifiers } of built) {
     const obj = scene.add(od.name, mesh);
     obj.visible = od.visible;
+    obj.shadeSmooth = od.shadeSmooth === true;
     obj.transform = new Transform(
       Vec3.fromArray(od.position),
       new Quat(od.rotation[0], od.rotation[1], od.rotation[2], od.rotation[3]),

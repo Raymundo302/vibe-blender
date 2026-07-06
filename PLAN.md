@@ -136,3 +136,13 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 | P5-2 | Bridge edge loops (two selected loops → connecting quads) | opus | — | verified |
 | P5-3 | Bevel edges (Ctrl+B, modal width) | opus | — | verified |
 | P5-4 | F fill face, subdivide selection, frame selection (period) | opus | — | verified |
+
+### Phase 6 — Polish & power tools (night session, cont.)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P6-1 | Shade Smooth: per-vertex normals path, Object-tab toggle, scene persistence | fable | — | verified |
+| P6-2 | N-panel: viewport overlay sidebar (N key) with item transform + dims | opus | — | pending |
+| P6-3 | Per-object viewport color: color field, matcap tint + studio base color, Object tab picker | opus | — | pending |
+| P6-4 | Autosave: localStorage every 30s + crash-restore prompt on boot | opus | — | pending |
+| P6-5 | Proportional editing (O): falloff-weighted G/R/S in edit mode, wheel radius, circle overlay | opus | — | pending |
+| P6-6 | Shortcut overlay + status-hint audit: every wired key listed, grouped | opus | — | pending |

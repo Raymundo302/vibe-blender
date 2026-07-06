@@ -136,6 +136,7 @@ class ObjectTab {
   private readonly empty: HTMLDivElement;
   private readonly nameInput: HTMLInputElement;
   private readonly visibleInput: HTMLInputElement;
+  private smoothInput!: HTMLInputElement;
   private readonly location: FieldGroup;
   private readonly rotation: FieldGroup;
   private readonly scale: FieldGroup;
@@ -185,6 +186,21 @@ class ObjectTab {
     visLabel.textContent = 'Visible';
     visRow.append(this.visibleInput, visLabel);
     this.body.append(visRow);
+
+    // Shade Smooth toggle (like visibility: view state, no undo).
+    const smoothRow = document.createElement('label');
+    smoothRow.className = 'properties-visible-row';
+    this.smoothInput = document.createElement('input');
+    this.smoothInput.type = 'checkbox';
+    this.smoothInput.dataset.action = 'shade-smooth';
+    this.smoothInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (obj) obj.shadeSmooth = this.smoothInput.checked;
+    });
+    const smoothLabel = document.createElement('span');
+    smoothLabel.textContent = 'Shade Smooth';
+    smoothRow.append(this.smoothInput, smoothLabel);
+    this.body.append(smoothRow);
 
     this.location = this.makeGroup('Location', 0.1, 'location');
     this.rotation = this.makeGroup('Rotation', 1, 'rotation');
@@ -257,6 +273,7 @@ class ObjectTab {
     if (this.nameInput.value !== obj.name) this.nameInput.value = obj.name;
     this.nameBefore = obj.name;
     if (this.visibleInput.checked !== obj.visible) this.visibleInput.checked = obj.visible;
+    if (this.smoothInput.checked !== obj.shadeSmooth) this.smoothInput.checked = obj.shadeSmooth;
 
     this.writeGroup(this.location, obj.transform.position, 3);
 

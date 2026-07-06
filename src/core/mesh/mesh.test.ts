@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { makeCube } from './primitives';
-import { meshToRenderData } from './meshToGpu';
+import { meshToRenderData, vertexNormals } from './meshToGpu';
 import { Vec3 } from '../math/vec3';
 
 describe('EditableMesh (cube)', () => {
@@ -49,5 +49,29 @@ describe('EditableMesh (cube)', () => {
     expect(snapshot.verts.get(0)!.co.x).not.toBe(cube.verts.get(0)!.co.x);
     cube.copyFrom(snapshot);
     expect(cube.verts.get(0)!.co.x).toBe(snapshot.verts.get(0)!.co.x);
+  });
+});
+
+describe('smooth shading (vertexNormals)', () => {
+  it('cube corner smooth normal points along the corner diagonal', () => {
+    const cube = makeCube();
+    const normals = vertexNormals(cube);
+    for (const [vid, n] of normals) {
+      const co = cube.verts.get(vid)!.co;
+      const diag = co.normalize(); // centered cube: corner dir == position dir
+      expect(n.dot(diag)).toBeGreaterThan(0.99);
+      expect(Math.abs(n.length() - 1)).toBeLessThan(1e-6);
+    }
+  });
+
+  it('smooth render data has per-vert normals, flat has per-face', () => {
+    const cube = makeCube();
+    const flat = meshToRenderData(cube, false);
+    const smooth = meshToRenderData(cube, true);
+    expect(smooth.triangleCount).toBe(flat.triangleCount);
+    // Flat: first triangle's corners share one face normal (+Z face) → n.z = 1.
+    expect(flat.triangleNormals[2]).toBeCloseTo(1, 5);
+    // Smooth: same corner's normal leans along the corner diagonal instead.
+    expect(smooth.triangleNormals[2]).toBeCloseTo(1 / Math.sqrt(3), 5);
   });
 });
