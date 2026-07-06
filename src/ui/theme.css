@@ -61,6 +61,10 @@
   color: var(--vb-muted);
   font-size: 11px;
 }
+.topbar-chip-edit {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+}
 .topbar-spacer { flex: 1; }
 .topbar-status {
   color: var(--vb-muted);

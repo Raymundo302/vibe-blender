@@ -95,6 +95,74 @@ export class EditableMesh {
     return edges;
   }
 
+  /** Ids of faces that use this vert. */
+  facesOfVert(vertId: number): number[] {
+    const out: number[] = [];
+    for (const f of this.faces.values()) if (f.verts.includes(vertId)) out.push(f.id);
+    return out;
+  }
+
+  /** Delete faces by id. Verts are kept (they become floating points). */
+  deleteFaces(ids: Iterable<number>): void {
+    let changed = false;
+    for (const id of ids) changed = this.faces.delete(id) || changed;
+    if (changed) this.touch();
+  }
+
+  /** Delete verts and cascade: any face using one of them goes too. */
+  deleteVerts(ids: Iterable<number>): void {
+    const doomed = new Set(ids);
+    if (doomed.size === 0) return;
+    for (const f of [...this.faces.values()]) {
+      if (f.verts.some((v) => doomed.has(v))) this.faces.delete(f.id);
+    }
+    for (const v of doomed) this.verts.delete(v);
+    this.touch();
+  }
+
+  /** Delete edges (by canonical key) and cascade: faces using them go too. Verts stay. */
+  deleteEdges(keys: Iterable<string>): void {
+    const doomed = new Set(keys);
+    if (doomed.size === 0) return;
+    for (const f of [...this.faces.values()]) {
+      const n = f.verts.length;
+      let hit = false;
+      for (let i = 0; i < n && !hit; i++) {
+        hit = doomed.has(EditableMesh.edgeKey(f.verts[i], f.verts[(i + 1) % n]));
+      }
+      if (hit) this.faces.delete(f.id);
+    }
+    this.touch();
+  }
+
+  /**
+   * Merge verts into one at their centroid (Blender's Merge → At Center).
+   * The lowest id survives; faces are remapped, consecutive duplicate corners
+   * collapse, and faces left with < 3 distinct verts are removed.
+   * Returns the surviving vert id (or null if fewer than 2 verts given).
+   */
+  mergeVertsAtCenter(ids: Iterable<number>): number | null {
+    const group = [...new Set(ids)].filter((id) => this.verts.has(id)).sort((a, b) => a - b);
+    if (group.length < 2) return null;
+    const keep = group[0];
+
+    let sum = new Vec3();
+    for (const id of group) sum = sum.add(this.verts.get(id)!.co);
+    this.verts.get(keep)!.co = sum.scale(1 / group.length);
+
+    const doomed = new Set(group.slice(1));
+    for (const f of [...this.faces.values()]) {
+      const remapped = f.verts.map((v) => (doomed.has(v) ? keep : v));
+      // collapse consecutive duplicates, cyclically
+      const collapsed = remapped.filter((v, i) => v !== remapped[(i + 1) % remapped.length]);
+      if (new Set(collapsed).size < 3) this.faces.delete(f.id);
+      else f.verts = collapsed;
+    }
+    for (const v of doomed) this.verts.delete(v);
+    this.touch();
+    return keep;
+  }
+
   /** Face normal via Newell's method (robust for any polygon). */
   faceNormal(faceId: number): Vec3 {
     const face = this.faces.get(faceId);

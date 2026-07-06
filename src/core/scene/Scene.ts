@@ -1,5 +1,6 @@
 import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
+import { EditModeState } from './EditMode';
 
 export class SceneObject {
   transform = new Transform();
@@ -22,7 +23,31 @@ export class Scene {
   readonly objects: SceneObject[] = [];
   readonly selection = new Set<number>();
   activeId: number | null = null;
+  /** Non-null while editing one object's mesh (Blender's Edit Mode). */
+  editMode: EditModeState | null = null;
   private nextId = 0;
+
+  get mode(): 'object' | 'edit' {
+    return this.editMode ? 'edit' : 'object';
+  }
+
+  /** Enter edit mode on an object (defaults to the active one). No-op if none. */
+  enterEditMode(id = this.activeId): boolean {
+    const obj = id === null ? null : this.get(id);
+    if (!obj) return false;
+    this.selectOnly(obj.id); // Blender: editing implies the object is active+selected
+    this.editMode = new EditModeState(obj.id);
+    return true;
+  }
+
+  exitEditMode(): void {
+    this.editMode = null;
+  }
+
+  /** The object whose mesh is being edited, or null outside edit mode. */
+  get editObject(): SceneObject | null {
+    return this.editMode ? this.get(this.editMode.objectId) ?? null : null;
+  }
 
   add(name: string, mesh: EditableMesh): SceneObject {
     const obj = new SceneObject(this.nextId++, name, mesh);
@@ -67,6 +92,7 @@ export class Scene {
   remove(id: number): void {
     const i = this.objects.findIndex((o) => o.id === id);
     if (i < 0) return;
+    if (this.editMode?.objectId === id) this.exitEditMode();
     this.objects.splice(i, 1);
     this.selection.delete(id);
     if (this.activeId === id) this.activeId = [...this.selection].pop() ?? null;

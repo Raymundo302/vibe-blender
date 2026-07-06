@@ -11,6 +11,7 @@ import type { Scene } from '../core/scene/Scene';
  */
 export class Topbar {
   private readonly statusEl: HTMLSpanElement;
+  private readonly chipEl: HTMLSpanElement;
   private lastSig = '';
 
   constructor(private readonly scene: Scene) {
@@ -23,7 +24,7 @@ export class Topbar {
 
     const chip = document.createElement('span');
     chip.className = 'topbar-chip';
-    chip.textContent = 'Object Mode';
+    this.chipEl = chip;
 
     const spacer = document.createElement('div');
     spacer.className = 'topbar-spacer';
@@ -39,10 +40,14 @@ export class Topbar {
   update(): void {
     const active = this.scene.activeObject;
     const count = this.scene.objects.length;
-    const sig = `${active ? active.name : ''}#${count}`;
+    const edit = this.scene.editMode;
+    const mode = edit ? `Edit Mode · ${edit.elementMode}` : 'Object Mode';
+    const sig = `${active ? active.name : ''}#${count}#${mode}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
+    this.chipEl.textContent = mode;
+    this.chipEl.classList.toggle('topbar-chip-edit', !!edit);
     const noun = count === 1 ? 'object' : 'objects';
     this.statusEl.textContent = active
       ? `${active.name} — ${count} ${noun}`

@@ -92,6 +92,9 @@ export class InputManager {
     }
 
     if (e.button === 0) {
+      // Element clicks in edit mode arrive with P2-2's element-picking pass;
+      // until then, LMB must not fall through to object selection.
+      if (this.ctx.scene.editMode) return;
       const hit = this.renderer.pick(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
       if (hit === null) {
         if (!e.shiftKey) this.ctx.scene.deselectAll();
@@ -162,6 +165,26 @@ export class InputManager {
       this.ctx.setStatus(name ? `${e.shiftKey ? 'Redo' : 'Undo'}: ${name}` : 'Nothing to undo');
       return;
     }
+
+    // Tab: toggle Edit Mode on the active object. preventDefault keeps the
+    // browser from moving focus out of the canvas.
+    if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      if (scene.editMode) {
+        scene.exitEditMode();
+        this.ctx.setStatus('');
+      } else if (scene.enterEditMode()) {
+        this.ctx.setStatus('Edit Mode — 1/2/3: vert/edge/face select, Tab: back to Object Mode');
+      }
+      return;
+    }
+
+    if (this.ctx.scene.editMode) {
+      this.onEditModeKey(e, key);
+      return; // object-mode keys (G/R/S on objects, X, Shift-A/D) don't apply here
+    }
+
     if (key === 'g' && !e.ctrlKey && !e.altKey) {
       this.startOperator(new TranslateOperator());
       return;
@@ -221,6 +244,31 @@ export class InputManager {
       e.preventDefault();
       this.ctx.undo.push(DeleteObjectsCommand.perform('Delete', this.ctx.scene, ids));
       this.ctx.setStatus(`Deleted ${ids.length} object(s)`);
+      return;
+    }
+  }
+
+  /** Edit-mode keymap. Element tools (G/R/S, E, I, X, ...) arrive with P2-3..P2-6. */
+  private onEditModeKey(e: KeyboardEvent, key: string): void {
+    const scene = this.ctx.scene;
+    const edit = scene.editMode!;
+    const mesh = scene.editObject?.mesh;
+    if (!mesh) return;
+
+    if (key === '1' || key === '2' || key === '3') {
+      e.preventDefault();
+      const mode = key === '1' ? 'vert' : key === '2' ? 'edge' : 'face';
+      edit.setElementMode(mode, mesh);
+      this.ctx.setStatus(`Select mode: ${mode}`);
+      return;
+    }
+    if (key === 'a' && e.altKey) {
+      e.preventDefault();
+      edit.clearSelection();
+      return;
+    }
+    if (key === 'a' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      edit.selectAll(mesh);
       return;
     }
   }

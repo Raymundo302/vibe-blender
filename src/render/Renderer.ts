@@ -5,6 +5,7 @@ import { GridPass } from './passes/gridPass';
 import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
 import { GizmoPass, GIZMO_PICK_BASE, GIZMO_AXES, gizmoScreenScale, type GizmoAxis } from './passes/gizmoPass';
+import { EditOverlayPass } from './passes/editOverlayPass';
 import { createMatcapTexture } from './matcap';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
@@ -32,6 +33,7 @@ export class Renderer {
   private readonly outlinePass: OutlinePass;
   private readonly pickingPass: PickingPass;
   private readonly gizmoPass: GizmoPass;
+  private readonly editOverlayPass: EditOverlayPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
 
@@ -50,6 +52,7 @@ export class Renderer {
     this.outlinePass = new OutlinePass(gl, canvas.width, canvas.height);
     this.pickingPass = new PickingPass(gl, canvas.width, canvas.height);
     this.gizmoPass = new GizmoPass(gl);
+    this.editOverlayPass = new EditOverlayPass(gl);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -96,8 +99,9 @@ export class Renderer {
     // Grid (blended, after opaque)
     this.gridPass.render(view, proj, camera.eye);
 
-    // Selection outlines
-    const selected = visible.filter((o) => scene.selection.has(o.id));
+    // Selection outlines — the object being edited gets the cage, not an outline
+    const editObj = scene.editObject;
+    const selected = visible.filter((o) => scene.selection.has(o.id) && o !== editObj);
     if (selected.length > 0) {
       const viewProj = proj.mul(view);
       this.outlinePass.beginMask();
@@ -107,6 +111,12 @@ export class Renderer {
       }
       this.outlinePass.endMask(canvas.width, canvas.height);
       this.outlinePass.renderEdges();
+    }
+
+    // Edit-mode cage (verts/edges/selected-face fill)
+    if (editObj && editObj.visible && scene.editMode) {
+      const mvp = proj.mul(view).mul(editObj.transform.matrix());
+      this.editOverlayPass.render(mvp, editObj.mesh, scene.editMode);
     }
 
     // Translate gizmo — on top of everything (clear depth after outlines).
@@ -120,6 +130,7 @@ export class Renderer {
   /** Gizmo placement (active object's position) + constant-screen-size scale, or null when hidden. */
   private gizmoTransform(scene: Scene, camera: OrbitCamera): { origin: Vec3; scale: number } | null {
     if (!this.gizmoVisible) return null;
+    if (scene.editMode) return null; // object gizmo has no meaning in edit mode (P2-3 may add an element gizmo)
     const active = scene.activeObject;
     if (!active || !active.visible) return null;
     const origin = active.transform.position;
