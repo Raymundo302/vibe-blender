@@ -17,47 +17,16 @@ export interface AddMenuOptions {
   onClose: () => void;
 }
 
-const STYLE_ID = 'add-menu-style';
-
 /**
  * Blender's Shift-A "Add Mesh" popup. A self-contained DOM widget: it owns its
  * element and all listeners, and removes every one of them on close so the
- * InputManager never has to. P1-7 restyles it; the CSS here is deliberately
- * minimal, injected once.
+ * InputManager never has to. All styling lives in the shared theme.css (P1-7).
  */
-function ensureStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = `
-.add-menu {
-  position: absolute; z-index: 100; min-width: 140px;
-  background: #333; border: 1px solid #111; border-radius: 4px;
-  padding: 4px 0; font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
-  color: #d0d0d0; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  user-select: none;
-}
-.add-menu-heading {
-  padding: 3px 12px; font-size: 11px; text-transform: uppercase;
-  letter-spacing: 0.05em; color: #888;
-}
-.add-menu-item {
-  display: block; width: 100%; text-align: left; border: none;
-  background: none; color: inherit; font: inherit; cursor: pointer;
-  padding: 4px 12px;
-}
-.add-menu-item:hover { background: #4a6a9a; color: #fff; }
-`;
-  document.head.appendChild(style);
-}
-
 export class AddMenu {
   private readonly root: HTMLDivElement;
   private closed = false;
 
   constructor(private readonly opts: AddMenuOptions) {
-    ensureStyle();
-
     this.root = document.createElement('div');
     this.root.className = 'add-menu';
 

@@ -5,14 +5,12 @@ import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { TransformCommand } from '../core/undo/commands';
 
-const STYLE_ID = 'properties-style';
-
 const DEG = 180 / Math.PI;
 const RAD = Math.PI / 180;
 
 /**
  * Object properties: live, editable Location / Rotation / Scale for the active
- * object. Like the Outliner, this owns its DOM and a single injected <style>.
+ * object. Owns its DOM; all styling lives in the shared theme.css (P1-7).
  *
  * The input DOM is built once and persists; update() only rewrites the numeric
  * *values* each frame (never rebuilding structure), and skips the rewrite while
@@ -24,34 +22,6 @@ const RAD = Math.PI / 180;
  * from the object's quaternion via Quat.toEulerXYZ and rebuilt on edit via
  * Quat.fromEulerXYZ.
  */
-function ensureStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = `
-.properties-body {
-  font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
-  color: #c8c8c8; user-select: none; padding: 2px 8px 8px;
-}
-.properties-name {
-  color: #fff; font-weight: 600; padding: 2px 0 6px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.properties-group { margin-bottom: 8px; }
-.properties-group-title { color: #9aa7b4; margin-bottom: 3px; }
-.properties-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
-.properties-field { display: flex; align-items: center; gap: 3px; min-width: 0; }
-.properties-axis { flex: none; color: #9aa7b4; width: 10px; }
-.properties-input {
-  flex: 1; min-width: 0; font: inherit; color: #eee;
-  background: #222; border: 1px solid #3a3a3a; border-radius: 2px;
-  padding: 1px 3px; outline: none;
-}
-.properties-input:focus { border-color: #6a8; }
-.properties-empty { padding: 6px 0; color: #777; font-style: italic; }
-`;
-  document.head.appendChild(style);
-}
 
 /** One X/Y/Z triple of number inputs, plus the group heading. */
 interface FieldGroup {
@@ -77,7 +47,6 @@ export class PropertiesPanel implements Panel {
     private readonly scene: Scene,
     private readonly undo: UndoStack,
   ) {
-    ensureStyle();
     this.element = document.createElement('div');
 
     this.empty = document.createElement('div');

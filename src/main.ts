@@ -8,7 +8,9 @@ import { InputManager } from './input/InputManager';
 import { UiShell } from './ui/shell';
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesPanel } from './ui/properties';
+import { Topbar } from './ui/topbar';
 import type { OperatorContext } from './core/operator/Operator';
+import './ui/theme.css';
 
 const canvas = document.getElementById('viewport') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLDivElement;
@@ -40,12 +42,17 @@ shell.addPanel(new PropertiesPanel(scene, undo));
 // (picking + e2e). See the .outliner-floating rule in outliner.ts for why.
 shell.sidebar.classList.add('outliner-floating');
 
+// The header bar is not a sidebar Panel — it fills #topbar and is updated
+// directly in the frame loop alongside shell.update().
+const topbar = new Topbar(scene);
+
 // Debug/test handle (used by e2e smoke tests; harmless in production)
 (window as unknown as Record<string, unknown>).__app = { scene, camera, undo, renderer, shell };
 
 function frame(): void {
   renderer.render(scene, camera);
   shell.update();
+  topbar.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

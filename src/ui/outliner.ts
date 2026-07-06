@@ -3,69 +3,14 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { DeleteObjectsCommand, RenameObjectCommand } from '../core/undo/objectCommands';
 
-const STYLE_ID = 'outliner-style';
-
 /**
  * Blender's Outliner: one row per scene object with select / rename / delete /
- * visibility. Kept self-contained — owns its DOM and a single injected <style>.
- * P1-7 does the full theme; the CSS here is functional and dark-friendly.
+ * visibility. Owns its DOM; all styling lives in the shared theme.css (P1-7).
  *
  * update() runs every frame, so it diffs a cheap signature and only rebuilds the
  * row DOM when something visible changed — and never while a rename <input> is
  * focused (rebuilding would blow away the field the user is typing in).
  */
-function ensureStyle(): void {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = `
-/*
- * index.html docks #sidebar as a 280px flex column, which steals that width
- * from #viewport-wrap and shrinks the WebGL canvas (1280 -> 1000). Screen-space
- * picking and the e2e smoke test both address the cube at canvas coordinates
- * that assume a full-width viewport, so a docked panel silently moves the cube
- * out from under those coordinates. Float the sidebar over the viewport's right
- * edge instead of reserving layout space: the canvas keeps its full width and
- * all viewport-space coordinates stay valid. main.ts adds this class once the
- * panel is mounted. (P1-7's theme pass can revisit the docking model.)
- */
-.outliner-floating {
-  position: absolute; top: 0; right: 0; bottom: 0;
-  z-index: 10; border-left: 1px solid #1c1c1c;
-}
-.outliner-list {
-  font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
-  color: #c8c8c8; user-select: none;
-}
-.outliner-row {
-  display: flex; align-items: center; gap: 6px;
-  padding: 3px 8px; cursor: pointer; border: 1px solid transparent;
-}
-.outliner-row:hover { background: #343434; }
-.outliner-row.outliner-selected { background: #3a4a63; }
-.outliner-row.outliner-active { background: #4a6a9a; }
-.outliner-row.outliner-active .outliner-name { color: #fff; }
-.outliner-glyph { flex: none; color: #9aa7b4; width: 12px; text-align: center; }
-.outliner-name {
-  flex: 1; min-width: 0; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.outliner-name-input {
-  flex: 1; min-width: 0; font: inherit; color: #fff;
-  background: #222; border: 1px solid #6a8; border-radius: 2px;
-  padding: 0 2px; outline: none;
-}
-.outliner-btn {
-  flex: none; border: none; background: none; color: #9aa7b4;
-  font: inherit; cursor: pointer; padding: 0 2px; line-height: 1;
-}
-.outliner-btn:hover { color: #fff; }
-.outliner-eye.outliner-hidden { color: #5a5a5a; }
-.outliner-empty { padding: 6px 8px; color: #777; font-style: italic; }
-`;
-  document.head.appendChild(style);
-}
-
 export class OutlinerPanel implements Panel {
   readonly id = 'outliner';
   readonly title = 'Outliner';
@@ -80,7 +25,6 @@ export class OutlinerPanel implements Panel {
     private readonly scene: Scene,
     private readonly undo: UndoStack,
   ) {
-    ensureStyle();
     this.element = document.createElement('div');
     this.element.className = 'outliner-list';
     this.rebuild();

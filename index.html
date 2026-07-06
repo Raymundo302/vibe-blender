@@ -5,24 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Vibe Blender</title>
   <style>
+    /* Bare layout skeleton only — all theming lives in src/ui/theme.css. */
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #232323; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1d1d1d; }
     #app { display: flex; flex-direction: column; width: 100%; height: 100%; }
     #topbar { flex: none; }
     #topbar:empty { display: none; }
     #main { flex: 1; display: flex; min-height: 0; }
     #viewport-wrap { flex: 1; position: relative; min-width: 0; }
     #viewport { width: 100%; height: 100%; display: block; cursor: default; }
-    #sidebar { flex: none; width: 280px; overflow-y: auto; background: #2b2b2b; }
+    #sidebar { flex: none; width: 280px; overflow-y: auto; }
     #sidebar:empty { display: none; }
-    #status {
-      position: absolute; left: 12px; bottom: 10px;
-      font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
-      color: #d0d0d0; background: rgba(24, 24, 24, 0.75);
-      padding: 4px 10px; border-radius: 4px;
-      pointer-events: none; white-space: pre;
-    }
-    #status:empty { display: none; }
+    #status { position: absolute; left: 12px; bottom: 10px; pointer-events: none; }
   </style>
 </head>
 <body>

@@ -1,0 +1,186 @@
+/*
+ * The one true stylesheet — Blender 4.x dark theme (P1-7).
+ *
+ * Consolidates every rule that used to live in per-file injected <style> blocks
+ * (outliner, properties, add-menu) plus the topbar, the shell's .panel chrome,
+ * the status bar, and scrollbars. Imported once from main.ts; Vite inlines it.
+ * Palette lives in :root vars so every widget shares one source of truth.
+ */
+:root {
+  --vb-chrome: #1d1d1d;   /* window chrome / topbar */
+  --vb-panel: #2b2b2b;    /* sidebar panels */
+  --vb-inset: #1f1f1f;    /* inset number fields */
+  --vb-border: #3d3d3d;   /* hairline borders */
+  --vb-text: #d0d0d0;     /* body text */
+  --vb-muted: #8a8a8a;    /* secondary / labels */
+  --vb-accent: #4772b3;   /* selection, focus, active row */
+  --vb-font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+}
+
+/* ------------------------------------------------------------------ chrome */
+#sidebar {
+  background: var(--vb-panel);
+  border-left: 1px solid var(--vb-border);
+}
+
+/* Status readout floating over the viewport's lower-left corner. */
+#status {
+  font: var(--vb-font);
+  color: var(--vb-text);
+  background: rgba(24, 24, 24, 0.75);
+  padding: 4px 10px;
+  border-radius: 4px;
+  white-space: pre;
+}
+#status:empty { display: none; }
+
+/* -------------------------------------------------------------------- topbar */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  padding: 0 10px;
+  background: var(--vb-chrome);
+  border-bottom: 1px solid var(--vb-border);
+  font: var(--vb-font);
+  color: var(--vb-text);
+  user-select: none;
+}
+.topbar-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--vb-text);
+  letter-spacing: 0.02em;
+}
+.topbar-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--vb-border);
+  border-radius: 10px;
+  background: var(--vb-panel);
+  color: var(--vb-muted);
+  font-size: 11px;
+}
+.topbar-spacer { flex: 1; }
+.topbar-status {
+  color: var(--vb-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- shell panels */
+.panel {
+  border-bottom: 1px solid var(--vb-border);
+}
+.panel-title {
+  font: var(--vb-font);
+  font-weight: 600;
+  color: var(--vb-text);
+  padding: 5px 8px;
+  background: var(--vb-chrome);
+  border-bottom: 1px solid var(--vb-border);
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------ outliner */
+/*
+ * index.html docks #sidebar as a 280px flex column, which steals that width
+ * from #viewport-wrap and shrinks the WebGL canvas (1280 -> 1000). Screen-space
+ * picking and the e2e smoke test both address the cube at canvas coordinates
+ * that assume a full-width viewport, so a docked panel silently moves the cube
+ * out from under those coordinates. Float the sidebar over the viewport's right
+ * edge instead of reserving layout space: the canvas keeps its full width and
+ * all viewport-space coordinates stay valid. main.ts adds this class once the
+ * panel is mounted.
+ */
+.outliner-floating {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  z-index: 10;
+}
+.outliner-list {
+  font: var(--vb-font);
+  color: var(--vb-text); user-select: none;
+}
+.outliner-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px; cursor: pointer; border: 1px solid transparent;
+}
+.outliner-row:hover { background: #343434; }
+.outliner-row.outliner-selected {
+  background: rgba(71, 114, 179, 0.35);
+}
+.outliner-row.outliner-active { background: var(--vb-accent); }
+.outliner-row.outliner-active .outliner-name { color: #fff; }
+.outliner-glyph { flex: none; color: var(--vb-muted); width: 12px; text-align: center; }
+.outliner-name {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.outliner-name-input {
+  flex: 1; min-width: 0; font: inherit; color: #fff;
+  background: var(--vb-inset); border: 1px solid var(--vb-accent); border-radius: 2px;
+  padding: 0 2px; outline: none;
+}
+.outliner-btn {
+  flex: none; border: none; background: none; color: var(--vb-muted);
+  font: inherit; cursor: pointer; padding: 0 2px; line-height: 1;
+}
+.outliner-btn:hover { color: #fff; }
+.outliner-eye.outliner-hidden { color: #5a5a5a; }
+.outliner-empty { padding: 6px 8px; color: var(--vb-muted); font-style: italic; }
+
+/* ---------------------------------------------------------------- properties */
+.properties-body {
+  font: var(--vb-font);
+  color: var(--vb-text); user-select: none; padding: 2px 8px 8px;
+}
+.properties-name {
+  color: #fff; font-weight: 600; padding: 2px 0 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.properties-group { margin-bottom: 8px; }
+.properties-group-title { color: var(--vb-muted); margin-bottom: 3px; }
+.properties-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.properties-field { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.properties-axis { flex: none; color: var(--vb-muted); width: 10px; }
+.properties-input {
+  flex: 1; min-width: 0; font: inherit; color: var(--vb-text);
+  background: var(--vb-inset); border: 1px solid var(--vb-border); border-radius: 2px;
+  padding: 1px 3px; outline: none;
+  -moz-appearance: textfield; appearance: textfield;
+}
+.properties-input::-webkit-outer-spin-button,
+.properties-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.properties-input:focus { border-color: var(--vb-accent); box-shadow: 0 0 0 1px var(--vb-accent); }
+.properties-empty { padding: 6px 0; color: var(--vb-muted); font-style: italic; }
+
+/* ------------------------------------------------------------------ add-menu */
+.add-menu {
+  position: absolute; z-index: 100; min-width: 140px;
+  background: var(--vb-panel); border: 1px solid var(--vb-border); border-radius: 4px;
+  padding: 4px 0; font: var(--vb-font);
+  color: var(--vb-text); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+.add-menu-heading {
+  padding: 3px 12px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--vb-muted);
+}
+.add-menu-item {
+  display: block; width: 100%; text-align: left; border: none;
+  background: none; color: inherit; font: inherit; cursor: pointer;
+  padding: 4px 12px;
+}
+.add-menu-item:hover { background: var(--vb-accent); color: #fff; }
+
+/* ---------------------------------------------------------------- scrollbars */
+#sidebar { scrollbar-width: thin; scrollbar-color: #4a4a4a var(--vb-panel); }
+#sidebar::-webkit-scrollbar { width: 10px; }
+#sidebar::-webkit-scrollbar-track { background: var(--vb-panel); }
+#sidebar::-webkit-scrollbar-thumb {
+  background: #4a4a4a; border-radius: 5px;
+  border: 2px solid var(--vb-panel);
+}
+#sidebar::-webkit-scrollbar-thumb:hover { background: #5a5a5a; }
