@@ -8,6 +8,7 @@ import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { rayPlane } from '../core/math/ray';
 import { MeshEditCommand } from '../core/undo/meshCommands';
+import { snapActive, snapVec, SNAP_STEP } from '../core/snap';
 import { NumericInput } from './numericInput';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
@@ -278,6 +279,8 @@ export class EditTranslateOperator extends EditTransformBase {
   private startHit = Vec3.ZERO;
   private delta = Vec3.ZERO;
   private axis: AxisLock = null;
+  /** True while Ctrl is held during the modal — inverts the grid-snap state. */
+  private ctrlHeld = false;
   /** Set true when 'g' is pressed mid-Move: a sentinel the InputManager reads to
    *  swap this Move for an Edge Slide (Blender's GG). */
   slideRequested = false;
@@ -312,11 +315,20 @@ export class EditTranslateOperator extends EditTransformBase {
     this.applyDelta(ctx);
   }
 
-  /** Write the current delta to every affected vert, scaled by its weight. */
+  /** Write the current delta to every affected vert, scaled by its weight. When
+   *  snapping is effective (state XOR Ctrl-held) each vert's RESULT WORLD position
+   *  is rounded onto the grid, then converted back to local for storage. */
   private applyDelta(ctx: OperatorContext): void {
+    const snap = snapActive(this.ctrlHeld);
     const local = worldDeltaToLocal(this.delta, this.invMatrix);
     for (const id of this.affected) {
-      this.mesh.setVertCo(id, this.before.get(id)!.add(local.scale(this.weightOf(id))));
+      const w = this.weightOf(id);
+      if (snap) {
+        const world = snapVec(this.worldBefore.get(id)!.add(this.delta.scale(w)), SNAP_STEP);
+        this.mesh.setVertCo(id, this.invMatrix.transformPoint(world));
+      } else {
+        this.mesh.setVertCo(id, this.before.get(id)!.add(local.scale(w)));
+      }
     }
     this.updateStatus(ctx);
   }
@@ -326,6 +338,12 @@ export class EditTranslateOperator extends EditTransformBase {
   }
 
   onKey(ctx: OperatorContext, key: string): boolean {
+    // Ctrl held: invert the grid-snap state for as long as it's down.
+    if (key === 'Control') {
+      this.ctrlHeld = true;
+      this.applyDelta(ctx);
+      return true;
+    }
     const k = key.toLowerCase();
     if (k === 'g') {
       this.slideRequested = true; // consumed by the InputManager swap (GG → Edge Slide)
@@ -337,6 +355,13 @@ export class EditTranslateOperator extends EditTransformBase {
     if (hit) this.startHit = hit.sub(this.delta);
     this.onPointerMove(ctx, this.lastPointer);
     return true;
+  }
+
+  onKeyUp(ctx: OperatorContext, key: string): void {
+    if (key === 'Control') {
+      this.ctrlHeld = false;
+      this.applyDelta(ctx);
+    }
   }
 
   private updateStatus(ctx: OperatorContext): void {

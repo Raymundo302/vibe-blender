@@ -871,6 +871,70 @@ runE2e(async (t) => {
   // Restore the default scene so the suite ends clean.
   await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
 
+  // --- P7-4: grid snapping (Shift+Tab toggle, snapped G-move, plain-Tab regression) ---
+  await t.sleep(80);
+  // Fresh default scene: single Cube at origin, object mode. Select + reset it.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    const c = s.objects[0];
+    c.transform = c.transform.withPosition(new c.transform.position.constructor(0, 0, 0));
+    s.selectOnly(c.id);
+  })()`);
+  const snapChip = () => t.evaluate(`(() => { const b = document.querySelector('[data-action="snap-toggle"]'); return b ? b.getAttribute('aria-pressed') : null; })()`);
+  const cubePos = () => t.evaluate(`(() => { const p = window.__app.scene.objects[0].transform.position; return { x: p.x, y: p.y, z: p.z }; })()`);
+  const isMul = (v, step = 0.5) => Math.abs(v / step - Math.round(v / step)) < 1e-6;
+
+  // Canvas-relative points (workspace layout shrinks the canvas).
+  const srect = await t.evaluate('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()');
+  const scv = (fx, fy) => [Math.round(srect.x + srect.w * fx), Math.round(srect.y + srect.h * fy)];
+  const [sCenX, sCenY] = scv(0.5, 0.48);
+
+  t.check('P7-4 snap chip starts off', (await snapChip()) === 'false');
+
+  // Shift+Tab enables snapping; the magnet chip reflects it (aria-pressed).
+  await t.key('Tab', 'Tab', 8); // shift = 8
+  await t.sleep(80);
+  t.check('Shift+Tab turns snapping ON (chip reflects it)', (await snapChip()) === 'true');
+
+  // Plain Tab still toggles edit mode (regression) — snapping stays on.
+  await t.key('Tab', 'Tab');
+  t.check('plain Tab still enters edit mode', (await t.evaluate('window.__app.scene.mode')) === 'edit');
+  t.check('plain Tab did not disturb the snap chip', (await snapChip()) === 'true');
+  await t.key('Tab', 'Tab');
+  t.check('plain Tab returns to object mode', (await t.evaluate('window.__app.scene.mode')) === 'object');
+
+  // G-move the cube with snapping ON → every confirmed position component is a 0.5 multiple.
+  await t.evaluate(`window.__app.scene.selectOnly(window.__app.scene.objects[0].id)`);
+  await t.mouse('mouseMoved', sCenX, sCenY);
+  await t.key('g', 'KeyG');
+  await t.mouse('mouseMoved', sCenX + 143, sCenY - 97); // odd pixel amounts
+  await t.sleep(80);
+  await t.key('Enter', 'Enter');
+  await t.sleep(80);
+  const snapped = await cubePos();
+  t.check('snapped move lands on 0.5 multiples',
+    isMul(snapped.x) && isMul(snapped.y) && isMul(snapped.z),
+    `(${snapped.x.toFixed(4)}, ${snapped.y.toFixed(4)}, ${snapped.z.toFixed(4)})`);
+
+  // Turn snapping OFF, drag by an odd pixel amount → lands on a non-multiple.
+  await t.key('Tab', 'Tab', 8); // shift+tab off
+  await t.sleep(80);
+  t.check('Shift+Tab turns snapping OFF', (await snapChip()) === 'false');
+  await t.mouse('mouseMoved', sCenX, sCenY);
+  await t.key('g', 'KeyG');
+  await t.mouse('mouseMoved', sCenX + 137, sCenY - 89);
+  await t.sleep(80);
+  await t.key('Enter', 'Enter');
+  await t.sleep(80);
+  const free = await cubePos();
+  t.check('un-snapped move lands off the 0.5 grid',
+    !(isMul(free.x) && isMul(free.y) && isMul(free.z)),
+    `(${free.x.toFixed(4)}, ${free.y.toFixed(4)}, ${free.z.toFixed(4)})`);
+
+  // Restore the default scene again so the suite ends clean.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+
   // Leave storage clean so a later suite's boot never sees a stale toast.
   await t.evaluate(`window.__app.autosave.clear()`);
 });

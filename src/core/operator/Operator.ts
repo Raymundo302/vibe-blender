@@ -43,6 +43,13 @@ export interface Operator {
    */
   onKey(ctx: OperatorContext, key: string): boolean;
 
+  /**
+   * Optional key-RELEASE hook (InputManager forwards keyups to the active op).
+   * Only the ops that need it implement this — used so MOVE operators can react
+   * to Ctrl being released (grid-snap invert is held, not toggled).
+   */
+  onKeyUp?(ctx: OperatorContext, key: string): void;
+
   /** LMB or Enter: apply final state and push the undo command. */
   confirm(ctx: OperatorContext): void;
 

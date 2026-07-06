@@ -4,6 +4,7 @@ import type { Transform } from '../core/math/transform';
 import { Vec3 } from '../core/math/vec3';
 import { rayPlane } from '../core/math/ray';
 import { TransformCommand } from '../core/undo/commands';
+import { snapActive, snapVec, SNAP_STEP } from '../core/snap';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
 
@@ -21,6 +22,8 @@ export class TranslateOperator implements Operator {
   private delta = Vec3.ZERO;
   private axis: AxisLock = null;
   private lastPointer: PointerState = { x: 0, y: 0 };
+  /** True while Ctrl is held during the modal — inverts the grid-snap state. */
+  private ctrlHeld = false;
 
   /** `axis` presets the axis lock (used by the gizmo handle drag); default free. */
   constructor(axis: AxisLock = null) {
@@ -66,13 +69,28 @@ export class TranslateOperator implements Operator {
     const hit = this.planeHit(ctx, pointer);
     if (!hit) return;
     this.delta = hit.sub(this.startHit);
+    this.applyPositions(ctx);
+  }
+
+  /** Write the current delta to every target, snapping the RESULT world position
+   *  onto the grid when snapping is effective (state XOR Ctrl-held). */
+  private applyPositions(ctx: OperatorContext): void {
+    const snap = snapActive(this.ctrlHeld);
     for (const t of this.targets) {
-      t.object.transform = t.before.withPosition(t.before.position.add(this.delta));
+      let pos = t.before.position.add(this.delta);
+      if (snap) pos = snapVec(pos, SNAP_STEP);
+      t.object.transform = t.before.withPosition(pos);
     }
     this.updateStatus(ctx);
   }
 
   onKey(ctx: OperatorContext, key: string): boolean {
+    // Ctrl held: invert the grid-snap state for as long as it's down.
+    if (key === 'Control') {
+      this.ctrlHeld = true;
+      this.applyPositions(ctx);
+      return true;
+    }
     const k = key.toLowerCase();
     if (k !== 'x' && k !== 'y' && k !== 'z') return false;
     this.axis = this.axis === k ? null : k;
@@ -81,6 +99,13 @@ export class TranslateOperator implements Operator {
     if (hit) this.startHit = hit.sub(this.delta);
     this.onPointerMove(ctx, this.lastPointer);
     return true;
+  }
+
+  onKeyUp(ctx: OperatorContext, key: string): void {
+    if (key === 'Control') {
+      this.ctrlHeld = false;
+      this.applyPositions(ctx);
+    }
   }
 
   confirm(ctx: OperatorContext): void {

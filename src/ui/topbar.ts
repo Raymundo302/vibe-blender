@@ -1,5 +1,6 @@
 import type { Scene } from '../core/scene/Scene';
 import type { Renderer } from '../render/Renderer';
+import { snapState } from '../core/snap';
 
 /**
  * Callbacks the topbar chip-buttons fire. Phase 3 tasks extend this as they add
@@ -27,6 +28,7 @@ export class Topbar {
   private readonly statusEl: HTMLSpanElement;
   private readonly chipEl: HTMLSpanElement;
   private readonly shadingEl: HTMLButtonElement;
+  private readonly snapEl: HTMLButtonElement;
   private lastSig = '';
 
   constructor(
@@ -52,6 +54,15 @@ export class Topbar {
     });
     this.shadingEl = shading;
 
+    // Snap chip: 🧲 magnet toggling grid snapping (also Shift+Tab). Clickable;
+    // its highlighted state mirrors snapState.enabled (updated every frame).
+    const snap = Topbar.makeButton('🧲 Snap', 'snap-toggle', () => {
+      snapState.enabled = !snapState.enabled;
+      this.update();
+    });
+    snap.title = 'Grid snapping (Shift+Tab)';
+    this.snapEl = snap;
+
     const spacer = document.createElement('div');
     spacer.className = 'topbar-spacer';
 
@@ -68,7 +79,7 @@ export class Topbar {
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, helpBtn, this.statusEl);
+    root.append(title, chip, shading, snap, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, helpBtn, this.statusEl);
     this.update();
   }
 
@@ -95,12 +106,14 @@ export class Topbar {
     const edit = this.scene.editMode;
     const mode = edit ? `Edit Mode · ${edit.elementMode}` : 'Object Mode';
     const shading = this.renderer.shadingMode;
-    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}`;
+    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}#${snapState.enabled}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
     this.chipEl.textContent = mode;
     this.chipEl.classList.toggle('topbar-chip-edit', !!edit);
+    this.snapEl.classList.toggle('topbar-btn-on', snapState.enabled);
+    this.snapEl.setAttribute('aria-pressed', String(snapState.enabled));
     // Capitalize the shading label for display (matcap → Matcap).
     this.shadingEl.textContent = shading.charAt(0).toUpperCase() + shading.slice(1);
     const noun = count === 1 ? 'object' : 'objects';

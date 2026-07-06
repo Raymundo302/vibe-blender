@@ -19,6 +19,7 @@ import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
+import { snapState } from '../core/snap';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
 import { SeparateCommand } from '../core/undo/separateCommand';
 
@@ -74,6 +75,13 @@ export class InputManager {
     canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     window.addEventListener('keydown', (e) => this.onKeyDown(e));
+    // Forward key RELEASES to the active op only (narrow hook: MOVE operators
+    // need Ctrl-up to un-invert grid snapping). No global keyup behaviour.
+    window.addEventListener('keyup', (e) => this.onKeyUp(e));
+  }
+
+  private onKeyUp(e: KeyboardEvent): void {
+    this.activeOp?.onKeyUp?.(this.ctx, e.key);
   }
 
   private toLocal(e: PointerEvent): PointerState {
@@ -255,6 +263,16 @@ export class InputManager {
     if (e.ctrlKey && key === 'o' && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       this.fileActions.open();
+      return;
+    }
+
+    // Shift+Tab: toggle grid snapping (both modes). MUST come before the plain
+    // Tab edit-mode toggle so the modifier form wins. preventDefault stops the
+    // browser's reverse-focus traversal.
+    if (e.key === 'Tab' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      snapState.enabled = !snapState.enabled;
+      this.ctx.setStatus(`Snapping: ${snapState.enabled ? 'on' : 'off'}`);
       return;
     }
 

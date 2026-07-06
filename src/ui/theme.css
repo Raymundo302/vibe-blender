@@ -80,6 +80,12 @@
   border-color: var(--vb-accent, #fe730f);
   color: var(--vb-accent, #fe730f);
 }
+/* Toggled-on state for stateful chips (e.g. the snap magnet). */
+.topbar-btn-on {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 18%, var(--vb-panel));
+}
 .topbar-spacer { flex: 1; }
 .topbar-status {
   color: var(--vb-muted);
