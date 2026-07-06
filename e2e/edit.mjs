@@ -674,4 +674,80 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 2); // ctrl-z
   t.check('Ctrl+Z undoes the subdivide',
     (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === facesPreSubdiv);
+
+  // --- P6-5: proportional editing (O) ---
+  // Fresh cube (corners at ±1), edit + vert mode, select ONE corner (vert 0).
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    for (const o of [...s.objects]) s.remove(o.id);
+  })()`);
+  await t.evaluate('window.__app.io.importObj(' + JSON.stringify(cubeObj) + ')');
+  await t.key('Tab', 'Tab');
+  await t.key('1', 'Digit1');
+  const selCorner = `(() => {
+    const e = window.__app.scene.editMode;
+    e.clearSelection(); e.verts.add(0); e.touch();
+    return e.verts.size;
+  })()`;
+  t.check('selected a single corner vert', (await t.evaluate(selCorner)) === 1);
+
+  const vco = (id) => t.evaluate(`(() => { const c = window.__app.scene.editObject.mesh.verts.get(${id}).co; return { x: c.x, y: c.y, z: c.z }; })()`);
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  // vert 0 = (-1,-1,-1) selected; vert 6 = (1,1,1) is the diagonally-opposite
+  // corner (distance 2√3 ≈ 3.46); vert 1 = (1,-1,-1) is an edge neighbour (dist 2).
+  const before0 = await vco(0), before1 = await vco(1), before6 = await vco(6);
+
+  // O toggles proportional editing on (status message).
+  await t.key('o', 'KeyO');
+  t.check('O turns proportional editing on (status)',
+    (await t.evaluate("document.getElementById('status').textContent")).includes('on'));
+
+  // Grab starts from the canvas center; wheel up to grow the falloff radius past
+  // the cube edge length (2) so the edge neighbour is inside the influence but the
+  // far corner (dist 2√3 ≈ 3.46) is not. Read the radius back from the status line
+  // and stop once it clears 2.5 — keeps it safely under the far corner's distance.
+  const readRadius = () => t.evaluate(`(() => { const m = document.getElementById('status').textContent.match(/radius:\\s*([0-9.]+)/i); return m ? parseFloat(m[1]) : null; })()`);
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('g', 'KeyG');
+  let radius = null;
+  for (let i = 0; i < 12; i++) {
+    await t.mouse('mouseWheel', ccX, ccY, 'none', { deltaX: 0, deltaY: -120 });
+    await t.sleep(20);
+    radius = await readRadius();
+    if (radius !== null && radius >= 2.5) break;
+  }
+  t.check('wheel adjusts the proportional radius (status)',
+    radius !== null && radius >= 2.5 && radius < 3.4, `radius=${radius}`);
+  await t.mouse('mouseMoved', ccX + 120, ccY - 70);
+  await t.sleep(100);
+  await t.click(ccX + 120, ccY - 70); // LMB confirms
+
+  const after0 = await vco(0), after1 = await vco(1), after6 = await vco(6);
+  const d0 = dist(after0, before0), d1 = dist(after1, before1), d6 = dist(after6, before6);
+  t.check('selected corner moved', d0 > 1e-4, `d0=${d0.toFixed(4)}`);
+  t.check('diagonally-opposite vert did not move (beyond radius)', d6 < 1e-4, `d6=${d6.toFixed(6)}`);
+  t.check('edge-neighbour moved a nonzero amount less than the selected vert',
+    d1 > 1e-4 && d1 < d0 - 1e-6, `d1=${d1.toFixed(4)} d0=${d0.toFixed(4)}`);
+
+  // Ctrl+Z restores every vert.
+  await t.key('z', 'KeyZ', 2);
+  const undo0 = await vco(0), undo1 = await vco(1);
+  t.check('Ctrl+Z restores the proportional move',
+    dist(undo0, before0) < 1e-6 && dist(undo1, before1) < 1e-6);
+
+  // O off → G only moves the selected vert; the neighbour stays put.
+  await t.key('o', 'KeyO');
+  t.check('O turns proportional editing off (status)',
+    (await t.evaluate("document.getElementById('status').textContent")).includes('off'));
+  await t.evaluate(selCorner); // undo may have refreshed the selection
+  const off0b = await vco(0), off1b = await vco(1);
+  await t.mouse('mouseMoved', ccX, ccY); // reset the grab origin so the move has a delta
+  await t.key('g', 'KeyG');
+  await t.mouse('mouseMoved', ccX + 120, ccY - 70);
+  await t.sleep(100);
+  await t.click(ccX + 120, ccY - 70);
+  const off0a = await vco(0), off1a = await vco(1);
+  t.check('proportional off: selected vert moves', dist(off0a, off0b) > 1e-4);
+  t.check('proportional off: neighbour stays put', dist(off1a, off1b) < 1e-6);
 });

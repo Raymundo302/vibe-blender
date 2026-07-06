@@ -3,6 +3,7 @@ import type { SceneObject } from '../core/scene/Scene';
 import type { EditModeState } from '../core/scene/EditMode';
 import type { EditableMesh } from '../core/mesh/EditableMesh';
 import type { Mat4 } from '../core/math/mat4';
+import type { Renderer } from '../render/Renderer';
 import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { rayPlane } from '../core/math/ray';
@@ -10,6 +11,65 @@ import { MeshEditCommand } from '../core/undo/meshCommands';
 import { NumericInput } from './numericInput';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
+
+/**
+ * Proportional-editing settings. Module-level so the state (on/off + radius)
+ * persists across operator invocations and is shared with the InputManager
+ * (O toggle, wheel radius) and the circle overlay. Default radius 2.
+ */
+export interface ProportionalSettings {
+  enabled: boolean;
+  radius: number;
+}
+export const proportional: ProportionalSettings = { enabled: false, radius: 2 };
+
+/**
+ * Smooth-falloff weight for a vert at local distance `d` from the nearest
+ * selected vert, given the influence `radius`. t = 1 − d/radius clamped to
+ * [0,1]; weight = 3t²−2t³ (Blender's "Smooth" falloff). d=0 → 1, d=radius → 0,
+ * d=radius/2 → 0.5, beyond radius → 0.
+ */
+export function proportionalFalloff(d: number, radius: number): number {
+  if (radius <= 0) return d <= 0 ? 1 : 0;
+  const t = 1 - d / radius;
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Weight map for an edit transform. Selected verts always weigh 1. With
+ * proportional editing on, each UNSELECTED vert additionally gets a smooth
+ * falloff weight from its local distance to the NEAREST selected vert; verts
+ * beyond the radius (weight 0) are omitted so callers can skip them.
+ */
+export function computeProportionalWeights(
+  mesh: EditableMesh,
+  selected: Set<number>,
+  enabled: boolean,
+  radius: number,
+): Map<number, number> {
+  const weights = new Map<number, number>();
+  for (const id of selected) weights.set(id, 1);
+  if (!enabled) return weights;
+
+  const selCos: Vec3[] = [];
+  for (const id of selected) {
+    const v = mesh.verts.get(id);
+    if (v) selCos.push(v.co);
+  }
+  for (const [id, vert] of mesh.verts) {
+    if (selected.has(id)) continue;
+    let dmin = Infinity;
+    for (const s of selCos) {
+      const d = vert.co.distanceTo(s);
+      if (d < dmin) dmin = d;
+    }
+    const w = proportionalFalloff(dmin, radius);
+    if (w > 0) weights.set(id, w);
+  }
+  return weights;
+}
 
 /** Median (average) of a set of points; ZERO for an empty list. */
 export function centroid(points: Vec3[]): Vec3 {
@@ -33,48 +93,128 @@ export function worldDeltaToLocal(delta: Vec3, invMatrix: Mat4): Vec3 {
  * previews by writing local vert positions via `setVertCo`; on confirm we follow
  * the "modal GEOMETRY tools" undo pattern (restore, then push a capture()).
  */
-abstract class EditTransformBase implements Operator {
+export abstract class EditTransformBase implements Operator {
   abstract readonly name: string;
 
   protected mesh!: EditableMesh;
   protected sel!: EditModeState;
+  /** Verts this op writes each frame. Proportional off: the selection only.
+   *  Proportional on: EVERY vert (weight 0 → unchanged, sits at `before`). */
   protected affected: number[] = [];
+  /** The selected verts (drive the pivot + are the falloff sources). */
+  protected selectedSet = new Set<number>();
+  /** Per-vert influence weight (see computeProportionalWeights). */
+  protected weights = new Map<number, number>();
+  /** True when this invocation runs with proportional editing on. */
+  protected proportionalOn = false;
   /** Local coordinates at start, keyed by vert id — the "before" for undo. */
   protected before = new Map<number, Vec3>();
   /** World coordinates at start (for rotate/scale offset math). */
   protected worldBefore = new Map<number, Vec3>();
-  /** Pivot = world-space centroid of the affected verts. */
+  /** Pivot = world-space centroid of the SELECTED verts. */
   protected pivot = Vec3.ZERO;
   protected pivotScreen = { x: 0, y: 0 };
   /** Inverse model matrix: world → local for writing back. */
   protected invMatrix!: Mat4;
   protected lastPointer: PointerState = { x: 0, y: 0 };
 
+  /** Renderer is optional so unit tests can drive the op without a GL context;
+   *  it is only used to draw/clear the proportional radius circle overlay. */
+  constructor(protected readonly renderer?: Renderer) {}
+
+  /** Whether the wheel should adjust the proportional radius (InputManager hook). */
+  get proportionalActive(): boolean {
+    return this.proportionalOn;
+  }
+
   start(ctx: OperatorContext, pointer: PointerState): boolean {
     const sel = ctx.scene.editMode;
     const obj = ctx.scene.editObject;
     if (!sel || !obj) return false;
-    const ids = [...sel.selectedVertIds(obj.mesh)];
-    if (ids.length === 0) return false;
+    const selectedIds = [...sel.selectedVertIds(obj.mesh)];
+    if (selectedIds.length === 0) return false;
 
     this.sel = sel;
     this.mesh = obj.mesh;
-    this.affected = ids;
+    this.selectedSet = new Set(selectedIds);
+    this.proportionalOn = proportional.enabled;
     const m = obj.transform.matrix();
     this.invMatrix = m.invert();
 
-    const worldPts: Vec3[] = [];
-    for (const id of ids) {
+    // Pivot = world centroid of the SELECTED verts (unselected verts only ride
+    // along with a falloff weight, they don't shift the pivot).
+    const selWorld: Vec3[] = [];
+    for (const id of selectedIds) selWorld.push(m.transformPoint(obj.mesh.verts.get(id)!.co));
+    this.pivot = centroid(selWorld);
+
+    // Proportional on: capture EVERY vert so the weight map can grow/shrink
+    // (via the wheel) without missing a "before" position. Off: selection only.
+    this.affected = this.proportionalOn ? [...obj.mesh.verts.keys()] : selectedIds;
+    for (const id of this.affected) {
       const co = obj.mesh.verts.get(id)!.co;
       this.before.set(id, co);
-      const w = m.transformPoint(co);
-      this.worldBefore.set(id, w);
-      worldPts.push(w);
+      this.worldBefore.set(id, m.transformPoint(co));
     }
-    this.pivot = centroid(worldPts);
+    this.recomputeWeights();
+
     this.pivotScreen = this.projectPivot(ctx, obj);
     this.lastPointer = pointer;
-    return this.onStart(ctx, pointer);
+    const ok = this.onStart(ctx, pointer);
+    if (ok) this.updateCircle(ctx);
+    return ok;
+  }
+
+  private recomputeWeights(): void {
+    this.weights = computeProportionalWeights(this.mesh, this.selectedSet, this.proportionalOn, proportional.radius);
+  }
+
+  /** Influence weight for a vert (defaults to 1 for selected/plain transforms). */
+  protected weightOf(id: number): number {
+    return this.weights.get(id) ?? 0;
+  }
+
+  /**
+   * Wheel hook: grow/shrink the proportional radius, rebuild the weight map and
+   * circle overlay, and re-apply the in-progress transform so the deformation
+   * updates live. No-op when proportional editing is off.
+   */
+  adjustRadius(ctx: OperatorContext, deltaY: number): void {
+    if (!this.proportionalOn) return;
+    const factor = deltaY < 0 ? 1.1 : 1 / 1.1;
+    proportional.radius = Math.min(1000, Math.max(0.01, proportional.radius * factor));
+    this.recomputeWeights();
+    this.updateCircle(ctx);
+    this.reapply(ctx);
+    ctx.setStatus(`Proportional radius: ${proportional.radius.toFixed(2)}`);
+  }
+
+  /**
+   * Draw the influence circle (48-segment polyline in the plane facing the
+   * camera at the pivot) via the shared editPreviewLines channel, in the edit
+   * object's LOCAL space (that overlay is rendered with the object matrix).
+   */
+  protected updateCircle(ctx: OperatorContext): void {
+    if (!this.renderer || !this.proportionalOn) return;
+    const pivotLocal = this.invMatrix.transformPoint(this.pivot);
+    const f = this.invMatrix.transformDir(ctx.camera.forward).normalize();
+    const ref = Math.abs(f.y) < 0.9 ? Vec3.Y : Vec3.X;
+    const u = ref.cross(f).normalize();
+    const v = f.cross(u).normalize();
+    const r = proportional.radius;
+    const SEG = 48;
+    const out = new Float32Array(SEG * 6);
+    for (let i = 0; i < SEG; i++) {
+      const a0 = (i / SEG) * Math.PI * 2;
+      const a1 = ((i + 1) / SEG) * Math.PI * 2;
+      const p0 = pivotLocal.add(u.scale(Math.cos(a0) * r)).add(v.scale(Math.sin(a0) * r));
+      const p1 = pivotLocal.add(u.scale(Math.cos(a1) * r)).add(v.scale(Math.sin(a1) * r));
+      out.set([p0.x, p0.y, p0.z, p1.x, p1.y, p1.z], i * 6);
+    }
+    this.renderer.editPreviewLines = out;
+  }
+
+  private clearCircle(): void {
+    if (this.renderer && this.proportionalOn) this.renderer.editPreviewLines = null;
   }
 
   /** Project the world pivot to CSS pixels (conventions formula). */
@@ -84,13 +224,21 @@ abstract class EditTransformBase implements Operator {
     return { x: ((ndc.x + 1) / 2) * width, y: ((1 - ndc.y) / 2) * height };
   }
 
-  /** Write a world position back to a vert as its local coordinate. */
+  /**
+   * Write a world position back to a vert, blended toward its start position by
+   * the vert's influence weight (weight 1 = full transform, 0 = unchanged).
+   */
   protected setWorld(id: number, world: Vec3): void {
-    this.mesh.setVertCo(id, this.invMatrix.transformPoint(world));
+    const w = this.weightOf(id);
+    const target = w >= 1 ? world : this.worldBefore.get(id)!.lerp(world, w);
+    this.mesh.setVertCo(id, this.invMatrix.transformPoint(target));
   }
 
   /** Subclass hook after shared setup; return false to abort. */
   protected abstract onStart(ctx: OperatorContext, pointer: PointerState): boolean;
+
+  /** Re-apply the current transform state (used after a radius change). */
+  protected abstract reapply(ctx: OperatorContext): void;
 
   abstract onPointerMove(ctx: OperatorContext, pointer: PointerState): void;
   abstract onKey(ctx: OperatorContext, key: string): boolean;
@@ -107,12 +255,14 @@ abstract class EditTransformBase implements Operator {
       }),
     );
     this.sel.touch();
+    this.clearCircle();
     ctx.setStatus('');
   }
 
   cancel(ctx: OperatorContext): void {
     for (const [id, co] of this.before) this.mesh.setVertCo(id, co);
     this.sel.touch();
+    this.clearCircle();
     ctx.setStatus('');
   }
 }
@@ -156,9 +306,20 @@ export class EditTranslateOperator extends EditTransformBase {
     const hit = this.planeHit(ctx, pointer);
     if (!hit) return;
     this.delta = hit.sub(this.startHit);
+    this.applyDelta(ctx);
+  }
+
+  /** Write the current delta to every affected vert, scaled by its weight. */
+  private applyDelta(ctx: OperatorContext): void {
     const local = worldDeltaToLocal(this.delta, this.invMatrix);
-    for (const id of this.affected) this.mesh.setVertCo(id, this.before.get(id)!.add(local));
+    for (const id of this.affected) {
+      this.mesh.setVertCo(id, this.before.get(id)!.add(local.scale(this.weightOf(id))));
+    }
     this.updateStatus(ctx);
+  }
+
+  protected reapply(ctx: OperatorContext): void {
+    this.applyDelta(ctx);
   }
 
   onKey(ctx: OperatorContext, key: string): boolean {
@@ -212,6 +373,10 @@ export class EditRotateOperator extends EditTransformBase {
     while (diff <= -Math.PI) diff += 2 * Math.PI;
     this.pointerAngle += diff;
     this.lastRaw = raw;
+    this.apply(ctx);
+  }
+
+  protected reapply(ctx: OperatorContext): void {
     this.apply(ctx);
   }
 
@@ -279,6 +444,10 @@ export class EditScaleOperator extends EditTransformBase {
 
   onPointerMove(ctx: OperatorContext, pointer: PointerState): void {
     this.pointerFactor = this.dist(pointer) / this.startDist;
+    this.apply(ctx);
+  }
+
+  protected reapply(ctx: OperatorContext): void {
     this.apply(ctx);
   }
 

@@ -4,7 +4,7 @@ import type { Scene } from '../core/scene/Scene';
 import { TranslateOperator } from '../tools/translate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
-import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '../tools/editTransform';
+import { EditTranslateOperator, EditRotateOperator, EditScaleOperator, EditTransformBase, proportional } from '../tools/editTransform';
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
@@ -185,6 +185,13 @@ export class InputManager {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
+    // While a proportional-editing G/R/S modal is running, the wheel adjusts the
+    // falloff radius instead of zooming the camera (narrow, guarded hook — any
+    // other state falls through to the normal camera zoom).
+    if (this.activeOp instanceof EditTransformBase && this.activeOp.proportionalActive) {
+      this.activeOp.adjustRadius(this.ctx, e.deltaY);
+      return;
+    }
     this.ctx.camera.zoom(e.deltaY);
   }
 
@@ -398,6 +405,15 @@ export class InputManager {
       edit.selectAll(mesh);
       return;
     }
+    // O: toggle proportional editing. When on, G/R/S also drag nearby unselected
+    // verts with a smooth falloff; the wheel adjusts the radius during the modal.
+    // (Ctrl+O — file open — is handled earlier, before the edit-mode branch.)
+    if (key === 'o' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      proportional.enabled = !proportional.enabled;
+      this.ctx.setStatus(`Proportional editing: ${proportional.enabled ? 'on' : 'off'}`);
+      return;
+    }
     // Ctrl+B: bevel the selected edges (edge mode). Modal width drag; the op
     // reports its own error for unsupported selections. Must precede plain-B box
     // select (which guards !e.ctrlKey) and preventDefault the browser bookmark.
@@ -431,15 +447,15 @@ export class InputManager {
     }
     // G/R/S: modal move/rotate/scale of the selected elements' verts.
     if (key === 'g' && !e.ctrlKey && !e.altKey) {
-      this.startOperator(new EditTranslateOperator());
+      this.startOperator(new EditTranslateOperator(this.renderer));
       return;
     }
     if (key === 'r' && !e.ctrlKey && !e.altKey) {
-      this.startOperator(new EditRotateOperator());
+      this.startOperator(new EditRotateOperator(this.renderer));
       return;
     }
     if (key === 's' && !e.ctrlKey && !e.altKey) {
-      this.startOperator(new EditScaleOperator());
+      this.startOperator(new EditScaleOperator(this.renderer));
       return;
     }
     // Ctrl+E: bridge two selected edge loops into a ring of quads. Edge mode
