@@ -603,4 +603,75 @@ runE2e(async (t) => {
   await t.sleep(80);
   await t.key('Escape', 'Escape');
   t.check('Esc cancels bevel without changes', (await bvFaces()) === facesBeforeCancel);
+
+  // --- P5-4: frame selection (.), fill (F), subdivide (Ctrl+D) ---
+  // Fresh cube via OBJ, back in object mode, moved to (3, 0, 4).
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    for (const o of [...s.objects]) s.remove(o.id);
+  })()`);
+  await t.evaluate('window.__app.io.importObj(' + JSON.stringify(cubeObj) + ')');
+  // Move the cube using the mesh's own Vec3 class (not exposed globally).
+  await t.evaluate(`(() => {
+    const obj = window.__app.scene.objects[0];
+    const V = obj.mesh.verts.values().next().value.co.constructor;
+    obj.transform = obj.transform.withPosition(new V(3, 0, 4));
+  })()`);
+  t.check('cube selected in object mode before frame',
+    (await mode()) === 'object' && (await t.evaluate('window.__app.scene.selection.size')) > 0);
+
+  // Period frames the selection: the orbit target snaps to the cube's center.
+  await t.key('.', 'Period');
+  const tgt = await t.evaluate('({x: window.__app.camera.target.x, y: window.__app.camera.target.y, z: window.__app.camera.target.z})');
+  t.check('Period recenters camera target onto the moved cube',
+    Math.abs(tgt.x - 3) < 0.5 && Math.abs(tgt.y - 0) < 0.5 && Math.abs(tgt.z - 4) < 0.5,
+    `target ${tgt.x.toFixed(2)},${tgt.y.toFixed(2)},${tgt.z.toFixed(2)}`);
+
+  // Fill (F): enter edit, delete one face directly, select its boundary verts,
+  // F rebuilds the face → back to 6, Ctrl+Z undoes the fill (→ 5).
+  await t.key('Tab', 'Tab');
+  t.check('entered edit mode for fill', (await mode()) === 'edit');
+  const fillSetup = await t.evaluate(`(() => {
+    const s = window.__app.scene, m = s.editObject.mesh, e = s.editMode;
+    const fid = [...m.faces.keys()][0];
+    const verts = [...m.faces.get(fid).verts];
+    m.deleteFaces([fid]);
+    e.setElementMode('vert', m); e.clearSelection();
+    for (const v of verts) e.verts.add(v); e.touch();
+    return { faces: m.faces.size, sel: e.verts.size };
+  })()`);
+  t.check('deleted a face and selected its 4 boundary verts',
+    fillSetup.faces === 5 && fillSetup.sel === 4);
+  await t.key('f', 'KeyF');
+  t.check('F fills the hole back to 6 faces',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 6);
+  t.check('filled face is a quad',
+    await t.evaluate('[...window.__app.scene.editObject.mesh.faces.values()].every((f) => f.verts.length === 4)'));
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z undoes the fill (back to 5 faces)',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 5);
+
+  // Subdivide (Ctrl+D): fresh cube, select one face, Ctrl+D grows faces by 3.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    for (const o of [...s.objects]) s.remove(o.id);
+  })()`);
+  await t.evaluate('window.__app.io.importObj(' + JSON.stringify(cubeObj) + ')');
+  await t.key('Tab', 'Tab');
+  await t.key('3', 'Digit3'); // face mode
+  await t.evaluate(`(() => {
+    const s = window.__app.scene, m = s.editObject.mesh, e = s.editMode;
+    e.clearSelection(); e.faces.add([...m.faces.keys()][0]); e.touch();
+  })()`);
+  const facesPreSubdiv = await t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  await t.key('d', 'KeyD', 2); // ctrl+d
+  const facesPostSubdiv = await t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  t.check('Ctrl+D subdivides one face, growing face count by 3',
+    facesPostSubdiv === facesPreSubdiv + 3, `${facesPreSubdiv} → ${facesPostSubdiv}`);
+  t.check('subdivide selects the 4 child faces', (await editSel('e.faces.size')) === 4);
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z undoes the subdivide',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === facesPreSubdiv);
 });

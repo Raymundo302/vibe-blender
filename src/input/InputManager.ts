@@ -11,6 +11,9 @@ import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { LoopCutOperator } from '../tools/loopCut';
 import { BevelOperator } from '../tools/bevel';
 import { bridgeLoops } from '../core/mesh/ops/bridge';
+import { fillVerts, fillEdges } from '../core/mesh/ops/fill';
+import { subdivideFaces } from '../core/mesh/ops/subdivide';
+import { frameSelection } from '../tools/frame';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
@@ -257,6 +260,15 @@ export class InputManager {
       return;
     }
 
+    // Period: frame the selection. Works in both object and edit mode; placed
+    // before the edit-mode branch so it applies to both.
+    if (key === '.' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      frameSelection(this.ctx);
+      this.ctx.setStatus('Framed selection');
+      return;
+    }
+
     if (this.ctx.scene.editMode) {
       this.onEditModeKey(e, key);
       return; // object-mode keys (G/R/S on objects, X, Shift-A/D) don't apply here
@@ -477,6 +489,50 @@ export class InputManager {
         setStatus: (t) => this.ctx.setStatus(t),
         onClose: () => { this.deleteMenu = null; },
       });
+      return;
+    }
+    // F: fill a face from the selection (vert chain / edge chain). The op reports
+    // its own error (too few verts, not a single chain, ...) with no mutation.
+    if (key === 'f' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      let result!: { faceId: number } | { error: string };
+      const cmd = MeshEditCommand.capture('Fill', mesh, () => {
+        result = edit.elementMode === 'edge'
+          ? fillEdges(mesh, edit.edges)
+          : fillVerts(mesh, edit.verts);
+      });
+      if ('error' in result) {
+        this.ctx.setStatus(`Fill: ${result.error}`);
+        return; // nothing mutated — drop the no-op command
+      }
+      this.ctx.undo.push(cmd);
+      edit.prune(mesh);
+      edit.touch(); // keep the current selection (spec: select nothing new)
+      this.ctx.setStatus('Filled face');
+      return;
+    }
+    // Ctrl+D: subdivide the fully-selected faces (each quad → 4 quads, tri → 4
+    // tris; shared edge midpoints are created once). Must precede any plain-D.
+    if (key === 'd' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const vids = edit.selectedVertIds(mesh);
+      const faceIds = [...mesh.faces.values()]
+        .filter((f) => f.verts.length > 0 && f.verts.every((v) => vids.has(v)))
+        .map((f) => f.id);
+      if (faceIds.length === 0) {
+        this.ctx.setStatus('Subdivide: select one or more whole faces');
+        return;
+      }
+      let res!: { newFaceIds: number[] };
+      const cmd = MeshEditCommand.capture('Subdivide', mesh, () => {
+        res = subdivideFaces(mesh, faceIds);
+      });
+      this.ctx.undo.push(cmd);
+      edit.setElementMode('face', mesh);
+      edit.clearSelection();
+      for (const fid of res.newFaceIds) edit.faces.add(fid);
+      edit.touch();
+      this.ctx.setStatus(`Subdivided ${faceIds.length} face(s)`);
       return;
     }
     // M: Merge at Center directly (Blender muscle memory).
