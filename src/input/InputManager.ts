@@ -92,9 +92,12 @@ export class InputManager {
     }
 
     if (e.button === 0) {
-      // Element clicks in edit mode arrive with P2-2's element-picking pass;
-      // until then, LMB must not fall through to object selection.
-      if (this.ctx.scene.editMode) return;
+      // Edit mode: click-select the vert/edge/face under the cursor for the
+      // current element mode. Shift toggles; a miss (no Shift) clears all.
+      if (this.ctx.scene.editMode) {
+        this.pickElementAt(e.shiftKey);
+        return;
+      }
       const hit = this.renderer.pick(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
       if (hit === null) {
         if (!e.shiftKey) this.ctx.scene.deselectAll();
@@ -246,6 +249,32 @@ export class InputManager {
       this.ctx.setStatus(`Deleted ${ids.length} object(s)`);
       return;
     }
+  }
+
+  /**
+   * Edit-mode click-select: pick the element under the cursor and update the
+   * current mode's selection set. Plain click replaces that set with the hit;
+   * Shift toggles the hit; a miss without Shift clears the whole selection.
+   */
+  private pickElementAt(shift: boolean): void {
+    const sel = this.ctx.scene.editMode;
+    if (!sel || !this.ctx.scene.editObject) return;
+    const hit = this.renderer.pickElement(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
+    if (hit === null) {
+      if (!shift) sel.clearSelection();
+      return;
+    }
+    if (hit.kind === 'vert') {
+      if (shift) { if (!sel.verts.delete(hit.id)) sel.verts.add(hit.id); }
+      else { sel.verts.clear(); sel.verts.add(hit.id); }
+    } else if (hit.kind === 'edge') {
+      if (shift) { if (!sel.edges.delete(hit.key)) sel.edges.add(hit.key); }
+      else { sel.edges.clear(); sel.edges.add(hit.key); }
+    } else {
+      if (shift) { if (!sel.faces.delete(hit.id)) sel.faces.add(hit.id); }
+      else { sel.faces.clear(); sel.faces.add(hit.id); }
+    }
+    sel.touch();
   }
 
   /** Edit-mode keymap. Element tools (G/R/S, E, I, X, ...) arrive with P2-3..P2-6. */

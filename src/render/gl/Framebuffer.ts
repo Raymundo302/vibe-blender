@@ -69,4 +69,17 @@ export class Framebuffer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return out;
   }
+
+  /**
+   * Read a w×h block of RGBA pixels starting at GL coords (x, y) (bottom-left of
+   * the block); rows come back bottom-up, same convention as readPixel.
+   */
+  readRegion(x: number, y: number, w: number, h: number): Uint8Array {
+    const gl = this.gl;
+    const out = new Uint8Array(w * h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
+    gl.readPixels(x, y, w, h, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
 }

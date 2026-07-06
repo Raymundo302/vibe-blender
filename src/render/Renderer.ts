@@ -6,6 +6,13 @@ import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
 import { GizmoPass, GIZMO_PICK_BASE, GIZMO_AXES, gizmoScreenScale, type GizmoAxis } from './passes/gizmoPass';
 import { EditOverlayPass } from './passes/editOverlayPass';
+import {
+  ElementPickPass,
+  closestNonZeroId,
+  decodePick,
+  type ElementPickResult,
+} from './passes/elementPickPass';
+import { elementIndexMaps } from '../core/mesh/editOverlayData';
 import { createMatcapTexture } from './matcap';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
@@ -34,6 +41,7 @@ export class Renderer {
   private readonly pickingPass: PickingPass;
   private readonly gizmoPass: GizmoPass;
   private readonly editOverlayPass: EditOverlayPass;
+  private readonly elementPickPass: ElementPickPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
 
@@ -53,6 +61,7 @@ export class Renderer {
     this.pickingPass = new PickingPass(gl, canvas.width, canvas.height);
     this.gizmoPass = new GizmoPass(gl);
     this.editOverlayPass = new EditOverlayPass(gl);
+    this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -80,6 +89,7 @@ export class Renderer {
     if (this.ctx.syncSize()) {
       this.outlinePass.resize(canvas.width, canvas.height);
       this.pickingPass.resize(canvas.width, canvas.height);
+      this.elementPickPass.resize(canvas.width, canvas.height);
     }
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(BG[0], BG[1], BG[2], 1);
@@ -166,5 +176,40 @@ export class Renderer {
     if (raw === 0) return null;
     if (raw >= GIZMO_PICK_BASE) return { kind: 'gizmo', axis: GIZMO_AXES[raw - GIZMO_PICK_BASE] };
     return { kind: 'object', id: raw - 1 };
+  }
+
+  /**
+   * Pick the edit-object element (vert/edge/face for the current elementMode)
+   * under CSS-pixel (cssX, cssY). Renders the element id buffer on demand and
+   * reads a 9×9 region so small elements have click tolerance. Returns element
+   * ids/keys (not indices), or null for a miss / when not in edit mode.
+   */
+  pickElement(scene: Scene, camera: OrbitCamera, cssX: number, cssY: number): ElementPickResult | null {
+    const editObj = scene.editObject;
+    const sel = scene.editMode;
+    if (!editObj || !sel) return null;
+    const { gl, canvas } = this.ctx;
+
+    const view = camera.viewMatrix();
+    const proj = camera.projMatrix(canvas.width / canvas.height);
+    const mvp = proj.mul(view).mul(editObj.transform.matrix());
+    this.elementPickPass.render(mvp, editObj.mesh, sel.elementMode);
+
+    // Center a clamped 9×9 window on the cursor (device pixels, GL bottom-up).
+    const dpr = window.devicePixelRatio || 1;
+    const px = Math.round(cssX * dpr);
+    const py = Math.round(cssY * dpr);
+    const w = canvas.width;
+    const h = canvas.height;
+    const glCenterY = h - 1 - py;
+    const size = 9;
+    const x0 = Math.max(0, Math.min(px - 4, w - size));
+    const y0 = Math.max(0, Math.min(glCenterY - 4, h - size));
+    const region = this.elementPickPass.readRegion(x0, y0, size, size);
+    const raw = closestNonZeroId(region, size, size, px - x0, glCenterY - y0);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+
+    if (raw === 0) return null;
+    return decodePick(raw, elementIndexMaps(editObj.mesh));
   }
 }
