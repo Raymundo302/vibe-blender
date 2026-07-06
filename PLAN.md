@@ -150,7 +150,7 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 ### Phase 7 — Object management & precision (night session, cont.)
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| P7-1 | Join objects (Ctrl+J): merge selected meshes into the active object, transforms baked | opus | — | built |
+| P7-1 | Join objects (Ctrl+J): merge selected meshes into the active object, transforms baked | opus | — | verified |
 | P7-2 | Separate selection (P): edit-mode selected faces → new object | opus | — | pending |
 | P7-3 | Edge slide (GG): slide selected verts along adjacent rail edges | opus | — | pending |
 | P7-4 | Grid snapping: Shift+Tab toggle + Ctrl-hold during G, topbar magnet indicator | opus | — | pending |
