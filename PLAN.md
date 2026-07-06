@@ -64,13 +64,19 @@ needs the dev server running — CDP-driven, no deps). Production build: 28.6 kB
 ### Phase 1 — Object Mode (Opus batch; specs reference Phase 0 code)
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| P1-1 | Primitives: plane, uv-sphere, cylinder, torus, ico-sphere | opus | P0-4 | pending |
-| P1-2 | R rotate + S scale modal operators (axis-lock X/Y/Z, numeric input) | opus | P0-7,8 | pending |
-| P1-3 | Transform gizmo (move arrows; picking-based handles) | opus | P0-9 | pending |
-| P1-4 | Outliner panel (list, click-select, rename, delete, visibility) | opus | P0-9 | pending |
-| P1-5 | Properties panel (live transform values, editable) | opus | P0-8 | pending |
-| P1-6 | Add-menu (Shift-A), duplicate (Shift-D), delete (X) | opus | P1-1 | pending |
-| P1-7 | Header bar: mode indicator, Blender-dark CSS theme | opus | P1-4 | pending |
+| P1-1 | Primitives: plane, uv-sphere, cylinder, torus, ico-sphere | opus | P0-4 | verified |
+| P1-2 | R rotate + S scale modal operators (axis-lock X/Y/Z, numeric input) | opus | P0-7,8 | verified |
+| P1-3 | Transform gizmo (move arrows; picking-based handles) | opus | P0-9 | verified |
+| P1-4 | Outliner panel (list, click-select, rename, delete, visibility) | opus | P0-9 | verified |
+| P1-5 | Properties panel (live transform values, editable) | opus | P0-8 | verified |
+| P1-6 | Add-menu (Shift-A), duplicate (Shift-D), delete (X) | opus | P1-1 | verified |
+| P1-7 | Header bar: mode indicator, Blender-dark CSS theme | opus | P1-4 | verified |
+
+**Phase 1 exit: ✅ all 7 tasks verified 2026-07-05** (workflow `p1-object-mode`: Opus
+implement → adversarial verify per task; P1-4 needed one fix round — docked sidebar
+shrank the canvas and broke viewport-space picking; fixed by floating the panel over
+the viewport). 55 unit tests, 12/12 e2e checks. Notable seams built by Fable first:
+object add/delete/rename undo commands, UiShell topbar/sidebar mounts.
 
 ### Phase 2 — Edit Mode (the "is it really Blender?" phase)
 | ID | Task | Owner | Depends | Status |

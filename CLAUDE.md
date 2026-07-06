@@ -47,5 +47,6 @@ User runs bypass-permissions mode. Keep ALL work inside this directory; verify s
 - [x] Architect/worker workflow validated on the Fable Fox pixel optimizer — 6 spec→implement→verify Opus increments, zero deviations (2026-07-02)
 - [x] Game plan generated — architecture decisions (modal operators, BMesh-lite, color-ID picking, snapshot undo, DOM panels, matcap), module map, 4-phase task registry in PLAN.md (2026-07-05)
 - [x] Phase 0 core built & verified — viewport with grid/axes, matcap cube, orbit/pan/zoom, click-select with orange outline, modal G-translate with axis locks, undo/redo. 18 unit tests + 12-check headless e2e (`node e2e/smoke.mjs`). Run with `npm run dev`. (2026-07-05)
-- [ ] **NEXT: Phase 1 Opus batch (object mode)** — Fable writes tasks/P1-*.md specs referencing the real Phase 0 code, then Workflow dispatch (implement → verify)
-- [ ] Phase 2 (edit mode), Phase 3 (ship demo)
+- [x] Phase 1 object mode built & verified — 5 primitives + PRIMITIVES registry, R/S modal operators (axis locks, numeric input), translate gizmo (picking-based handles), outliner, properties panel (editable transform, euler↔quat), Shift-A/Shift-D/X, header bar + Blender-dark theme. Workflow `p1-object-mode`: 7× Opus implement → adversarial verify; 1 fix round (P1-4 sidebar shrank canvas → floated panel). 55 unit tests, 12/12 e2e. (2026-07-05)
+- [ ] **NEXT: Phase 2 (edit mode)** — P2-1 (edit-mode state + select) and P2-7 (loop cut) are Fable-owned; rest is an Opus batch per the same spec→workflow protocol
+- [ ] Phase 3 (ship demo)
