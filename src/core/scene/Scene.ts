@@ -1,10 +1,17 @@
 import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
 import { EditModeState } from './EditMode';
+import type { Modifier } from '../modifiers/Modifier';
 
 export class SceneObject {
   transform = new Transform();
   visible = true;
+  /** Non-destructive modifier stack, evaluated top-to-bottom. */
+  readonly modifiers: Modifier[] = [];
+  /** Bump after ANY stack mutation (add/remove/reorder/param/enable). */
+  modifiersVersion = 0;
+
+  private evalCache: { key: string; mesh: EditableMesh } | null = null;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -12,6 +19,22 @@ export class SceneObject {
     public name: string,
     public mesh: EditableMesh,
   ) {}
+
+  /**
+   * The mesh the viewport shows in object mode: base mesh run through every
+   * enabled modifier. Cached until the base mesh or the stack changes.
+   * With an empty/disabled stack this is the base mesh itself (no copy).
+   */
+  evaluatedMesh(): EditableMesh {
+    const active = this.modifiers.filter((m) => m.enabled);
+    if (active.length === 0) return this.mesh;
+    const key = `${this.mesh.version}:${this.modifiersVersion}`;
+    if (this.evalCache?.key === key) return this.evalCache.mesh;
+    let result = this.mesh;
+    for (const mod of active) result = mod.apply(result);
+    this.evalCache = { key, mesh: result };
+    return result;
+  }
 }
 
 /**

@@ -6,6 +6,11 @@ import { runE2e } from './harness.mjs';
 
 runE2e(async (t) => {
   const mode = () => t.evaluate('window.__app.scene.mode');
+  // Canvas-relative points (the workspace layout shrinks the canvas).
+  const rect = await t.evaluate('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()');
+  const cv = (fx, fy) => [Math.round(rect.x + rect.w * fx), Math.round(rect.y + rect.h * fy)];
+  const [ccX, ccY] = cv(0.5, 0.48);   // canvas center (cube)
+  const [emptyX, emptyY] = cv(0.08, 0.12);
   const editSel = (expr) => t.evaluate(`(() => { const e = window.__app.scene.editMode; return e ? ${expr} : null; })()`);
 
   // --- P2-1: mode toggle, element modes, selection state ---
@@ -32,7 +37,7 @@ runE2e(async (t) => {
   // Object-mode keys must not leak through
   const posBefore = await t.evaluate('window.__app.scene.objects[0].transform.position.x');
   await t.key('g', 'KeyG');
-  await t.mouse('mouseMoved', 700, 300);
+  await t.mouse('mouseMoved', ccX + 60, ccY - 60);
   await t.sleep(120);
   const posAfter = await t.evaluate('window.__app.scene.objects[0].transform.position.x');
   t.check('G does not move the object while in edit mode', posBefore === posAfter);
@@ -82,11 +87,11 @@ runE2e(async (t) => {
 
   // Face mode: click the cube center → exactly one face selected.
   await t.key('3', 'Digit3');
-  await t.click(640, 380);
+  await t.click(ccX, ccY);
   t.check('face click selects one face', (await editSel('e.faces.size')) === 1);
 
   // Click empty space clears the whole element selection.
-  await t.click(100, 100);
+  await t.click(emptyX, emptyY);
   t.check('clicking empty space clears selection', (await editSel('e.faces.size')) === 0);
 
   // --- P2-3: G/R/S on selected elements ---
@@ -100,9 +105,9 @@ runE2e(async (t) => {
   // G: grab, move the pointer, LMB-confirm → vert 0 moved.
   const before = await vert0();
   await t.key('g', 'KeyG');
-  await t.mouse('mouseMoved', 780, 300);
+  await t.mouse('mouseMoved', ccX + 140, ccY - 60);
   await t.sleep(120);
-  await t.click(780, 300); // LMB confirms
+  await t.click(ccX + 140, ccY - 60); // LMB confirms
   const afterMove = await vert0();
   t.check('G moved vert 0', before.x !== afterMove.x || before.y !== afterMove.y || before.z !== afterMove.z);
 
@@ -170,11 +175,11 @@ runE2e(async (t) => {
 
   // E → drag the pointer → LMB confirm. Cap grows the mesh to 12 verts.
   await t.key('e', 'KeyE');
-  await t.mouse('mouseMoved', 640, 250);
+  await t.mouse('mouseMoved', ccX, ccY - 110);
   await t.sleep(120);
-  await t.mouse('mouseMoved', 640, 200);
+  await t.mouse('mouseMoved', ccX, ccY - 160);
   await t.sleep(120);
-  await t.click(640, 200); // LMB confirms
+  await t.click(ccX, ccY - 160); // LMB confirms
   t.check('extrude grows the cube to 12 verts',
     (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === 12);
   t.check('extrude selects the cap face', (await editSel('e.faces.size')) === 1);

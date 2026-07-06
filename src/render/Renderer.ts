@@ -25,7 +25,8 @@ interface GpuMesh {
   triangles: VertexArray;
   /** Unique-edge line segments (position-only), for wireframe shading. */
   edges: VertexArray;
-  version: number;
+  /** Composite cache key: which mesh (base vs evaluated) + its versions. */
+  version: string;
 }
 
 /** Viewport solid-shading mode; Z cycles matcap → wireframe → studio → matcap. */
@@ -94,13 +95,21 @@ export class Renderer {
     gl.cullFace(gl.BACK);
   }
 
-  private gpuMesh(obj: SceneObject): GpuMesh {
+  /**
+   * GPU buffers for what this object DISPLAYS: the modifier-evaluated mesh in
+   * object mode, the raw base mesh while it is being edited (modifiers are
+   * hidden during edit — predictable cage, no double-vision).
+   */
+  private gpuMesh(obj: SceneObject, scene: Scene): GpuMesh {
+    const editing = scene.editMode?.objectId === obj.id;
+    const mesh = editing ? obj.mesh : obj.evaluatedMesh();
+    const version = `${editing ? 'edit' : 'obj'}:${mesh.version}:${obj.modifiersVersion}`;
     const cached = this.gpuMeshes.get(obj.id);
-    if (cached && cached.version === obj.mesh.version) return cached;
+    if (cached && cached.version === version) return cached;
     cached?.triangles.dispose();
     cached?.edges.dispose();
 
-    const data = meshToRenderData(obj.mesh);
+    const data = meshToRenderData(mesh);
     const entry: GpuMesh = {
       triangles: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.trianglePositions },
@@ -109,7 +118,7 @@ export class Renderer {
       edges: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.edgePositions },
       ]),
-      version: obj.mesh.version,
+      version,
     };
     this.gpuMeshes.set(obj.id, entry);
     return entry;
@@ -146,19 +155,19 @@ export class Renderer {
       this.wirePass.begin(view, proj);
       for (const obj of visible) {
         this.wirePass.setObject(obj.transform.matrix());
-        this.gpuMesh(obj).edges.draw(gl.LINES);
+        this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
     } else if (this.shadingMode === 'studio') {
       this.studioPass.begin(view, proj);
       for (const obj of visible) {
         this.studioPass.setObject(obj.transform.matrix(), view);
-        this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else {
       this.meshPass.begin(view, proj);
       for (const obj of visible) {
         this.meshPass.setObject(obj.transform.matrix(), view);
-        this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     }
 
@@ -173,7 +182,7 @@ export class Renderer {
       this.outlinePass.beginMask();
       for (const obj of selected) {
         this.outlinePass.maskObject(viewProj.mul(obj.transform.matrix()));
-        this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
       this.outlinePass.endMask(canvas.width, canvas.height);
       this.outlinePass.renderEdges();
@@ -219,7 +228,7 @@ export class Renderer {
     for (const obj of scene.objects) {
       if (!obj.visible) continue;
       this.pickingPass.drawObject(viewProj.mul(obj.transform.matrix()), obj.id + 1);
-      this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+      this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
     }
     const gz = this.gizmoTransform(scene, camera);
     if (gz) {

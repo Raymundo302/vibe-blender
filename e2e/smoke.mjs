@@ -97,6 +97,13 @@ try {
   if (!booted) throw new Error('app never booted');
 
   const pos = () => evaluate('(() => { const p = window.__app.scene.objects[0].transform.position; return [p.x, p.y, p.z]; })()');
+  // Canvas-relative click points — the workspace layout means the canvas no
+  // longer spans the whole window, so never hardcode page coordinates.
+  const rect = await evaluate('(() => { const r = document.querySelector("canvas").getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()');
+  const cv = (fx, fy) => [Math.round(rect.x + rect.w * fx), Math.round(rect.y + rect.h * fy)];
+  const [bgX, bgY] = cv(0.08, 0.12);       // empty corner
+  const [cubeX, cubeY] = cv(0.5, 0.48);    // cube sits at canvas center
+  const [dragX, dragY] = [cubeX + 100, cubeY]; // move target
   const status = () => evaluate('document.getElementById("status").textContent');
 
   check('default cube exists and is selected',
@@ -106,30 +113,30 @@ try {
   check('cube starts at origin', start.every((v) => v === 0), start.join(','));
 
   // Click empty space deselects, click cube re-selects
-  await mouse('mouseMoved', 100, 100);
-  await mouse('mousePressed', 100, 100, 'left');
-  await mouse('mouseReleased', 100, 100, 'left');
+  await mouse('mouseMoved', bgX, bgY);
+  await mouse('mousePressed', bgX, bgY, 'left');
+  await mouse('mouseReleased', bgX, bgY, 'left');
   await sleep(150);
   check('click on background deselects', await evaluate('window.__app.scene.selection.size === 0'));
 
-  await mouse('mouseMoved', 640, 380);
-  await mouse('mousePressed', 640, 380, 'left');
-  await mouse('mouseReleased', 640, 380, 'left');
+  await mouse('mouseMoved', cubeX, cubeY);
+  await mouse('mousePressed', cubeX, cubeY, 'left');
+  await mouse('mouseReleased', cubeX, cubeY, 'left');
   await sleep(150);
   check('click on cube selects it', await evaluate('window.__app.scene.selection.size === 1'));
 
   // G → move mouse → status shows modal state → LMB confirms
   await key('g', 'KeyG');
   await sleep(100);
-  await mouse('mouseMoved', 740, 380);
+  await mouse('mouseMoved', dragX, dragY);
   await sleep(100);
   check('G starts Move operator', (await status()).startsWith('Move'), await status());
 
   const during = await pos();
   check('pointer move translates the cube', Math.abs(during[0]) + Math.abs(during[1]) + Math.abs(during[2]) > 0.1, during.map((v) => v.toFixed(2)).join(','));
 
-  await mouse('mousePressed', 740, 380, 'left');
-  await mouse('mouseReleased', 740, 380, 'left');
+  await mouse('mousePressed', dragX, dragY, 'left');
+  await mouse('mouseReleased', dragX, dragY, 'left');
   await sleep(100);
   const confirmed = await pos();
   check('LMB confirms the move', JSON.stringify(confirmed) === JSON.stringify(during), '');
@@ -148,7 +155,7 @@ try {
 
   // G then Escape cancels
   await key('g', 'KeyG');
-  await mouse('mouseMoved', 500, 300);
+  await mouse('mouseMoved', cubeX - 80, cubeY - 60);
   await sleep(100);
   await key('Escape', 'Escape');
   await sleep(100);

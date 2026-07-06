@@ -5,7 +5,7 @@ import { OrbitCamera } from './camera/OrbitCamera';
 import { UndoStack } from './core/undo/UndoStack';
 import { makeCube } from './core/mesh/primitives';
 import { InputManager } from './input/InputManager';
-import { UiShell } from './ui/shell';
+import { WorkspaceManager, type EditorFactory, type WorkspaceConfig } from './ui/workspace';
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesPanel } from './ui/properties';
 import { Topbar } from './ui/topbar';
@@ -19,6 +19,7 @@ import type { OperatorContext } from './core/operator/Operator';
 import './ui/theme.css';
 
 const canvas = document.getElementById('viewport') as HTMLCanvasElement;
+const viewportWrap = canvas.parentElement as HTMLElement;
 const statusEl = document.getElementById('status') as HTMLDivElement;
 
 const ctx = createGlContext(canvas);
@@ -143,7 +144,6 @@ new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, 
 // First-visit splash inside #viewport-wrap. It auto-dismisses on the first canvas
 // pointer event or any key (listeners below); dismiss() is idempotent so these
 // fire harmlessly for the rest of the session.
-const viewportWrap = canvas.parentElement as HTMLElement;
 const splash = new Splash(viewportWrap);
 const dismissSplash = (): void => splash.dismiss();
 canvas.addEventListener('pointerdown', dismissSplash);
@@ -156,27 +156,80 @@ idleHint.id = 'idle-hint';
 idleHint.textContent = 'F1 — shortcuts';
 viewportWrap.append(idleHint);
 
-const shell = new UiShell();
-shell.addPanel(new OutlinerPanel(scene, undo));
-shell.addPanel(new PropertiesPanel(scene, undo));
-// Float the panel over the viewport's right edge rather than docking it, so the
-// sidebar doesn't shrink the canvas and invalidate viewport-space coordinates
-// (picking + e2e). See the .outliner-floating rule in outliner.ts for why.
-shell.sidebar.classList.add('outliner-floating');
+// --- Workspaces (P4-1) -------------------------------------------------------
+// The screen is a grid of areas, each hosting a switchable editor. The 3D
+// viewport is a singleton editor wrapping #viewport-wrap (the WebGL canvas
+// survives reparenting); panels are created fresh per area.
+const editorFactories: EditorFactory[] = [
+  {
+    type: 'viewport',
+    title: '3D Viewport',
+    singleton: true,
+    create: () => ({ element: viewportWrap, update: () => {} }),
+  },
+  {
+    type: 'outliner',
+    title: 'Outliner',
+    create: () => {
+      const panel = new OutlinerPanel(scene, undo);
+      return wrapPanel('Outliner', panel);
+    },
+  },
+  {
+    type: 'properties',
+    title: 'Properties',
+    create: () => {
+      const panel = new PropertiesPanel(scene, undo);
+      return wrapPanel('Properties', panel);
+    },
+  },
+];
 
-// The header bar is not a sidebar Panel — it fills #topbar and is updated
-// directly in the frame loop alongside shell.update().
+/** Adapt a Panel (element + update) into an editor instance with a title bar. */
+function wrapPanel(title: string, panel: { element: HTMLElement; update(): void }) {
+  const el = document.createElement('div');
+  el.className = 'wsp-panel-host';
+  const h = document.createElement('h3');
+  h.className = 'panel-title';
+  h.textContent = title;
+  el.append(h, panel.element);
+  return { element: el, update: () => panel.update() };
+}
+
+const DEFAULT_WORKSPACES: WorkspaceConfig[] = [
+  {
+    name: 'Layout',
+    columns: [
+      { size: 0.78, areas: [{ editor: 'viewport', size: 1 }] },
+      { size: 0.22, areas: [{ editor: 'outliner', size: 0.38 }, { editor: 'properties', size: 0.62 }] },
+    ],
+  },
+  {
+    name: 'Modeling',
+    columns: [
+      { size: 0.84, areas: [{ editor: 'viewport', size: 1 }] },
+      { size: 0.16, areas: [{ editor: 'properties', size: 1 }] },
+    ],
+  },
+];
+
+const workspaceRoot = document.getElementById('workspace-root') as HTMLElement;
+const workspaces = new WorkspaceManager(workspaceRoot, editorFactories, DEFAULT_WORKSPACES);
+
+// The header bar fills #topbar and is updated directly in the frame loop
+// alongside workspaces.update().
 const topbar = new Topbar(scene, renderer, {
   saveScene, openScene,
   exportObj: exportObjFile,
   importObj: importObjFile,
   toggleHelp: () => helpOverlay.toggle(),
 });
+topbar.mountTabs(workspaces.createTabs());
 
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, shell,
+  scene, camera, undo, renderer, workspaces,
   io: {
     serialize: () => serializeScene(scene, camera),
     apply: (json: string) => loadSceneJson(json),
@@ -187,7 +240,7 @@ const topbar = new Topbar(scene, renderer, {
 
 function frame(): void {
   renderer.render(scene, camera);
-  shell.update();
+  workspaces.update();
   topbar.update();
   requestAnimationFrame(frame);
 }

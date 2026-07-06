@@ -1,4 +1,4 @@
-import type { Panel } from './shell';
+import type { Panel } from './panel';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { Vec3 } from '../core/math/vec3';

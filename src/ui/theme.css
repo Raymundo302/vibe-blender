@@ -305,3 +305,43 @@
   border: 2px solid var(--vb-panel);
 }
 #sidebar::-webkit-scrollbar-thumb:hover { background: #5a5a5a; }
+
+/* --- Workspaces (P4-1) --- */
+.wsp-col { display: flex; flex-direction: column; flex-basis: 0; min-width: 120px; min-height: 0; }
+.wsp-area {
+  display: flex; flex-direction: column; flex-basis: 0; min-height: 80px; min-width: 0;
+  background: var(--vb-panel); border: 1px solid var(--vb-border); border-radius: 4px;
+  overflow: hidden; margin: 2px;
+}
+.wsp-area-header {
+  display: flex; align-items: center; gap: 6px; padding: 2px 6px;
+  background: var(--vb-bg, #1d1d1d); border-bottom: 1px solid var(--vb-border);
+  flex: none;
+}
+.wsp-area-select {
+  background: var(--vb-panel); color: var(--vb-text); border: 1px solid var(--vb-border);
+  border-radius: 3px; font-size: 11px; padding: 1px 4px; max-width: 130px;
+}
+.wsp-area-full-btn {
+  margin-left: auto; background: none; border: none; color: var(--vb-muted);
+  cursor: pointer; font-size: 12px; padding: 0 4px;
+}
+.wsp-area-full-btn:hover { color: var(--vb-text); }
+.wsp-area-body { flex: 1; min-height: 0; position: relative; overflow-y: auto; }
+.wsp-area-fullscreen {
+  position: absolute; inset: 0; z-index: 40; margin: 0; border-radius: 0;
+}
+.wsp-panel-host { padding: 0; }
+.wsp-gutter { flex: none; background: transparent; }
+.wsp-gutter-v { width: 5px; cursor: col-resize; }
+.wsp-gutter-h { height: 5px; cursor: row-resize; }
+.wsp-gutter:hover { background: var(--vb-accent, #fe730f); opacity: 0.4; }
+.wsp-tabs { display: flex; gap: 2px; margin-left: 14px; }
+.wsp-tab {
+  background: none; border: 1px solid transparent; color: var(--vb-muted);
+  font-size: 11px; padding: 2px 10px; border-radius: 10px 10px 0 0; cursor: pointer;
+}
+.wsp-tab:hover { color: var(--vb-text); }
+.wsp-tab-active {
+  background: var(--vb-panel); border-color: var(--vb-border); color: var(--vb-text);
+}

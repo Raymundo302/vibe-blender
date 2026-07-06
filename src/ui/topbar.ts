@@ -72,6 +72,13 @@ export class Topbar {
     this.update();
   }
 
+  /** Insert the workspace tab strip right after the app title. */
+  mountTabs(tabs: HTMLElement): void {
+    const root = document.getElementById('topbar') as HTMLElement;
+    const title = root.querySelector('.topbar-title');
+    title?.after(tabs);
+  }
+
   private static makeButton(label: string, action: string, onClick: () => void): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.className = 'topbar-btn';

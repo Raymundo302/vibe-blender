@@ -118,3 +118,21 @@ undo through everything). Workflow `p2-edit-mode`: 6 Opus implement+verify pairs
 https://raymundo302.github.io/vibe-blender/ (source: https://github.com/Raymundo302/vibe-blender,
 Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests,
 3 e2e suites. Workflow `p3-ship-demo`: 4 Opus implement+verify pairs, 0 fix rounds.
+
+### Phase 4 — Workspaces & Modifiers (night session 2026-07-05→06)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P4-1 | Workspace/area system: tabs, switchable editors, viewport singleton swap, fullscreen, gutter resize, localStorage persistence | fable | — | verified |
+| P4-2 | Modifier core: stack on SceneObject, evaluated-mesh cache, ModifierStackCommand/ApplyModifierCommand, renderer integration | fable | — | verified |
+| P4-3 | Properties editor: vertical tab strip + Object tab (transform, rename, visibility) | opus | P4-1 | pending |
+| P4-4 | Modifier tab UI (add/remove/toggle/apply/params) + sceneJson v2 with modifiers | opus | P4-2,3 | pending |
+| P4-5 | Mirror + Array modifiers | opus | P4-2 | pending |
+| P4-6 | Subdivision Surface modifier (Catmull-Clark) | opus | P4-2 | pending |
+
+### Phase 5 — Modeling tools (night session)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P5-1 | Edit-mode delete UX: Delete-key alias for X menu, dissolve verts/edges | opus | — | pending |
+| P5-2 | Bridge edge loops (two selected loops → connecting quads) | opus | — | pending |
+| P5-3 | Bevel edges (Ctrl+B, modal width) | opus | — | pending |
+| P5-4 | F fill face, subdivide selection, frame selection (period) | opus | — | pending |
