@@ -111,11 +111,15 @@ async function main(testFn, url) {
       if (!ok) failures++;
     },
 
-    /** Wait until an evaluated expression is truthy (app boot, async UI). */
+    /** Wait until an evaluated expression is truthy (app boot, async UI).
+     * Evaluate errors are retried, not thrown — Runtime.evaluate fails
+     * transiently while a Page.reload navigation is in flight. */
     async until(expression, timeoutMs = 10000) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        if (await t.evaluate(expression)) return true;
+        try {
+          if (await t.evaluate(expression)) return true;
+        } catch { /* navigation in flight — retry */ }
         await t.sleep(200);
       }
       return false;
@@ -125,6 +129,11 @@ async function main(testFn, url) {
   try {
     t.check('app boots and exposes __app', await t.until('!!window.__app'));
     await testFn(t);
+  } catch (err) {
+    // A suite abort must read as a failure — without this, an exception
+    // mid-suite skips remaining checks and still prints "All passed".
+    console.error(`SUITE ABORTED: ${err.message}`);
+    failures++;
   } finally {
     console.log(failures === 0 ? '\nAll e2e checks passed.' : `\n${failures} e2e check(s) FAILED.`);
     cleanup();
