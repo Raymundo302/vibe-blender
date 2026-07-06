@@ -750,4 +750,38 @@ runE2e(async (t) => {
   const off0a = await vco(0), off1a = await vco(1);
   t.check('proportional off: selected vert moves', dist(off0a, off0b) > 1e-4);
   t.check('proportional off: neighbour stays put', dist(off1a, off1b) < 1e-6);
+
+  // --- P7-2: separate selection (P) ---
+  // Reload for a pristine single-cube scene (earlier checks left the mesh moved).
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(200);
+
+  await t.key('Tab', 'Tab');           // enter edit mode on the cube
+  t.check('P7-2: entered edit mode', (await mode()) === 'edit');
+  await t.key('3', 'Digit3');          // face select mode
+  // Select exactly one face deterministically.
+  await t.evaluate(`(() => {
+    const e = window.__app.scene.editMode, m = window.__app.scene.editObject.mesh;
+    e.faces.clear(); e.faces.add([...m.faces.keys()][0]); e.touch();
+  })()`);
+  const objCountBeforeSep = await t.evaluate('window.__app.scene.objects.length');
+
+  await t.key('p', 'KeyP');            // separate
+  t.check('P adds a second object to the outliner',
+    (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeSep + 1);
+  t.check('stays in edit mode on the source', (await mode()) === 'edit');
+  t.check('source mesh drops to 5 faces',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 5);
+  t.check('new object is named <name>.sep',
+    await t.evaluate(`window.__app.scene.objects.at(-1).name.endsWith('.sep')`));
+  t.check('new object has 4 verts / 1 face',
+    await t.evaluate('window.__app.scene.objects.at(-1).mesh.verts.size') === 4 &&
+    await t.evaluate('window.__app.scene.objects.at(-1).mesh.faces.size') === 1);
+
+  await t.key('z', 'KeyZ', 2);         // Ctrl+Z
+  t.check('Ctrl+Z removes the new object',
+    (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeSep);
+  t.check('Ctrl+Z restores the source to 6 faces',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 6);
 });

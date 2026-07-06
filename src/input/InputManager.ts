@@ -19,6 +19,7 @@ import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
+import { SeparateCommand } from '../core/undo/separateCommand';
 
 /**
  * Blender-style duplicate name: strip a trailing `.NNN`, then pick the lowest
@@ -587,6 +588,30 @@ export class InputManager {
     if (key === 'm' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       mergeAtCenter(edit, mesh, this.ctx.undo, (t) => this.ctx.setStatus(t));
+      return;
+    }
+    // P: separate the selected faces into a new object (Blender's Separate →
+    // Selection). Face mode only; an empty selection or the whole mesh is a
+    // no-op with a status hint (the whole-mesh guard avoids an empty source).
+    if (key === 'p' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (edit.elementMode !== 'face') {
+        this.ctx.setStatus('Separate: face mode only');
+        return;
+      }
+      const faceIds = [...edit.faces].filter((id) => mesh.faces.has(id));
+      if (faceIds.length === 0) {
+        this.ctx.setStatus('Separate: select one or more faces');
+        return;
+      }
+      if (faceIds.length === mesh.faces.size) {
+        this.ctx.setStatus("Separate: can't separate the whole mesh");
+        return;
+      }
+      const cmd = SeparateCommand.perform('Separate', scene);
+      if (!cmd) return; // guards above already covered the no-op cases
+      this.ctx.undo.push(cmd);
+      this.ctx.setStatus(`Separated ${faceIds.length} face(s) to a new object`);
       return;
     }
   }
