@@ -102,7 +102,7 @@ undo through everything). Workflow `p2-edit-mode`: 6 Opus implement+verify pairs
 | P3-2 | Scene save/load (JSON) | opus | P0-8 | verified |
 | P3-3 | Shading modes: matcap / wireframe / flat+studio-light toggle | opus | P0-6 | verified |
 | P3-4 | Shortcut cheat-sheet overlay, splash, polish pass | opus | P1-7 | verified |
-| P3-5 | Static build + deploy (link for video description) | fable | all | pending |
+| P3-5 | Static build + deploy (link for video description) | fable | all | verified |
 
 ## Dispatch Protocol (per batch)
 1. Fable writes `tasks/<ID>.md` specs for the batch — exact file paths, interfaces to
@@ -113,3 +113,8 @@ undo through everything). Workflow `p2-edit-mode`: 6 Opus implement+verify pairs
    their status here. Every worker prompt includes: *"if the spec is ambiguous or
    wrong, stop and report rather than improvising."*
 4. Fable reviews integration, commits the batch, updates this file, Notion checkpoint.
+
+**Phase 3 complete 2026-07-05 — SHIPPED.** Live at
+https://raymundo302.github.io/vibe-blender/ (source: https://github.com/Raymundo302/vibe-blender,
+Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests,
+3 e2e suites. Workflow `p3-ship-demo`: 4 Opus implement+verify pairs, 0 fix rounds.
