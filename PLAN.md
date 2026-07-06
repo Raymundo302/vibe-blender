@@ -101,7 +101,7 @@ undo through everything). Workflow `p2-edit-mode`: 6 Opus implement+verify pairs
 | P3-1 | OBJ export + import | opus | P0-4 | verified |
 | P3-2 | Scene save/load (JSON) | opus | P0-8 | verified |
 | P3-3 | Shading modes: matcap / wireframe / flat+studio-light toggle | opus | P0-6 | verified |
-| P3-4 | Shortcut cheat-sheet overlay, splash, polish pass | opus | P1-7 | built |
+| P3-4 | Shortcut cheat-sheet overlay, splash, polish pass | opus | P1-7 | verified |
 | P3-5 | Static build + deploy (link for video description) | fable | all | pending |
 
 ## Dispatch Protocol (per batch)
