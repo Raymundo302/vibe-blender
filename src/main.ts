@@ -9,6 +9,7 @@ import { WorkspaceManager, type EditorFactory, type WorkspaceConfig } from './ui
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesEditor } from './ui/propertiesEditor';
 import './ui/modifierTab'; // side-effect: registers the Modifiers properties tab
+import './core/modifiers/builtins'; // side-effect: registers Mirror + Array modifiers
 import { Topbar } from './ui/topbar';
 import { HelpOverlay } from './ui/helpOverlay';
 import { Splash } from './ui/splash';

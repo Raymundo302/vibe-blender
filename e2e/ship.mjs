@@ -447,4 +447,87 @@ runE2e(async (t) => {
     Array.isArray(v2.objects[0].modifiers));
 
   await t.screenshot('/tmp/p4-4-modifiers.png');
+
+  // --- P4-5: Mirror + Array modifiers ---
+  // Clean single-Cube scene, cube active, Modifiers tab open.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`window.__app.scene.selectOnly(window.__app.scene.objects[0].id)`);
+  await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="modifier"]')?.click()`);
+  await t.sleep(140);
+
+  // Offset the base mesh in +X so the mirrored copy is distinct (visible mirror).
+  await t.evaluate(`(() => {
+    const mesh = window.__app.scene.activeObject.mesh;
+    for (const v of [...mesh.verts.values()]) mesh.setVertCo(v.id, new v.co.constructor(v.co.x + 3, v.co.y, v.co.z));
+  })()`);
+
+  const p45mods = () => t.evaluate('window.__app.scene.activeObject.modifiers.length');
+  const p45base = () => t.evaluate('window.__app.scene.activeObject.mesh.verts.size');
+  const p45eval = () => t.evaluate('window.__app.scene.activeObject.evaluatedMesh().verts.size');
+  const addMod = async (type) => {
+    await t.evaluate(`(() => {
+      const sel = document.querySelector('.modifier-add-select');
+      sel.value = ${JSON.stringify(type)};
+      sel.dispatchEvent(new Event('change'));
+    })()`);
+    await t.sleep(160);
+  };
+
+  // Add Mirror via the dropdown → evaluated mesh doubles (8 → 16), base stays 8.
+  await addMod('mirror');
+  t.check('Mirror added to the stack', (await p45mods()) === 1);
+  t.check('Mirror: evaluated 16 verts while base stays 8',
+    (await p45eval()) === 16 && (await p45base()) === 8);
+
+  // Toggle the Mirror off → evaluated collapses back to the base mesh (8).
+  await t.evaluate(`(() => {
+    const cb = document.querySelector('.modifier-entry .modifier-enable');
+    cb.checked = false; cb.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(140);
+  t.check('disabling Mirror → evaluated equals base (8)', (await p45eval()) === 8);
+  // Re-enable.
+  await t.evaluate(`(() => {
+    const cb = document.querySelector('.modifier-entry .modifier-enable');
+    cb.checked = true; cb.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(140);
+  t.check('re-enabling Mirror → evaluated 16 again', (await p45eval()) === 16);
+
+  // Add Array on top → default count 2 doubles again: 16 → 32.
+  await addMod('array');
+  t.check('Array added (stack = 2)', (await p45mods()) === 2);
+  t.check('Mirror+Array evaluated multiplies (16 → 32)', (await p45eval()) === 32);
+
+  // Save/load round-trips the modifier stack (v2 format).
+  const p45saved = await t.evaluate('window.__app.io.serialize()');
+  const p45json = JSON.parse(p45saved);
+  t.check('serialized object carries both modifiers',
+    p45json.objects[0].modifiers.length === 2 &&
+    p45json.objects[0].modifiers[0].type === 'mirror' &&
+    p45json.objects[0].modifiers[1].type === 'array');
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(p45saved)})`);
+  await t.sleep(140);
+  await t.evaluate(`window.__app.scene.selectOnly(window.__app.scene.objects[0].id)`);
+  t.check('reload restores the 2-modifier stack', (await p45mods()) === 2);
+  t.check('reloaded evaluated mesh still 32 verts', (await p45eval()) === 32);
+  await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="modifier"]')?.click()`);
+  await t.sleep(140);
+
+  // Apply the first modifier (Mirror) → base grows 8 → 16, stack shrinks 2 → 1.
+  await t.evaluate(`(() => {
+    const btn = document.querySelector('.modifier-entry .modifier-apply');
+    btn.click();
+  })()`);
+  await t.sleep(160);
+  t.check('Apply grows the base mesh (8 → 16)', (await p45base()) === 16);
+  t.check('Apply shrinks the stack (2 → 1)', (await p45mods()) === 1);
+
+  // Ctrl+Z restores both the base mesh and the stack.
+  await t.key('z', 'KeyZ', 2);
+  await t.sleep(160);
+  t.check('Ctrl+Z restores base mesh (16 → 8)', (await p45base()) === 8);
+  t.check('Ctrl+Z restores the stack (1 → 2)', (await p45mods()) === 2);
+
+  await t.screenshot('/tmp/p4-5-mirror-array.png');
 });
