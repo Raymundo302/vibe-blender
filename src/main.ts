@@ -12,6 +12,7 @@ import './ui/modifierTab'; // side-effect: registers the Modifiers properties ta
 import './core/modifiers/builtins'; // side-effect: registers Mirror + Array modifiers
 import { Topbar } from './ui/topbar';
 import { HelpOverlay } from './ui/helpOverlay';
+import { NPanel } from './ui/nPanel';
 import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { exportObj, parseObj } from './io/obj';
@@ -141,7 +142,11 @@ function importObjFile(): void {
 // whole window while open; InputManager swallows the keyboard while it is up.
 const helpOverlay = new HelpOverlay(document.body);
 
-new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay);
+// Viewport N-panel (P6-2): a slim Item sidebar overlaid on the viewport's right
+// edge, toggled with N. Lives inside #viewport-wrap, not a workspace area.
+const nPanel = new NPanel(viewportWrap, scene, undo);
+
+new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
 
 // First-visit splash inside #viewport-wrap. It auto-dismisses on the first canvas
 // pointer event or any key (listeners below); dismiss() is idempotent so these
@@ -231,7 +236,7 @@ topbar.mountTabs(workspaces.createTabs());
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, workspaces,
+  scene, camera, undo, renderer, workspaces, nPanel,
   io: {
     serialize: () => serializeScene(scene, camera),
     apply: (json: string) => loadSceneJson(json),
@@ -244,6 +249,7 @@ function frame(): void {
   renderer.render(scene, camera);
   workspaces.update();
   topbar.update();
+  nPanel.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

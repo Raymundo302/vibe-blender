@@ -590,4 +590,70 @@ runE2e(async (t) => {
   t.check('scene file persists shadeSmooth',
     await t.evaluate(`JSON.parse(window.__app.io.serialize()).objects[0].shadeSmooth === true`));
   await t.evaluate(`(() => { const cb = document.querySelector('[data-action="shade-smooth"]'); cb.checked = false; cb.dispatchEvent(new Event('change')); })()`);
+
+  // --- P6-2: N-panel (viewport overlay sidebar) ---
+  // Clean single-Cube scene, cube active, object mode.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`(() => { const s = window.__app.scene; if (s.editMode) s.exitEditMode(); s.selectOnly(s.objects[0].id); })()`);
+  await t.sleep(100);
+
+  t.check('N-panel starts hidden', (await t.evaluate(`!document.querySelector('.n-panel')`)));
+
+  // N toggles the panel on.
+  await t.key('n', 'KeyN');
+  await t.sleep(120);
+  t.check('N shows the .n-panel overlay',
+    await t.evaluate(`(() => { const p = document.querySelector('.n-panel'); return !!p && p.style.display !== 'none'; })()`));
+  t.check('N-panel shows the active object name',
+    await t.evaluate(`document.querySelector('.n-panel .n-panel-name').textContent === 'Cube'`));
+
+  // Location edit via the N-panel moves the object; Ctrl+Z undoes it.
+  const nLocX = () => t.evaluate('window.__app.scene.activeObject.transform.position.x');
+  const nBeforeX = await nLocX();
+  await t.evaluate(`(() => {
+    const input = document.querySelector('.n-panel .properties-input');
+    input.value = '3';
+    input.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(120);
+  t.check('N-panel Location X edit moves the object (X = 3)', Math.abs((await nLocX()) - 3) < 1e-6);
+  await t.key('z', 'KeyZ', 2); // ctrl+z
+  await t.sleep(120);
+  t.check('Ctrl+Z undoes the N-panel location edit', Math.abs((await nLocX()) - nBeforeX) < 1e-6);
+
+  // Dimensions track the evaluated mesh: scale the cube 2x → world dims 4.
+  await t.evaluate(`(() => {
+    const o = window.__app.scene.activeObject;
+    o.transform = o.transform.withScale(new o.transform.scale.constructor(2, 2, 2));
+  })()`);
+  await t.sleep(120);
+  const nDims = await t.evaluate(`[...document.querySelectorAll('.n-panel .n-panel-value')].slice(0, 3).map((s) => parseFloat(s.textContent))`);
+  t.check('Dimensions update after a 2x scale (4 / 4 / 4)',
+    nDims.length === 3 && nDims.every((d) => Math.abs(d - 4) < 1e-3), nDims.join(', '));
+  // Restore scale so the suite ends clean.
+  await t.evaluate(`(() => {
+    const o = window.__app.scene.activeObject;
+    o.transform = o.transform.withScale(new o.transform.scale.constructor(1, 1, 1));
+  })()`);
+
+  // Edit mode: the panel shows the element counts line.
+  await t.key('Tab', 'Tab');
+  await t.sleep(120);
+  t.check('edit mode enters', (await t.evaluate('window.__app.scene.mode')) === 'edit');
+  t.check('N-panel shows edit-mesh counts (Verts 8 · Edges 12 · Faces 6)',
+    await t.evaluate(`document.querySelector('.n-panel .n-panel-counts').textContent === 'Verts 8 · Edges 12 · Faces 6'`));
+  await t.key('Tab', 'Tab'); // back to object mode
+  await t.sleep(100);
+
+  // N while G is modal must NOT toggle the panel — the key routes to the operator.
+  await t.key('g', 'KeyG');
+  await t.sleep(80);
+  await t.key('n', 'KeyN'); // should be swallowed by the modal Move operator
+  await t.sleep(80);
+  t.check('N during a modal G op does not hide the panel',
+    await t.evaluate(`(() => { const p = document.querySelector('.n-panel'); return !!p && p.style.display !== 'none'; })()`));
+  await t.key('Escape', 'Escape'); // cancel the Move
+  await t.sleep(80);
+
+  await t.screenshot('/tmp/p6-2-npanel.png');
 });

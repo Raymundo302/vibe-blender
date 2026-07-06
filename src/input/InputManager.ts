@@ -62,6 +62,8 @@ export class InputManager {
     /** Shortcut-overlay controller (F1). Structural type keeps InputManager
      *  decoupled from the HelpOverlay class. */
     private readonly help: { isOpen(): boolean; toggle(): void; close(): void },
+    /** Viewport N-panel (N key). Structural type keeps this decoupled from NPanel. */
+    private readonly nPanel: { toggle(): void },
   ) {
     canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -266,6 +268,16 @@ export class InputManager {
       e.preventDefault();
       frameSelection(this.ctx);
       this.ctx.setStatus('Framed selection');
+      return;
+    }
+
+    // N: toggle the viewport N-panel (Item sidebar). Works in both object and
+    // edit mode; placed before the edit-mode branch so it applies to both. A
+    // modal op (G/R/S/...) already consumed this key in the activeOp branch
+    // above and returned, so N never toggles the panel mid-operator.
+    if (key === 'n' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      e.preventDefault();
+      this.nPanel.toggle();
       return;
     }
 

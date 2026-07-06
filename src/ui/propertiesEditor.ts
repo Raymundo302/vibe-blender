@@ -125,6 +125,148 @@ interface FieldGroup {
 }
 
 /**
+ * The editable Location / Rotation / Scale block of the Object tab, extracted so
+ * the viewport N-panel (P6-2) can reuse the exact same undo semantics (one
+ * TransformCommand per commit, euler↔quat rotation, skip-rewrites-while-editing)
+ * instead of duplicating them. Owns a self-contained `element` holding the three
+ * groups; always reads/writes `scene.activeObject`. update() must be called each
+ * frame by the host (the Object tab guards it behind its own focus check; the
+ * N-panel calls it directly — hence the internal skip-while-focused).
+ */
+export class TransformFields {
+  readonly element: HTMLDivElement;
+  private readonly location: FieldGroup;
+  private readonly rotation: FieldGroup;
+  private readonly scale: FieldGroup;
+  /** Object id shown last frame; -1 sentinel means "force a rewrite". */
+  private lastActiveId: number | null = -1 as unknown as number;
+
+  constructor(
+    private readonly scene: Scene,
+    private readonly undo: UndoStack,
+  ) {
+    this.element = document.createElement('div');
+    this.element.className = 'transform-fields';
+    this.location = this.makeGroup('Location', 0.1, 'location');
+    this.rotation = this.makeGroup('Rotation', 1, 'rotation');
+    this.scale = this.makeGroup('Scale', 0.1, 'scale');
+  }
+
+  private makeGroup(
+    title: string,
+    step: number,
+    kind: 'location' | 'rotation' | 'scale',
+  ): FieldGroup {
+    const group = document.createElement('div');
+    group.className = 'properties-group';
+
+    const heading = document.createElement('div');
+    heading.className = 'properties-group-title';
+    heading.textContent = title;
+    group.appendChild(heading);
+
+    const row = document.createElement('div');
+    row.className = 'properties-row';
+
+    const inputs = (['X', 'Y', 'Z'] as const).map((axis) => {
+      const field = document.createElement('div');
+      field.className = 'properties-field';
+
+      const label = document.createElement('span');
+      label.className = 'properties-axis';
+      label.textContent = axis;
+
+      const input = document.createElement('input');
+      input.className = 'properties-input';
+      input.type = 'number';
+      input.step = String(step);
+      input.addEventListener('change', () => this.commit(kind));
+
+      field.append(label, input);
+      row.appendChild(field);
+      return input;
+    }) as [HTMLInputElement, HTMLInputElement, HTMLInputElement];
+
+    group.appendChild(row);
+    this.element.appendChild(group);
+    return { inputs };
+  }
+
+  /** Refresh the fields from the active object (no-op while the user is editing). */
+  update(): void {
+    const obj = this.scene.activeObject;
+    if (!obj) { this.lastActiveId = null; return; }
+    const switched = obj.id !== this.lastActiveId;
+    this.lastActiveId = obj.id;
+    if (!switched && this.isFocused()) return;
+
+    this.writeGroup(this.location, obj.transform.position, 3);
+    const e = obj.transform.rotation.toEulerXYZ();
+    this.writeInput(this.rotation.inputs[0], e.x * DEG, 1);
+    this.writeInput(this.rotation.inputs[1], e.y * DEG, 1);
+    this.writeInput(this.rotation.inputs[2], e.z * DEG, 1);
+    this.writeGroup(this.scale, obj.transform.scale, 3);
+  }
+
+  private isFocused(): boolean {
+    const active = document.activeElement;
+    return active instanceof HTMLInputElement && this.element.contains(active);
+  }
+
+  private writeGroup(group: FieldGroup, v: Vec3, decimals: number): void {
+    this.writeInput(group.inputs[0], v.x, decimals);
+    this.writeInput(group.inputs[1], v.y, decimals);
+    this.writeInput(group.inputs[2], v.z, decimals);
+  }
+
+  /** Assign only when the formatted string changed (avoids caret churn). */
+  private writeInput(input: HTMLInputElement, value: number, decimals: number): void {
+    const s = value.toFixed(decimals);
+    if (input.value !== s) input.value = s;
+  }
+
+  /** Read a group's three inputs; returns null if any value is not finite. */
+  private readGroup(group: FieldGroup): Vec3 | null {
+    const x = parseFloat(group.inputs[0].value);
+    const y = parseFloat(group.inputs[1].value);
+    const z = parseFloat(group.inputs[2].value);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return new Vec3(x, y, z);
+  }
+
+  private commit(kind: 'location' | 'rotation' | 'scale'): void {
+    const obj = this.scene.activeObject;
+    if (!obj) return;
+    const before = obj.transform;
+
+    let after;
+    if (kind === 'location') {
+      const p = this.readGroup(this.location);
+      if (!p) return this.restore();
+      after = before.withPosition(p);
+    } else if (kind === 'scale') {
+      const s = this.readGroup(this.scale);
+      if (!s) return this.restore();
+      after = before.withScale(s);
+    } else {
+      const deg = this.readGroup(this.rotation);
+      if (!deg) return this.restore();
+      after = before.withRotation(Quat.fromEulerXYZ(deg.x * RAD, deg.y * RAD, deg.z * RAD));
+    }
+
+    // Undo convention: apply the final state first, then push the command.
+    obj.transform = after;
+    this.undo.push(new TransformCommand('Set Transform', [{ object: obj, before, after }]));
+  }
+
+  /** Discard bad input by forcing the next refresh to re-display current values. */
+  private restore(): void {
+    this.lastActiveId = -1 as unknown as number;
+    this.update();
+  }
+}
+
+/**
  * Object tab: name (rename → RenameObjectCommand), visibility checkbox, and the
  * live-editable Location / Rotation / Scale transform fields. Behavior is a
  * straight move of the old PropertiesPanel — same undo semantics, same
@@ -137,9 +279,7 @@ class ObjectTab {
   private readonly nameInput: HTMLInputElement;
   private readonly visibleInput: HTMLInputElement;
   private smoothInput!: HTMLInputElement;
-  private readonly location: FieldGroup;
-  private readonly rotation: FieldGroup;
-  private readonly scale: FieldGroup;
+  private readonly transformFields: TransformFields;
 
   /** Active object id shown last frame; -1 sentinel means "nothing shown". */
   private lastActiveId: number | null = -1 as unknown as number;
@@ -202,52 +342,12 @@ class ObjectTab {
     smoothRow.append(this.smoothInput, smoothLabel);
     this.body.append(smoothRow);
 
-    this.location = this.makeGroup('Location', 0.1, 'location');
-    this.rotation = this.makeGroup('Rotation', 1, 'rotation');
-    this.scale = this.makeGroup('Scale', 0.1, 'scale');
+    // Editable Location / Rotation / Scale — shared with the viewport N-panel.
+    this.transformFields = new TransformFields(this.scene, this.undo);
+    this.body.appendChild(this.transformFields.element);
 
     container.append(this.empty, this.body);
     this.update();
-  }
-
-  private makeGroup(
-    title: string,
-    step: number,
-    kind: 'location' | 'rotation' | 'scale',
-  ): FieldGroup {
-    const group = document.createElement('div');
-    group.className = 'properties-group';
-
-    const heading = document.createElement('div');
-    heading.className = 'properties-group-title';
-    heading.textContent = title;
-    group.appendChild(heading);
-
-    const row = document.createElement('div');
-    row.className = 'properties-row';
-
-    const inputs = (['X', 'Y', 'Z'] as const).map((axis) => {
-      const field = document.createElement('div');
-      field.className = 'properties-field';
-
-      const label = document.createElement('span');
-      label.className = 'properties-axis';
-      label.textContent = axis;
-
-      const input = document.createElement('input');
-      input.className = 'properties-input';
-      input.type = 'number';
-      input.step = String(step);
-      input.addEventListener('change', () => this.commit(kind));
-
-      field.append(label, input);
-      row.appendChild(field);
-      return input;
-    }) as [HTMLInputElement, HTMLInputElement, HTMLInputElement];
-
-    group.appendChild(row);
-    this.body.appendChild(group);
-    return { inputs };
   }
 
   update(): void {
@@ -275,40 +375,12 @@ class ObjectTab {
     if (this.visibleInput.checked !== obj.visible) this.visibleInput.checked = obj.visible;
     if (this.smoothInput.checked !== obj.shadeSmooth) this.smoothInput.checked = obj.shadeSmooth;
 
-    this.writeGroup(this.location, obj.transform.position, 3);
-
-    const e = obj.transform.rotation.toEulerXYZ();
-    this.writeInput(this.rotation.inputs[0], e.x * DEG, 1);
-    this.writeInput(this.rotation.inputs[1], e.y * DEG, 1);
-    this.writeInput(this.rotation.inputs[2], e.z * DEG, 1);
-
-    this.writeGroup(this.scale, obj.transform.scale, 3);
+    this.transformFields.update();
   }
 
   private isPanelFocused(): boolean {
     const active = document.activeElement;
     return active instanceof HTMLInputElement && this.body.contains(active);
-  }
-
-  private writeGroup(group: FieldGroup, v: Vec3, decimals: number): void {
-    this.writeInput(group.inputs[0], v.x, decimals);
-    this.writeInput(group.inputs[1], v.y, decimals);
-    this.writeInput(group.inputs[2], v.z, decimals);
-  }
-
-  /** Assign only when the formatted string changed (avoids caret churn). */
-  private writeInput(input: HTMLInputElement, value: number, decimals: number): void {
-    const s = value.toFixed(decimals);
-    if (input.value !== s) input.value = s;
-  }
-
-  /** Read a group's three inputs; returns null if any value is not finite. */
-  private readGroup(group: FieldGroup): Vec3 | null {
-    const x = parseFloat(group.inputs[0].value);
-    const y = parseFloat(group.inputs[1].value);
-    const z = parseFloat(group.inputs[2].value);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
-    return new Vec3(x, y, z);
   }
 
   /** Commit a rename via the same RenameObjectCommand the outliner uses. */
@@ -325,37 +397,6 @@ class ObjectTab {
     obj.name = after;
     this.nameBefore = after;
     this.undo.push(new RenameObjectCommand(obj, before, after));
-  }
-
-  private commit(kind: 'location' | 'rotation' | 'scale'): void {
-    const obj = this.scene.activeObject;
-    if (!obj) return;
-    const before = obj.transform;
-
-    let after;
-    if (kind === 'location') {
-      const p = this.readGroup(this.location);
-      if (!p) return this.restore();
-      after = before.withPosition(p);
-    } else if (kind === 'scale') {
-      const s = this.readGroup(this.scale);
-      if (!s) return this.restore();
-      after = before.withScale(s);
-    } else {
-      const deg = this.readGroup(this.rotation);
-      if (!deg) return this.restore();
-      after = before.withRotation(Quat.fromEulerXYZ(deg.x * RAD, deg.y * RAD, deg.z * RAD));
-    }
-
-    // Undo convention: apply the final state first, then push the command.
-    obj.transform = after;
-    this.undo.push(new TransformCommand('Set Transform', [{ object: obj, before, after }]));
-  }
-
-  /** Discard bad input by forcing the next refresh to re-display current values. */
-  private restore(): void {
-    this.lastActiveId = -1 as unknown as number;
-    this.update();
   }
 }
 

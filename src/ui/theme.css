@@ -209,6 +209,41 @@
 .properties-input:focus { border-color: var(--vb-accent); box-shadow: 0 0 0 1px var(--vb-accent); }
 .properties-empty { padding: 6px 0; color: var(--vb-muted); font-style: italic; }
 
+/* ------------------------------------------------------------- N-panel (P6-2) */
+/*
+ * Blender's viewport sidebar: a slim Item panel overlaid on the right edge of
+ * #viewport-wrap, toggled with N. Floats over the canvas (like the outliner
+ * float) so it never resizes the WebGL viewport or invalidates picking coords.
+ * Reuses .properties-group/.properties-input styling for the transform fields.
+ */
+.n-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;
+  width: 208px; box-sizing: border-box;
+  background: var(--vb-panel); border-left: 1px solid var(--vb-border);
+  padding: 6px 10px 10px; overflow-y: auto;
+  font: var(--vb-font); color: var(--vb-text); user-select: none;
+}
+.n-panel-heading {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--vb-muted);
+  padding-bottom: 6px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--vb-border);
+}
+.n-panel-name {
+  color: #fff; font-weight: 600; padding: 2px 0 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.n-panel-empty { padding: 6px 0; color: var(--vb-muted); font-style: italic; }
+.n-panel-value {
+  flex: 1; min-width: 0; color: var(--vb-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 3px; text-align: right;
+}
+.n-panel-counts {
+  color: var(--vb-muted); font-size: 11px; padding-top: 4px;
+  border-top: 1px solid var(--vb-border); margin-top: 4px;
+}
+
 /* ------------------------------------------------------------------ add-menu */
 .add-menu {
   position: absolute; z-index: 100; min-width: 140px;
