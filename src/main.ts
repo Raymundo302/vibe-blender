@@ -7,6 +7,7 @@ import { makeCube } from './core/mesh/primitives';
 import { InputManager } from './input/InputManager';
 import { UiShell } from './ui/shell';
 import { OutlinerPanel } from './ui/outliner';
+import { PropertiesPanel } from './ui/properties';
 import type { OperatorContext } from './core/operator/Operator';
 
 const canvas = document.getElementById('viewport') as HTMLCanvasElement;
@@ -33,6 +34,7 @@ const opCtx: OperatorContext = {
 new InputManager(canvas, opCtx, renderer);
 const shell = new UiShell();
 shell.addPanel(new OutlinerPanel(scene, undo));
+shell.addPanel(new PropertiesPanel(scene, undo));
 // Float the panel over the viewport's right edge rather than docking it, so the
 // sidebar doesn't shrink the canvas and invalidate viewport-space coordinates
 // (picking + e2e). See the .outliner-floating rule in outliner.ts for why.
