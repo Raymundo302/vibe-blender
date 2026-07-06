@@ -1,0 +1,39 @@
+/* Light properties tab (P8-1). Scoped with the `light-tab-` prefix so it never
+   collides with theme.css (owned by other workers). Rows mirror the Object
+   tab's spacing so the two panels read as one system. */
+
+.light-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.light-tab-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.light-tab-select,
+.light-tab-input {
+  flex: none;
+}
+
+.light-tab-select {
+  width: 96px;
+}
+
+.light-tab-input {
+  width: 72px;
+}
+
+.light-tab-color {
+  flex: none;
+  width: 40px;
+  padding: 0;
+}
+
+/* Spot-only block: hidden for point/sun via the [hidden] attribute. */
+.light-tab-spot[hidden] {
+  display: none;
+}

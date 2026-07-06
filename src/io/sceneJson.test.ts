@@ -132,11 +132,11 @@ describe('sceneJson round trip', () => {
 });
 
 describe('sceneJson format v2 modifiers', () => {
-  it('writes version 2', () => {
+  it('writes version 3', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(2);
+    expect(parsed.version).toBe(3);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -238,6 +238,195 @@ describe('sceneJson per-object color', () => {
   });
 });
 
+describe('sceneJson format v3 lights / cameras / materials', () => {
+  /** A cube with an assigned material, two lights and a camera. */
+  function makeLitScene(): Scene {
+    const scene = new Scene();
+    const cube = scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Red');
+    mat.baseColor = [1, 0.1, 0.05];
+    mat.metallic = 0.25;
+    mat.roughness = 0.3;
+    mat.emissive = [0.2, 0, 0];
+    mat.emissiveStrength = 1.5;
+    cube.materialId = mat.id;
+
+    scene.addLight('Point', 'point'); // point defaults
+    const spot = scene.addLight('Spot', 'spot');
+    spot.light!.spotAngle = (60 * Math.PI) / 180;
+    spot.light!.color = [0.2, 0.4, 0.9];
+    spot.light!.power = 250;
+
+    scene.addCamera('Camera'); // first camera → auto-active
+    return scene;
+  }
+
+  it('round-trips a lit scene byte-identically and preserves kinds', () => {
+    const src = makeLitScene();
+    const s1 = serializeScene(src, new OrbitCamera());
+
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    const s2 = serializeScene(dst, new OrbitCamera());
+    expect(s2).toBe(s1);
+
+    expect(dst.objects.map((o) => o.kind)).toEqual(['mesh', 'light', 'light', 'camera']);
+    expect(dst.objects.map((o) => o.name)).toEqual(['Cube', 'Point', 'Spot', 'Camera']);
+  });
+
+  it('restores light payloads (defaults + custom spot)', () => {
+    const src = makeLitScene();
+    const dst = new Scene();
+    applySceneJson(serializeScene(src, new OrbitCamera()), dst, new OrbitCamera());
+
+    const point = dst.objects[1];
+    expect(point.kind).toBe('light');
+    expect(point.light!.type).toBe('point');
+    expect(point.light!.power).toBe(100);
+    expect(point.light!.color).toEqual([1, 1, 1]);
+
+    const spot = dst.objects[2];
+    expect(spot.light!.type).toBe('spot');
+    expect(spot.light!.power).toBe(250);
+    expect(spot.light!.color).toEqual([0.2, 0.4, 0.9]);
+    expect(spot.light!.spotAngle).toBeCloseTo((60 * Math.PI) / 180, 6);
+  });
+
+  it('restores camera payloads and remaps the active camera', () => {
+    const src = makeLitScene();
+    // The saved active camera is the object at index 3.
+    const dst = new Scene();
+    applySceneJson(serializeScene(src, new OrbitCamera()), dst, new OrbitCamera());
+
+    const cam = dst.objects[3];
+    expect(cam.kind).toBe('camera');
+    expect(cam.camera!.focalLength).toBe(50);
+    // activeCameraId points at the REBUILT camera's (regenerated) id.
+    expect(dst.activeCameraId).toBe(cam.id);
+    expect(dst.activeCamera).toBe(cam);
+  });
+
+  it('remaps active camera when a non-first camera is active', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const c1 = scene.addCamera('CamA'); // auto-active
+    const c2 = scene.addCamera('CamB');
+    scene.activeCameraId = c2.id; // switch active to the second camera
+    expect(scene.activeCameraId).not.toBe(c1.id);
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    // objects: [Cube, CamA, CamB]; active should map to CamB at index 2.
+    expect(dst.activeCamera!.name).toBe('CamB');
+    expect(dst.activeCameraId).toBe(dst.objects[2].id);
+  });
+
+  it('restores the material library and keeps materialId verbatim', () => {
+    const src = makeLitScene();
+    const dst = new Scene();
+    applySceneJson(serializeScene(src, new OrbitCamera()), dst, new OrbitCamera());
+
+    expect(dst.materials.length).toBe(1);
+    const mat = dst.materials[0];
+    expect(mat.name).toBe('Red');
+    expect(mat.baseColor).toEqual([1, 0.1, 0.05]);
+    expect(mat.metallic).toBe(0.25);
+    expect(mat.emissiveStrength).toBe(1.5);
+    // The cube still references the same material id.
+    expect(dst.objects[0].materialId).toBe(mat.id);
+    expect(dst.materialOf(dst.objects[0])).toBe(mat);
+  });
+
+  it('restores the material id counter (addMaterial after load gets a fresh id)', () => {
+    const src = makeLitScene();
+    const savedId = src.materials[0].id;
+    const dst = new Scene();
+    applySceneJson(serializeScene(src, new OrbitCamera()), dst, new OrbitCamera());
+
+    const fresh = dst.addMaterial('New');
+    expect(fresh.id).not.toBe(savedId);
+    expect(dst.getMaterial(fresh.id)).toBe(fresh);
+    // And the restored material is still resolvable (no id collision clobbered it).
+    expect(dst.getMaterial(savedId)!.name).toBe('Red');
+  });
+
+  it('loads a v2 fixture: kind defaults to mesh, no materials / active camera', () => {
+    const v2 = JSON.stringify({
+      format: 'vibe-blender-scene', version: 2,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      objects: [{
+        name: 'Legacy', visible: true,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [[0, 0, 0, 0], [1, 1, 0, 0], [2, 1, 1, 0]], faces: [[0, [0, 1, 2]]] },
+        modifiers: [],
+      }],
+    });
+    const dst = new Scene();
+    applySceneJson(v2, dst, new OrbitCamera());
+    expect(dst.objects[0].kind).toBe('mesh');
+    expect(dst.objects[0].materialId).toBe(null);
+    expect(dst.materials.length).toBe(0);
+    expect(dst.activeCameraId).toBe(null);
+  });
+
+  it('rejects a malformed light type without mutating the scene', () => {
+    const scene = new Scene();
+    scene.add('Keep', makeCube());
+    const bad = JSON.stringify({
+      format: 'vibe-blender-scene', version: 3,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      activeCameraId: null, materials: [],
+      objects: [{
+        id: 0, name: 'BadLight', kind: 'light', visible: true, shadeSmooth: false,
+        color: [0.69, 0.69, 0.69], materialId: null,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [], faces: [] }, modifiers: [],
+        light: { type: 'laser', color: [1, 1, 1], power: 100, spotAngle: 0.5, spotBlend: 0.1 },
+      }],
+    });
+    expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/light\.type/i);
+    expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
+  });
+
+  it('rejects a negative light power without mutating the scene', () => {
+    const scene = new Scene();
+    scene.add('Keep', makeCube());
+    const bad = JSON.stringify({
+      format: 'vibe-blender-scene', version: 3,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      activeCameraId: null, materials: [],
+      objects: [{
+        id: 0, name: 'BadLight', kind: 'light', visible: true, shadeSmooth: false,
+        color: [0.69, 0.69, 0.69], materialId: null,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [], faces: [] }, modifiers: [],
+        light: { type: 'point', color: [1, 1, 1], power: -5, spotAngle: 0.5, spotBlend: 0.1 },
+      }],
+    });
+    expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/power/i);
+    expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
+  });
+
+  it('rejects a bad light color array without mutating the scene', () => {
+    const scene = new Scene();
+    scene.add('Keep', makeCube());
+    const bad = JSON.stringify({
+      format: 'vibe-blender-scene', version: 3,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      activeCameraId: null, materials: [],
+      objects: [{
+        id: 0, name: 'BadLight', kind: 'light', visible: true, shadeSmooth: false,
+        color: [0.69, 0.69, 0.69], materialId: null,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [], faces: [] }, modifiers: [],
+        light: { type: 'point', color: [1, 1], power: 100, spotAngle: 0.5, spotBlend: 0.1 },
+      }],
+    });
+    expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/light\.color/i);
+    expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
+  });
+});
+
 describe('sceneJson error handling', () => {
   it('throws a readable error on malformed JSON and leaves the scene untouched', () => {
     const scene = new Scene();
@@ -272,6 +461,45 @@ describe('sceneJson error handling', () => {
     });
 
     expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/missing vert/i);
+    expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
+  });
+});
+
+describe('determinism with id gaps (P8-5 fix)', () => {
+  it('serialize→apply→serialize is byte-identical after a deletion leaves an id gap', () => {
+    const scene = new Scene();
+    const camera = new OrbitCamera();
+    scene.add('CubeA', makeCube());
+    const light = scene.addLight('Doomed', 'point');
+    scene.add('CubeC', makeCube());
+    const cam = scene.addCamera('Cam');
+    scene.activeCameraId = cam.id;
+    scene.remove(light.id); // ids now 0, 2, 3 — a gap
+
+    const s1 = serializeScene(scene, camera);
+    applySceneJson(s1, scene, camera);
+    const s2 = serializeScene(scene, camera);
+    expect(s2).toBe(s1);
+    // The active camera survives the dense renumbering (index-based remap).
+    expect(scene.activeCamera?.name).toBe('Cam');
+  });
+
+  it('rejects an activeCamera index that is not a camera', () => {
+    const scene = new Scene();
+    scene.add('Keep', makeCube());
+    const bad = JSON.stringify({
+      format: 'vibe-blender-scene', version: 3,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      activeCamera: 0, materials: [],
+      objects: [{
+        name: 'JustACube', kind: 'mesh', visible: true, shadeSmooth: false,
+        color: [0.69, 0.69, 0.69], materialId: null,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [[0, 0, 0, 0], [1, 1, 0, 0], [2, 0, 1, 0]], faces: [[0, [0, 1, 2]]] },
+        modifiers: [],
+      }],
+    });
+    expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/not a camera/i);
     expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
   });
 });

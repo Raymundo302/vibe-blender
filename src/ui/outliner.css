@@ -1,0 +1,9 @@
+/* Outliner kind glyph (P8-5): small emoji hint before each object name. */
+.outliner-kind {
+  flex: 0 0 auto;
+  margin-right: 4px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.9;
+  user-select: none;
+}

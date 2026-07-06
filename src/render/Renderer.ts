@@ -17,10 +17,13 @@ import {
 import { elementIndexMaps } from '../core/mesh/editOverlayData';
 import { RenderedPass, collectLights } from './passes/renderedPass';
 import { IconPass, type IconShape } from './passes/iconPass';
+import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
+import { cameraFovY } from '../core/scene/objectData';
 import { createMatcapTexture } from './matcap';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
+import type { Mat4 } from '../core/math/mat4';
 import type { Vec3 } from '../core/math/vec3';
 
 interface GpuMesh {
@@ -56,6 +59,17 @@ function iconShape(obj: SceneObject): IconShape {
   }
 }
 
+/**
+ * Overlay tint for a non-mesh object's icon / frustum: selection orange (bright
+ * for the active object, dimmer for the rest of the selection), light grey when
+ * unselected. Shared by the icon pass and the camera-frustum pass so both read
+ * as one selection system.
+ */
+function selectionColor(scene: Scene, obj: SceneObject): [number, number, number] {
+  if (!scene.selection.has(obj.id)) return [0.85, 0.85, 0.85];
+  return scene.activeId === obj.id ? [1, 0.66, 0.25] : [0.95, 0.55, 0.2];
+}
+
 export class Renderer {
   private readonly meshPass: MeshPass;
   private readonly studioPass: StudioPass;
@@ -68,6 +82,7 @@ export class Renderer {
   private readonly elementPickPass: ElementPickPass;
   private readonly renderedPass: RenderedPass;
   private readonly iconPass: IconPass;
+  private readonly cameraFrustumPass: CameraFrustumPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
 
@@ -93,6 +108,14 @@ export class Renderer {
    */
   editPreviewLines: Float32Array | null = null;
 
+  /**
+   * When set to a camera object's id, render() and pick() look THROUGH that
+   * camera (Numpad0) instead of the OrbitCamera. Cleared automatically if the
+   * object disappears or stops being a camera; InputManager also clears it when
+   * the user orbits/pans/zooms. Public so e2e can drive it directly.
+   */
+  cameraViewId: number | null = null;
+
   constructor(private readonly ctx: GlContext) {
     const { gl, canvas } = ctx;
     this.meshPass = new MeshPass(gl, createMatcapTexture(gl));
@@ -106,6 +129,7 @@ export class Renderer {
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     this.renderedPass = new RenderedPass(gl);
     this.iconPass = new IconPass(gl);
+    this.cameraFrustumPass = new CameraFrustumPass(gl);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -150,6 +174,40 @@ export class Renderer {
     return this.shadingMode;
   }
 
+  /**
+   * The view/proj (plus eye + fovY, for lighting, grid fade and gizmo scale)
+   * this frame uses: the active camera object when looking through one
+   * (cameraViewId), otherwise the OrbitCamera. Self-heals a stale cameraViewId
+   * (object gone or no longer a camera). Called by both render() and pick() so
+   * everything downstream — picking, gizmo, edit overlays — agrees.
+   */
+  private resolveView(
+    scene: Scene,
+    camera: OrbitCamera,
+  ): { view: Mat4; proj: Mat4; eye: Vec3; fovY: number } {
+    const { canvas } = this.ctx;
+    const aspect = canvas.width / canvas.height;
+    if (this.cameraViewId !== null) {
+      const camObj = scene.get(this.cameraViewId);
+      if (!camObj || camObj.kind !== 'camera') {
+        this.cameraViewId = null; // object gone: fall through to the user camera
+      } else if (camObj.visible && camObj.camera) {
+        return {
+          view: cameraViewMatrix(camObj),
+          proj: cameraProjMatrix(camObj.camera, aspect),
+          eye: camObj.transform.position,
+          fovY: cameraFovY(camObj.camera),
+        };
+      }
+    }
+    return {
+      view: camera.viewMatrix(),
+      proj: camera.projMatrix(aspect),
+      eye: camera.eye,
+      fovY: camera.fovY,
+    };
+  }
+
   render(scene: Scene, camera: OrbitCamera): void {
     const { gl, canvas } = this.ctx;
     if (this.ctx.syncSize()) {
@@ -161,8 +219,7 @@ export class Renderer {
     gl.clearColor(BG[0], BG[1], BG[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    const view = camera.viewMatrix();
-    const proj = camera.projMatrix(canvas.width / canvas.height);
+    const { view, proj, eye, fovY } = this.resolveView(scene, camera);
     const visible = scene.objects.filter((o) => o.visible);
 
     // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
@@ -180,7 +237,7 @@ export class Renderer {
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else if (this.shadingMode === 'rendered') {
-      this.renderedPass.begin(view, proj, camera.eye, collectLights(scene));
+      this.renderedPass.begin(view, proj, eye, collectLights(scene));
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
         this.renderedPass.setObject(obj.transform.matrix(), scene.materialOf(obj));
@@ -195,18 +252,26 @@ export class Renderer {
     }
 
     // Grid (blended, after opaque)
-    this.gridPass.render(view, proj, camera.eye);
+    this.gridPass.render(view, proj, eye);
 
-    // Billboard icons for non-mesh objects (lights, cameras)
-    const icons = visible.filter((o) => o.kind !== 'mesh');
+    // Camera frustums — after the grid, before outlines. Skip the camera we are
+    // currently looking through (its wireframe would smear across the whole view).
+    const frustums = visible.filter((o) => o.kind === 'camera' && o.id !== this.cameraViewId);
+    if (frustums.length > 0) {
+      const viewProj = proj.mul(view);
+      this.cameraFrustumPass.begin();
+      for (const obj of frustums) {
+        this.cameraFrustumPass.draw(viewProj, obj, selectionColor(scene, obj));
+      }
+    }
+
+    // Billboard icons for non-mesh objects (lights, cameras). The looked-through
+    // camera has no icon either (it is the viewpoint).
+    const icons = visible.filter((o) => o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (icons.length > 0) {
       this.iconPass.begin(proj.mul(view), canvas.width, canvas.height);
       for (const obj of icons) {
-        const selected = scene.selection.has(obj.id);
-        const color: [number, number, number] = selected
-          ? (scene.activeId === obj.id ? [1, 0.66, 0.25] : [0.95, 0.55, 0.2])
-          : [0.85, 0.85, 0.85];
-        this.iconPass.draw(obj.transform.position, iconShape(obj), color);
+        this.iconPass.draw(obj.transform.position, iconShape(obj), selectionColor(scene, obj));
       }
     }
 
@@ -232,21 +297,22 @@ export class Renderer {
     }
 
     // Translate gizmo — on top of everything (clear depth after outlines).
-    const gz = this.gizmoTransform(scene, camera);
+    const gz = this.gizmoTransform(scene, eye, fovY);
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT);
       this.gizmoPass.render(proj.mul(view), gz.origin, gz.scale);
     }
   }
 
-  /** Gizmo placement (active object's position) + constant-screen-size scale, or null when hidden. */
-  private gizmoTransform(scene: Scene, camera: OrbitCamera): { origin: Vec3; scale: number } | null {
+  /** Gizmo placement (active object's position) + constant-screen-size scale (from
+   *  the current viewpoint's eye/fovY), or null when hidden. */
+  private gizmoTransform(scene: Scene, eye: Vec3, fovY: number): { origin: Vec3; scale: number } | null {
     if (!this.gizmoVisible) return null;
     if (scene.editMode) return null; // object gizmo has no meaning in edit mode (P2-3 may add an element gizmo)
     const active = scene.activeObject;
     if (!active || !active.visible) return null;
     const origin = active.transform.position;
-    return { origin, scale: gizmoScreenScale(camera.eye, origin, camera.fovY) };
+    return { origin, scale: gizmoScreenScale(eye, origin, fovY) };
   }
 
   /**
@@ -256,8 +322,7 @@ export class Renderer {
    */
   pick(scene: Scene, camera: OrbitCamera, cssX: number, cssY: number): PickResult | null {
     const { gl, canvas } = this.ctx;
-    const view = camera.viewMatrix();
-    const proj = camera.projMatrix(canvas.width / canvas.height);
+    const { view, proj, eye, fovY } = this.resolveView(scene, camera);
     const viewProj = proj.mul(view);
 
     this.pickingPass.begin();
@@ -266,14 +331,15 @@ export class Renderer {
       this.pickingPass.drawObject(viewProj.mul(obj.transform.matrix()), obj.id + 1);
       this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
     }
-    const gz = this.gizmoTransform(scene, camera);
+    const gz = this.gizmoTransform(scene, eye, fovY);
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT); // pick FBO still bound: gizmo handles win
       this.gizmoPass.renderPick(this.pickingPass, viewProj, gz.origin, gz.scale);
     }
     // Light/camera icons — drawn last (iconPass switches GL programs, and
-    // pickingPass.drawObject assumes the picking shader is still active).
-    const iconObjs = scene.objects.filter((o) => o.visible && o.kind !== 'mesh');
+    // pickingPass.drawObject assumes the picking shader is still active). The
+    // looked-through camera has no on-screen icon, so it is not pickable either.
+    const iconObjs = scene.objects.filter((o) => o.visible && o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (iconObjs.length > 0) {
       this.iconPass.begin(viewProj, canvas.width, canvas.height);
       for (const obj of iconObjs) this.iconPass.drawPick(obj.transform.position, obj.id + 1);

@@ -190,7 +190,8 @@ export class InputManager {
     }
 
     if (e.button === 1) {
-      // MMB: orbit, Shift+MMB: pan
+      // MMB: orbit, Shift+MMB: pan. Navigating exits camera-view first.
+      this.renderer.cameraViewId = null;
       if (e.shiftKey) this.panning = true;
       else this.orbiting = true;
       this.canvas.setPointerCapture(e.pointerId);
@@ -268,6 +269,7 @@ export class InputManager {
       this.activeOp.adjustRadius(this.ctx, e.deltaY);
       return;
     }
+    this.renderer.cameraViewId = null; // zooming exits camera-view
     this.ctx.camera.zoom(e.deltaY);
   }
 
@@ -384,6 +386,24 @@ export class InputManager {
       return;
     }
 
+    // Numpad0: toggle looking through the scene's active camera. Works in both
+    // modes (placed before the edit-mode branch); no modifiers. Uses e.code so
+    // the top-row 0 is untouched. A modal op already consumed keys and returned.
+    if (e.code === 'Numpad0' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      if (this.renderer.cameraViewId !== null) {
+        this.renderer.cameraViewId = null;
+        this.ctx.setStatus('View: User');
+      } else if (scene.activeCameraId !== null) {
+        this.renderer.cameraViewId = scene.activeCameraId;
+        this.ctx.setStatus('View: Camera');
+      } else {
+        this.ctx.setStatus('No active camera');
+      }
+      return;
+    }
+
     if (this.ctx.scene.editMode) {
       this.onEditModeKey(e, key);
       return; // object-mode keys (G/R/S on objects, X, Shift-A/D) don't apply here
@@ -441,11 +461,18 @@ export class InputManager {
     if (key === 'j' && e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       const scene = this.ctx.scene;
-      if (scene.selection.size < 2) {
-        this.ctx.setStatus('Join needs 2 or more selected objects');
+      // Join pivots on the active mesh: a light/camera can't receive geometry.
+      if (scene.activeObject && scene.activeObject.kind !== 'mesh') {
+        this.ctx.setStatus('Join needs a mesh active object');
         return;
       }
-      const count = scene.selection.size;
+      // Non-mesh selected objects are skipped by JoinObjectsCommand (they
+      // survive, selection untouched) — count only the meshes here.
+      const count = scene.selectedObjects.filter((o) => o.kind === 'mesh').length;
+      if (count < 2) {
+        this.ctx.setStatus('Join needs 2 or more selected mesh objects');
+        return;
+      }
       const cmd = JoinObjectsCommand.perform('Join', scene);
       if (!cmd) {
         this.ctx.setStatus('Join needs the active object to be selected');

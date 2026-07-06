@@ -32,6 +32,20 @@ describe('exportObj', () => {
     expect(faces[0]).toBe('f 5 6 7 8');
   });
 
+  it('skips non-mesh objects (lights/cameras emit no geometry)', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    scene.addLight('Point', 'point');
+    scene.addCamera('Camera');
+    const obj = exportObj(scene);
+
+    // Only the cube is exported: 8 verts, one `o` block, and no light/camera names.
+    expect(linesOf(obj, 'v')).toHaveLength(8);
+    expect(linesOf(obj, 'o')).toEqual(['o Cube']);
+    expect(obj).not.toContain('Point');
+    expect(obj).not.toContain('Camera');
+  });
+
   it('bakes the transform into world-space vertices', () => {
     const scene = new Scene();
     const o = scene.add('Cube', makeCube());

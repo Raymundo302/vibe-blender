@@ -26,7 +26,8 @@ export interface Shortcut {
 export const SHORTCUTS: readonly Shortcut[] = [
   // General — handled before the mode branches, so they work in both modes.
   { group: 'General', keys: 'Tab', description: 'Toggle Edit / Object Mode' },
-  { group: 'General', keys: 'Z', description: 'Cycle shading — Matcap / Wireframe / Studio' },
+  { group: 'General', keys: 'Z', description: 'Cycle shading — Matcap / Wireframe / Studio / Rendered' },
+  { group: 'General', keys: 'F12', description: 'Render the active camera (render engine)' },
   { group: 'General', keys: 'N', description: 'Toggle the N-panel (item transform + dims)' },
   { group: 'General', keys: 'Ctrl+Z', description: 'Undo' },
   { group: 'General', keys: 'Ctrl+Shift+Z', description: 'Redo' },
@@ -69,6 +70,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Camera', keys: 'MMB drag', description: 'Orbit' },
   { group: 'Camera', keys: 'Shift+MMB drag', description: 'Pan' },
   { group: 'Camera', keys: 'Mouse wheel', description: 'Zoom' },
+  { group: 'Camera', keys: 'Numpad0', description: 'View through the active camera (toggle)' },
   { group: 'Camera', keys: '. (Period)', description: 'Frame the selection' },
 
   // File

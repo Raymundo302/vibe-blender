@@ -169,8 +169,8 @@ New architecture decisions:
 | F8-1 | Object kinds + LightData/CameraData/Material core, scene library, activeCamera lifecycle | fable | — | verified |
 | F8-2 | RenderedPass (GGX, 8 lights) + collectLights + 4th shading mode + IconPass (billboards & picking) | fable | F8-1 | verified |
 | F8-3 | Add-menu Light/Camera entries, kind-aware Scene.duplicate, worker stubs | fable | F8-1 | verified |
-| P8-1 | Light properties tab (type/color/power/spot params, undoable) | opus | F8-3 | spec-ready |
-| P8-3 | Material properties tab (library slot UI + PBR params, undoable) | opus | F8-3 | spec-ready |
-| P8-4 | Render engine: progressive path tracer (F12, Web Worker, BVH, render window) | opus | F8-3 | spec-ready |
-| P8-2 | Camera objects: frustum display, Numpad0 view-through, Camera tab | opus | batch 1 | spec-ready |
-| P8-5 | Scene format v3 (lights/cameras/materials), outliner kind glyphs, join guard | opus | batch 1 | spec-ready |
+| P8-1 | Light properties tab (type/color/power/spot params, undoable) | opus | F8-3 | verified |
+| P8-3 | Material properties tab (library slot UI + PBR params, undoable) | opus | F8-3 | verified |
+| P8-4 | Render engine: progressive path tracer (F12, Web Worker, BVH, render window) | opus | F8-3 | verified |
+| P8-2 | Camera objects: frustum display, Numpad0 view-through, Camera tab | opus | batch 1 | verified |
+| P8-5 | Scene format v3 (lights/cameras/materials), outliner kind glyphs, join guard | opus | batch 1 | verified |

@@ -1,7 +1,16 @@
 import type { Panel } from './panel';
 import type { Scene, SceneObject } from '../core/scene/Scene';
+import type { ObjectKind } from '../core/scene/objectData';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { DeleteObjectsCommand, RenameObjectCommand } from '../core/undo/objectCommands';
+import './outliner.css';
+
+/** Per-kind glyph shown before the object name (mesh / light / camera). */
+const KIND_GLYPH: Record<ObjectKind, string> = {
+  mesh: '▢', // ▢
+  light: '\u{1F4A1}', // 💡
+  camera: '\u{1F3A5}', // 🎥
+};
 
 /**
  * Blender's Outliner: one row per scene object with select / rename / delete /
@@ -75,6 +84,12 @@ export class OutlinerPanel implements Panel {
     glyph.className = 'outliner-glyph';
     glyph.textContent = '▲';
     row.appendChild(glyph);
+
+    // Kind glyph (▢ mesh / 💡 light / 🎥 camera) — plain-text hint before the name.
+    const kind = document.createElement('span');
+    kind.className = 'outliner-kind';
+    kind.textContent = KIND_GLYPH[obj.kind];
+    row.appendChild(kind);
 
     const name = document.createElement('span');
     name.className = 'outliner-name';

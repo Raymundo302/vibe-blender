@@ -1,0 +1,55 @@
+/* Material properties tab (P8-3). Prefix: material-tab- */
+
+.material-tab-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.material-tab-slot-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-new-btn {
+  flex: none;
+  cursor: pointer;
+}
+
+.material-tab-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.material-tab-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.material-tab-field > span.material-tab-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-field input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-field input[type='number'] {
+  width: 70px;
+  flex: none;
+}
+
+.material-tab-field input[type='color'] {
+  flex: none;
+}
+
+.material-tab-field .material-tab-num {
+  width: 46px;
+  flex: none;
+  text-align: right;
+}

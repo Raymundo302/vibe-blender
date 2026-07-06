@@ -42,9 +42,12 @@ export class JoinObjectsCommand implements Command {
 
     const prevSelection = [...scene.selection];
     // selectedObjects follows scene.objects order → indices already ascending.
+    // Non-mesh objects (lights/cameras) are skipped — they have no geometry to
+    // contribute and must survive the join. Selection is left untouched.
     const sources: SourceEntry[] = selected
-      .filter((o) => o.id !== active.id)
+      .filter((o) => o.id !== active.id && o.kind === 'mesh')
       .map((o) => ({ object: o, index: scene.objects.indexOf(o) }));
+    if (sources.length === 0) return null;
 
     const meshBefore = active.mesh.clone();
 

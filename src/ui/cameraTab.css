@@ -1,0 +1,40 @@
+/* Camera properties tab (P8-2). Scoped with the `camera-tab-` prefix so it never
+   collides with theme.css (owned by other workers). Rows mirror the Light/Object
+   tabs' spacing so the three panels read as one system. */
+
+.camera-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.camera-tab-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.camera-tab-input {
+  flex: none;
+  width: 72px;
+}
+
+.camera-tab-active {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.camera-tab-active-btn {
+  flex: none;
+}
+
+.camera-tab-active-badge {
+  color: #ffa940;
+  font-size: 11px;
+}
+
+.camera-tab-active-badge[hidden] {
+  display: none;
+}

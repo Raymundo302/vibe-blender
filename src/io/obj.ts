@@ -28,6 +28,7 @@ export function exportObj(scene: Scene): string {
 
   for (const obj of scene.objects) {
     if (!obj.visible) continue;
+    if (obj.kind !== 'mesh') continue; // lights/cameras carry no geometry (P8-5)
     lines.push(`o ${obj.name}`);
 
     const mat = obj.transform.matrix();
