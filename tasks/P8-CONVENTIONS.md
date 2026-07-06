@@ -43,7 +43,22 @@ Every user-visible mutation must be undoable. For small param edits follow the
 capture pattern used by modifierTab / the Object tab (before/after command
 pushed on commit — e.g. on input change, not per keystroke while dragging).
 
-## e2e
-Five suites: smoke, edit, ship, workspace + your additions. Phase-8 checks go
-where your spec says. Never hardcode pixel coords; derive from the canvas rect.
-Set shading mode / scene state through `window.__app` where convenient.
+## e2e — CONCURRENCY RULES (you are running in parallel with other workers)
+- Each P8 task adds its OWN new e2e file (e.g. `e2e/p8-light.mjs`) — copy the
+  harness pattern from ship.mjs. NEVER edit ship.mjs or another suite.
+- CDP port 9222 allows only ONE e2e run at a time and other workers are
+  running theirs too: wrap EVERY e2e invocation (including existing suites) in
+  `flock /tmp/vibe-blender-e2e.lock node e2e/<suite>.mjs`.
+- The dev server on 5199 is shared and already running — do NOT start/stop it.
+- `npm test` / `npx vitest run` / `npx tsc --noEmit` are safe to run anytime.
+- Before your FINAL verification pass, run the full set (all e2e suites, each
+  under flock, plus npm test + npx tsc --noEmit).
+- Never hardcode pixel coords; derive from the canvas rect. Drive scene state
+  through `window.__app` where convenient.
+
+## CSS
+Do NOT edit theme.css (parallel workers). Create your own css file next to
+your module and `import './yourfile.css'` from it — Vite bundles it.
+
+## Git
+Do NOT run git commands. The architect commits between batches.
