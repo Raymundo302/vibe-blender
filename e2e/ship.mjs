@@ -264,6 +264,11 @@ runE2e(async (t) => {
   t.check('overlay lists Ctrl+R', overlayText.includes('Ctrl+R'));
   t.check('overlay lists Tab', overlayText.includes('Tab'));
   t.check('overlay lists F1', overlayText.includes('F1'));
+  // P6-6: spot-check three entries added by Phases 4-6.
+  t.check('overlay lists Ctrl+B (bevel)', overlayText.includes('Ctrl+B'));
+  t.check('overlay lists N (N-panel)', overlayText.includes('Toggle the N-panel'));
+  t.check('overlay lists O (proportional editing)', overlayText.includes('proportional editing'));
+  t.check('overlay has a Workspaces group', overlayText.includes('Workspaces'));
 
   // While the overlay is open, keyboard must not leak: G does NOT start a move.
   const cubeX = () => t.evaluate('window.__app.scene.objects[0].transform.position.x');

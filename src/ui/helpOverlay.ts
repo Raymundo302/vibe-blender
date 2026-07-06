@@ -27,6 +27,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   // General — handled before the mode branches, so they work in both modes.
   { group: 'General', keys: 'Tab', description: 'Toggle Edit / Object Mode' },
   { group: 'General', keys: 'Z', description: 'Cycle shading — Matcap / Wireframe / Studio' },
+  { group: 'General', keys: 'N', description: 'Toggle the N-panel (item transform + dims)' },
   { group: 'General', keys: 'Ctrl+Z', description: 'Undo' },
   { group: 'General', keys: 'Ctrl+Shift+Z', description: 'Redo' },
   { group: 'General', keys: 'F1', description: 'Toggle this shortcut sheet' },
@@ -39,9 +40,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Object Mode', keys: 'R', description: 'Rotate' },
   { group: 'Object Mode', keys: 'S', description: 'Scale' },
   { group: 'Object Mode', keys: 'Shift+A', description: 'Add menu (primitives)' },
-  { group: 'Object Mode', keys: 'Shift+D', description: 'Duplicate selection' },
+  { group: 'Object Mode', keys: 'Shift+D', description: 'Duplicate selection (then Move)' },
   { group: 'Object Mode', keys: 'Alt+A', description: 'Deselect all' },
-  { group: 'Object Mode', keys: 'X', description: 'Delete selection' },
+  { group: 'Object Mode', keys: 'X / Delete', description: 'Delete selection' },
 
   // Edit mode
   { group: 'Edit Mode', keys: 'LMB', description: 'Select element (Shift: toggle)' },
@@ -53,20 +54,32 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Edit Mode', keys: 'G', description: 'Move elements' },
   { group: 'Edit Mode', keys: 'R', description: 'Rotate elements' },
   { group: 'Edit Mode', keys: 'S', description: 'Scale elements' },
+  { group: 'Edit Mode', keys: 'O', description: 'Toggle proportional editing (wheel: radius)' },
   { group: 'Edit Mode', keys: 'E', description: 'Extrude faces' },
   { group: 'Edit Mode', keys: 'I', description: 'Inset faces' },
   { group: 'Edit Mode', keys: 'Ctrl+R', description: 'Loop cut' },
-  { group: 'Edit Mode', keys: 'X', description: 'Delete menu (verts / edges / faces)' },
+  { group: 'Edit Mode', keys: 'Ctrl+B', description: 'Bevel selected edges (modal width)' },
+  { group: 'Edit Mode', keys: 'Ctrl+E', description: 'Bridge two edge loops' },
+  { group: 'Edit Mode', keys: 'F', description: 'Fill face from vert / edge chain' },
+  { group: 'Edit Mode', keys: 'Ctrl+D', description: 'Subdivide selected faces' },
+  { group: 'Edit Mode', keys: 'X / Delete', description: 'Delete menu (verts / edges / faces)' },
   { group: 'Edit Mode', keys: 'M', description: 'Merge at center' },
 
   // Camera navigation
   { group: 'Camera', keys: 'MMB drag', description: 'Orbit' },
   { group: 'Camera', keys: 'Shift+MMB drag', description: 'Pan' },
   { group: 'Camera', keys: 'Mouse wheel', description: 'Zoom' },
+  { group: 'Camera', keys: '. (Period)', description: 'Frame the selection' },
 
   // File
   { group: 'File', keys: 'Ctrl+S', description: 'Save scene (.vibe.json)' },
   { group: 'File', keys: 'Ctrl+O', description: 'Open scene' },
+  { group: 'File', keys: 'Export OBJ', description: 'Export mesh to .obj (topbar button)' },
+  { group: 'File', keys: 'Import OBJ', description: 'Import a .obj mesh (topbar button)' },
+
+  // Workspaces
+  { group: 'Workspaces', keys: 'Tab bar', description: 'Switch workspace (topbar tabs)' },
+  { group: 'Workspaces', keys: 'Ctrl+Space', description: 'Fullscreen the area under the cursor' },
 ];
 
 /** Unique group names in first-seen order (drives the render order). */
