@@ -23,6 +23,12 @@ export class UndoStack {
     this.redoStack.length = 0;
   }
 
+  /** Drop all history — for destructive context switches like loading a scene. */
+  clear(): void {
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+  }
+
   /** Returns the undone command's name, or null if nothing to undo. */
   undo(): string | null {
     const cmd = this.undoStack.pop();
