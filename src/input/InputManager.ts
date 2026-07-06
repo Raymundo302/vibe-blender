@@ -8,6 +8,7 @@ import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '..
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { AddMenu } from '../ui/addMenu';
+import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 
 /**
@@ -39,6 +40,7 @@ export class InputManager {
    *  keyboard-G (click confirms), a gizmo drag confirms on pointer *release*. */
   private gizmoDrag = false;
   private addMenu: AddMenu | null = null;
+  private deleteMenu: DeleteMenu | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -333,6 +335,30 @@ export class InputManager {
         return;
       }
       this.startOperator(new InsetOperator());
+      return;
+    }
+    // X: open the Delete menu at the pointer (Verts/Edges/Faces/Merge). An empty
+    // element selection early-returns — no menu, and never touches the object.
+    if (key === 'x' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (this.deleteMenu) { this.deleteMenu.close(); return; }
+      if (edit.selectedVertIds(mesh).size === 0) return;
+      this.deleteMenu = new DeleteMenu({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        sel: edit,
+        mesh,
+        undo: this.ctx.undo,
+        setStatus: (t) => this.ctx.setStatus(t),
+        onClose: () => { this.deleteMenu = null; },
+      });
+      return;
+    }
+    // M: Merge at Center directly (Blender muscle memory).
+    if (key === 'm' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      mergeAtCenter(edit, mesh, this.ctx.undo, (t) => this.ctx.setStatus(t));
       return;
     }
   }

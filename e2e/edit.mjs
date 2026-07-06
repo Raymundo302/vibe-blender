@@ -247,6 +247,58 @@ runE2e(async (t) => {
   t.check('I in vert mode shows face-only status',
     await t.evaluate(`document.getElementById('status').textContent.includes('Inset: face mode only')`));
 
+  // --- P2-6: delete menu (X) + merge at center (M) ---
+  // Vert mode: select 2 corner verts via __app, then M merges them.
+  await t.key('1', 'Digit1');
+  await t.evaluate(`(() => {
+    const e = window.__app.scene.editMode;
+    e.clearSelection();
+    const ids = [...window.__app.scene.editObject.mesh.verts.keys()].slice(0, 2);
+    for (const id of ids) e.verts.add(id);
+    e.touch();
+  })()`);
+  t.check('two verts selected before merge', (await editSel('e.verts.size')) === 2);
+  await t.key('m', 'KeyM');
+  t.check('M merges the cube to 7 verts',
+    (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === 7);
+  t.check('M leaves the survivor vert selected', (await editSel('e.verts.size')) === 1);
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z restores 8 verts after merge',
+    (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === 8);
+
+  // Face mode: select 1 face, X → menu → Faces → 5 faces.
+  await t.key('3', 'Digit3');
+  await t.key('a', 'KeyA', 1); // deselect all
+  await t.evaluate(`(() => {
+    const e = window.__app.scene.editMode;
+    const fid = [...window.__app.scene.editObject.mesh.faces.keys()][0];
+    e.faces.add(fid); e.touch();
+  })()`);
+  t.check('one face selected before delete', (await editSel('e.faces.size')) === 1);
+  await t.key('x', 'KeyX');
+  t.check('X opens the delete menu', await t.evaluate(`!!document.querySelector('.add-menu')`));
+  // Click the "Faces" entry.
+  await t.evaluate(`(() => {
+    const items = [...document.querySelectorAll('.add-menu-item')];
+    items.find((b) => b.textContent === 'Faces').click();
+  })()`);
+  await t.sleep(60);
+  t.check('Delete → Faces removes the face (6 → 5)',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 5);
+  t.check('delete leaves nothing selected', (await editSel('e.faces.size')) === 0);
+  t.check('delete menu closed after choosing', await t.evaluate(`!document.querySelector('.add-menu')`));
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z restores 6 faces after delete',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 6);
+
+  // X with an empty selection opens no menu and never deletes the object.
+  await t.key('a', 'KeyA', 1); // deselect all
+  const objCountBeforeX = await t.evaluate('window.__app.scene.objects.length');
+  await t.key('x', 'KeyX');
+  t.check('X with empty selection opens no menu', await t.evaluate(`!document.querySelector('.add-menu')`));
+  t.check('X with empty selection keeps the object',
+    (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeX);
+
   await t.key('Tab', 'Tab');
   t.check('Tab exits back to object mode', (await mode()) === 'object');
 });
