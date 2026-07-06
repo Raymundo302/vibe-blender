@@ -2,6 +2,17 @@ import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
 import { EditModeState } from './EditMode';
 import type { Modifier } from '../modifiers/Modifier';
+import {
+  DEFAULT_MATERIAL,
+  defaultCamera,
+  defaultLight,
+  makeMaterial,
+  type CameraData,
+  type LightData,
+  type LightType,
+  type Material,
+  type ObjectKind,
+} from './objectData';
 
 export class SceneObject {
   transform = new Transform();
@@ -17,11 +28,21 @@ export class SceneObject {
 
   private evalCache: { key: string; mesh: EditableMesh } | null = null;
 
+  /** Light payload — set iff kind === 'light'. */
+  light?: LightData;
+  /** Camera payload — set iff kind === 'camera'. */
+  camera?: CameraData;
+  /** Assigned material id (scene.materials), or null → DEFAULT_MATERIAL. */
+  materialId: number | null = null;
+
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
     readonly id: number,
     public name: string,
+    /** Non-mesh kinds carry an EMPTY mesh so every mesh code path no-ops. */
     public mesh: EditableMesh,
+    /** What this object IS. Lights/cameras have data payloads, not geometry. */
+    readonly kind: ObjectKind = 'mesh',
   ) {}
 
   /**
@@ -52,7 +73,12 @@ export class Scene {
   activeId: number | null = null;
   /** Non-null while editing one object's mesh (Blender's Edit Mode). */
   editMode: EditModeState | null = null;
+  /** Scene material library; objects reference entries by id. */
+  readonly materials: Material[] = [];
+  /** The camera F12 renders from / Numpad-0 looks through, or null. */
+  activeCameraId: number | null = null;
   private nextId = 0;
+  private nextMaterialId = 0;
 
   get mode(): 'object' | 'edit' {
     return this.editMode ? 'edit' : 'object';
@@ -61,7 +87,7 @@ export class Scene {
   /** Enter edit mode on an object (defaults to the active one). No-op if none. */
   enterEditMode(id = this.activeId): boolean {
     const obj = id === null ? null : this.get(id);
-    if (!obj) return false;
+    if (!obj || obj.kind !== 'mesh') return false; // lights/cameras have no editable mesh
     this.selectOnly(obj.id); // Blender: editing implies the object is active+selected
     this.editMode = new EditModeState(obj.id);
     return true;
@@ -80,6 +106,57 @@ export class Scene {
     const obj = new SceneObject(this.nextId++, name, mesh);
     this.objects.push(obj);
     return obj;
+  }
+
+  /** Add a light object (empty mesh + LightData payload). Not auto-selected. */
+  addLight(name: string, type: LightType, data?: LightData): SceneObject {
+    const obj = new SceneObject(this.nextId++, name, new EditableMesh(), 'light');
+    obj.light = data ?? defaultLight(type);
+    this.objects.push(obj);
+    return obj;
+  }
+
+  /**
+   * Add a camera object (empty mesh + CameraData payload). The first camera
+   * added becomes the scene's active camera.
+   */
+  addCamera(name: string, data?: CameraData): SceneObject {
+    const obj = new SceneObject(this.nextId++, name, new EditableMesh(), 'camera');
+    obj.camera = data ?? defaultCamera();
+    this.objects.push(obj);
+    if (this.activeCameraId === null) this.activeCameraId = obj.id;
+    return obj;
+  }
+
+  /** The active camera object, or null (none set / it was deleted). */
+  get activeCamera(): SceneObject | null {
+    const obj = this.activeCameraId === null ? null : this.get(this.activeCameraId);
+    return obj?.kind === 'camera' ? obj : null;
+  }
+
+  /** Create a material in the scene library (name defaults to Material.NNN). */
+  addMaterial(name?: string): Material {
+    const id = this.nextMaterialId++;
+    const mat = makeMaterial(id, name ?? `Material.${String(id + 1).padStart(3, '0')}`);
+    this.materials.push(mat);
+    return mat;
+  }
+
+  getMaterial(id: number): Material | undefined {
+    return this.materials.find((m) => m.id === id);
+  }
+
+  /** Remove a material from the library and unassign it from every object. */
+  removeMaterial(id: number): void {
+    const i = this.materials.findIndex((m) => m.id === id);
+    if (i < 0) return;
+    this.materials.splice(i, 1);
+    for (const obj of this.objects) if (obj.materialId === id) obj.materialId = null;
+  }
+
+  /** The material an object renders with (assigned, or the shared default). */
+  materialOf(obj: SceneObject): Material {
+    return (obj.materialId !== null && this.getMaterial(obj.materialId)) || DEFAULT_MATERIAL;
   }
 
   get(id: number): SceneObject | undefined {
@@ -123,10 +200,15 @@ export class Scene {
     this.objects.splice(i, 1);
     this.selection.delete(id);
     if (this.activeId === id) this.activeId = [...this.selection].pop() ?? null;
+    if (this.activeCameraId === id) {
+      this.activeCameraId = this.objects.find((o) => o.kind === 'camera')?.id ?? null;
+    }
   }
 
   /** Re-insert a previously removed object at its old list index (undo restore). */
   insertAt(obj: SceneObject, index: number): void {
     this.objects.splice(Math.min(index, this.objects.length), 0, obj);
+    // Undeleting a camera into a camera-less scene makes it active again.
+    if (obj.kind === 'camera' && this.activeCameraId === null) this.activeCameraId = obj.id;
   }
 }

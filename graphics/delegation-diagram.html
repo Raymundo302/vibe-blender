@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe Coded Blender — Delegation Structure</title>
+<style>
+  @font-face {
+    font-family: 'Press Start 2P';
+    src: local('Press Start 2P');
+  }
+  :root{
+    --bg0:#1a1526; --bg1:#241b34; --panel:#2c2140; --panel2:#352752;
+    --ink:#e9e2ff; --dim:#a99fc7; --line:#4a3a6e;
+    --orange:#ff8a3d; --orange2:#ffb072;
+    --cyan:#37e0e0; --cyan2:#8bf6f6;
+    --pink:#ff5db1; --green:#7be08a;
+    --shadow:0 0 0 3px #120d1c, 6px 6px 0 0 #120d1c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:
+      radial-gradient(1200px 700px at 50% -10%, #2a1f42 0%, transparent 60%),
+      linear-gradient(180deg,var(--bg0),var(--bg1));
+    color:var(--ink);
+    font-family:'Press Start 2P','Courier New',monospace;
+    -webkit-font-smoothing:none; image-rendering:pixelated;
+    padding:34px 30px 44px; min-height:100%;
+  }
+  /* scanline overlay */
+  body::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:99;
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 2px, transparent 2px 4px);
+    mix-blend-mode:multiply; opacity:.5;
+  }
+  .wrap{max-width:1180px;margin:0 auto}
+  header{text-align:center;margin-bottom:26px}
+  .kicker{font-size:9px;letter-spacing:2px;color:var(--cyan);margin-bottom:12px}
+  h1{font-size:22px;line-height:1.5;margin:0 0 10px;color:var(--orange);
+     text-shadow:3px 3px 0 #120d1c}
+  .sub{font-size:10px;color:var(--dim);line-height:1.9}
+
+  .lane{margin:0 auto}
+  .center{display:flex;justify-content:center}
+
+  /* generic pixel card */
+  .card{
+    background:linear-gradient(180deg,var(--panel2),var(--panel));
+    border:3px solid var(--line); box-shadow:var(--shadow);
+    padding:16px 18px; position:relative;
+  }
+  .card .tag{
+    position:absolute;top:-11px;left:14px;font-size:8px;padding:4px 8px;
+    background:var(--orange);color:#231; border:3px solid #120d1c;
+    letter-spacing:1px;
+  }
+  .card h3{margin:8px 0 4px;font-size:13px}
+  .card .role{font-size:8px;color:var(--cyan);letter-spacing:1px;margin-bottom:10px}
+  .card ul{margin:0;padding-left:14px}
+  .card li{font-size:9px;line-height:2;color:var(--dim);list-style:none;position:relative;padding-left:12px}
+  .card li::before{content:"▪";position:absolute;left:0;color:var(--orange)}
+
+  .sprite{
+    width:104px;height:104px;image-rendering:pixelated;
+    background:rgba(0,0,0,.25);border:3px solid var(--line);
+    display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+    font-size:8px;color:var(--dim);text-align:center;padding:6px;
+  }
+  .sprite img{width:100%;height:100%;image-rendering:pixelated;object-fit:contain}
+
+  /* RAY node */
+  .ray{display:inline-flex;align-items:center;gap:16px;padding:14px 20px}
+  .ray .who{font-size:8px;color:var(--dim)}
+  .ray .avatar{
+    width:54px;height:54px;border:3px solid var(--line);background:#191227;
+    display:flex;align-items:center;justify-content:center;font-size:26px}
+  .ray h3{font-size:14px;color:var(--orange2)}
+
+  /* FABLE node */
+  .fable{display:flex;gap:20px;align-items:center;max-width:640px}
+  .fable .body{flex:1}
+
+  /* worker row */
+  .workers{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-top:6px}
+  .worker{width:210px;text-align:center}
+  .worker .sprite{width:96px;height:96px;margin:0 auto 10px}
+  .worker h4{font-size:10px;margin:0 0 6px;color:var(--cyan2)}
+  .worker p{font-size:8px;color:var(--dim);line-height:1.9;margin:0}
+  .worker .spec{
+    font-size:7px;color:var(--orange2);margin-top:8px;border-top:2px dashed var(--line);
+    padding-top:7px;letter-spacing:.5px}
+
+  /* connectors */
+  .conn{display:flex;flex-direction:column;align-items:center;gap:6px;margin:6px 0}
+  .arrow{width:4px;height:34px;background:
+     repeating-linear-gradient(180deg,var(--orange) 0 6px, transparent 6px 12px);
+     animation:flow 700ms linear infinite}
+  @keyframes flow{to{background-position:0 12px}}
+  .label{
+    font-size:8px;color:var(--orange2);background:var(--bg1);
+    border:2px solid var(--line);padding:6px 10px;letter-spacing:1px}
+  .label b{color:var(--cyan)}
+
+  /* fan connector (svg) */
+  .fan{width:100%;max-width:760px;margin:2px auto -6px;display:block}
+  .fan path{fill:none;stroke:var(--cyan);stroke-width:3;
+    stroke-dasharray:5 7;animation:dash 800ms linear infinite}
+  @keyframes dash{to{stroke-dashoffset:-24}}
+
+  /* verify loop banner */
+  .loop{
+    max-width:760px;margin:22px auto 0;display:flex;gap:14px;align-items:center;
+    justify-content:center;background:linear-gradient(90deg,#2a1f42,#241b34);
+    border:3px solid var(--line);box-shadow:var(--shadow);padding:14px 18px}
+  .loop .ico{font-size:22px}
+  .loop .txt{font-size:9px;color:var(--dim);line-height:1.9;text-align:left}
+  .loop .txt b{color:var(--green)}
+
+  /* economics footer chip */
+  .chips{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:22px}
+  .chip{font-size:8px;color:var(--ink);background:var(--panel);
+    border:2px solid var(--line);padding:9px 12px;letter-spacing:.5px}
+  .chip b{color:var(--orange)}
+  .chip .c{color:var(--cyan)}
+
+  footer{text-align:center;margin-top:26px;font-size:8px;color:#6a5f88;line-height:2}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="kicker">▚ CAN AI RECREATE BLENDER? ▚</div>
+    <h1>ONE ARCHITECT · MANY WORKERS</h1>
+    <div class="sub">How the whole build gets made — Fable designs, the Opus workshop implements.</div>
+  </header>
+
+  <!-- RAY -->
+  <div class="center">
+    <div class="card ray">
+      <span class="tag" style="background:var(--cyan);color:#08312f">HUMAN</span>
+      <div class="avatar">🧑‍💻</div>
+      <div>
+        <div class="who">DIRECTOR</div>
+        <h3>RAY</h3>
+        <div class="who" style="color:var(--dim);margin-top:6px">Sets the goal &amp; the taste.<br>Makes the calls that matter.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn">
+    <div class="arrow"></div>
+    <div class="label">the brief: <b>“recreate Blender from scratch”</b></div>
+    <div class="arrow"></div>
+  </div>
+
+  <!-- FABLE -->
+  <div class="center">
+    <div class="card fable">
+      <span class="tag">ARCHITECT · PM</span>
+      <div class="sprite" id="fable-sprite"><img src="sprites/fable-teacher.png" alt="Fable the teacher fox"></div>
+      <div class="body">
+        <h3>FABLE THE FOX</h3>
+        <div class="role">OWNS THE RISKY CORE</div>
+        <ul>
+          <li>Architecture &amp; core interfaces</li>
+          <li>Mesh data structure · undo/redo</li>
+          <li>Viewport &amp; camera math</li>
+          <li>Writes every spec + integration review</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="conn">
+    <div class="arrow"></div>
+    <div class="label">writes <b>specs</b>: file paths · interfaces · out-of-scope · acceptance tests</div>
+  </div>
+
+  <!-- FAN OUT -->
+  <svg class="fan" viewBox="0 0 760 60" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M380 0 C380 30, 130 20, 120 58"/>
+    <path d="M380 0 C380 30, 375 24, 375 58"/>
+    <path d="M380 0 C380 30, 630 20, 640 58"/>
+  </svg>
+
+  <!-- WORKERS -->
+  <div class="workers">
+    <div class="worker">
+      <div class="sprite opus" data-i="1"><img src="sprites/v2-steel.png" alt="Opus worker robot"></div>
+      <h4>OPUS WORKER</h4>
+      <p>UI panels · outliner · properties · headers</p>
+      <div class="spec">SPEC → BUILD → SELF-CHECK</div>
+    </div>
+    <div class="worker">
+      <div class="sprite opus" data-i="2"><img src="sprites/v2-steel.png" alt="Opus worker robot"></div>
+      <h4>OPUS WORKER</h4>
+      <p>Modeling tools: extrude · inset · bevel · loop cut</p>
+      <div class="spec">SPEC → BUILD → SELF-CHECK</div>
+    </div>
+    <div class="worker">
+      <div class="sprite opus" data-i="3"><img src="sprites/v2-steel.png" alt="Opus worker robot"></div>
+      <h4>OPUS WORKER</h4>
+      <p>Importers / exporters · save &amp; load · modifiers</p>
+      <div class="spec">SPEC → BUILD → SELF-CHECK</div>
+    </div>
+  </div>
+
+  <!-- VERIFY LOOP -->
+  <div class="loop">
+    <div class="ico">🔁</div>
+    <div class="txt">
+      <b>VERIFY LOOP:</b> every worker checks its own acceptance tests →
+      Fable adversarially verifies each result → failures get re-dispatched →
+      passes get <b>integrated &amp; shipped</b>.
+    </div>
+  </div>
+
+  <div class="chips">
+    <div class="chip"><b>50+</b> Opus worker tasks across the build</div>
+    <div class="chip">workers run at <span class="c">~½ the token price</span></div>
+    <div class="chip"><b>0</b> failed tasks in the night build</div>
+  </div>
+
+  <footer>
+    VIBE CODED BLENDER · raymundo302.github.io/vibe-blender<br>
+    Fable = Fable&nbsp;5 (architect) · Workers = Opus subagents (implementers)
+  </footer>
+</div>
+</body>
+</html>

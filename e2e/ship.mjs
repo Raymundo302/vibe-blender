@@ -176,9 +176,15 @@ runE2e(async (t) => {
   await t.sleep(60);
   const studioPng = await t.screenshot('/tmp/p3-3-studio.png');
 
+  // Z → rendered (P8: PBR lit by scene lights).
+  await t.key('z', 'KeyZ', 0);
+  t.check('Z cycles studio → rendered',
+    (await t.evaluate('window.__app.renderer.shadingMode')) === 'rendered');
+  t.check('chip follows to Rendered', (await shadingChipText()) === 'Rendered');
+
   // Z → back to matcap (full cycle).
   await t.key('z', 'KeyZ', 0);
-  t.check('Z cycles studio → matcap (wraps)',
+  t.check('Z cycles rendered → matcap (wraps)',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'matcap');
 
   // Clicking the chip cycles too.

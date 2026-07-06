@@ -15,6 +15,8 @@ import {
   type ElementPickResult,
 } from './passes/elementPickPass';
 import { elementIndexMaps } from '../core/mesh/editOverlayData';
+import { RenderedPass, collectLights } from './passes/renderedPass';
+import { IconPass, type IconShape } from './passes/iconPass';
 import { createMatcapTexture } from './matcap';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
@@ -29,10 +31,10 @@ interface GpuMesh {
   version: string;
 }
 
-/** Viewport solid-shading mode; Z cycles matcap → wireframe → studio → matcap. */
-export type ShadingMode = 'matcap' | 'wireframe' | 'studio';
+/** Viewport solid-shading mode; Z cycles matcap → wireframe → studio → rendered. */
+export type ShadingMode = 'matcap' | 'wireframe' | 'studio' | 'rendered';
 
-const SHADING_CYCLE: readonly ShadingMode[] = ['matcap', 'wireframe', 'studio'];
+const SHADING_CYCLE: readonly ShadingMode[] = ['matcap', 'wireframe', 'studio', 'rendered'];
 
 /**
  * What a pick landed on: a scene object, a translate-gizmo axis handle, or
@@ -44,6 +46,16 @@ export type PickResult =
 
 const BG = [0.227, 0.227, 0.227] as const; // Blender viewport grey
 
+/** Which glyph the icon pass draws for a non-mesh object. */
+function iconShape(obj: SceneObject): IconShape {
+  if (obj.kind === 'camera') return 3;
+  switch (obj.light?.type) {
+    case 'sun': return 1;
+    case 'spot': return 2;
+    default: return 0;
+  }
+}
+
 export class Renderer {
   private readonly meshPass: MeshPass;
   private readonly studioPass: StudioPass;
@@ -54,6 +66,8 @@ export class Renderer {
   private readonly gizmoPass: GizmoPass;
   private readonly editOverlayPass: EditOverlayPass;
   private readonly elementPickPass: ElementPickPass;
+  private readonly renderedPass: RenderedPass;
+  private readonly iconPass: IconPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
 
@@ -90,6 +104,8 @@ export class Renderer {
     this.gizmoPass = new GizmoPass(gl);
     this.editOverlayPass = new EditOverlayPass(gl);
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
+    this.renderedPass = new RenderedPass(gl);
+    this.iconPass = new IconPass(gl);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -163,6 +179,13 @@ export class Renderer {
         this.studioPass.setObject(obj.transform.matrix(), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+    } else if (this.shadingMode === 'rendered') {
+      this.renderedPass.begin(view, proj, camera.eye, collectLights(scene));
+      for (const obj of visible) {
+        if (obj.kind !== 'mesh') continue;
+        this.renderedPass.setObject(obj.transform.matrix(), scene.materialOf(obj));
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+      }
     } else {
       this.meshPass.begin(view, proj);
       for (const obj of visible) {
@@ -173,6 +196,19 @@ export class Renderer {
 
     // Grid (blended, after opaque)
     this.gridPass.render(view, proj, camera.eye);
+
+    // Billboard icons for non-mesh objects (lights, cameras)
+    const icons = visible.filter((o) => o.kind !== 'mesh');
+    if (icons.length > 0) {
+      this.iconPass.begin(proj.mul(view), canvas.width, canvas.height);
+      for (const obj of icons) {
+        const selected = scene.selection.has(obj.id);
+        const color: [number, number, number] = selected
+          ? (scene.activeId === obj.id ? [1, 0.66, 0.25] : [0.95, 0.55, 0.2])
+          : [0.85, 0.85, 0.85];
+        this.iconPass.draw(obj.transform.position, iconShape(obj), color);
+      }
+    }
 
     // Selection outlines — the object being edited gets the cage, not an outline
     const editObj = scene.editObject;
@@ -234,6 +270,13 @@ export class Renderer {
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT); // pick FBO still bound: gizmo handles win
       this.gizmoPass.renderPick(this.pickingPass, viewProj, gz.origin, gz.scale);
+    }
+    // Light/camera icons — drawn last (iconPass switches GL programs, and
+    // pickingPass.drawObject assumes the picking shader is still active).
+    const iconObjs = scene.objects.filter((o) => o.visible && o.kind !== 'mesh');
+    if (iconObjs.length > 0) {
+      this.iconPass.begin(viewProj, canvas.width, canvas.height);
+      for (const obj of iconObjs) this.iconPass.drawPick(obj.transform.position, obj.id + 1);
     }
     this.pickingPass.end(canvas.width, canvas.height);
 
