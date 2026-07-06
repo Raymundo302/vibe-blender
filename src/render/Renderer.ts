@@ -1,6 +1,8 @@
 import type { GlContext } from './gl/context';
 import { VertexArray } from './gl/VertexArray';
 import { MeshPass } from './passes/meshPass';
+import { StudioPass } from './passes/studioPass';
+import { WirePass } from './passes/wirePass';
 import { GridPass } from './passes/gridPass';
 import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
@@ -21,8 +23,15 @@ import type { Vec3 } from '../core/math/vec3';
 
 interface GpuMesh {
   triangles: VertexArray;
+  /** Unique-edge line segments (position-only), for wireframe shading. */
+  edges: VertexArray;
   version: number;
 }
+
+/** Viewport solid-shading mode; Z cycles matcap → wireframe → studio → matcap. */
+export type ShadingMode = 'matcap' | 'wireframe' | 'studio';
+
+const SHADING_CYCLE: readonly ShadingMode[] = ['matcap', 'wireframe', 'studio'];
 
 /**
  * What a pick landed on: a scene object, a translate-gizmo axis handle, or
@@ -36,6 +45,8 @@ const BG = [0.227, 0.227, 0.227] as const; // Blender viewport grey
 
 export class Renderer {
   private readonly meshPass: MeshPass;
+  private readonly studioPass: StudioPass;
+  private readonly wirePass: WirePass;
   private readonly gridPass: GridPass;
   private readonly outlinePass: OutlinePass;
   private readonly pickingPass: PickingPass;
@@ -54,6 +65,13 @@ export class Renderer {
   gizmoVisible = true;
 
   /**
+   * Current viewport solid-shading mode. Z (or the topbar chip) cycles it via
+   * {@link cycleShadingMode}. The solid pass in render() branches on this;
+   * outlines / edit-cage / gizmo overlays are unaffected.
+   */
+  shadingMode: ShadingMode = 'matcap';
+
+  /**
    * Ad-hoc overlay polyline in the edit object's LOCAL space (loop-cut
    * preview). Owning operator sets it on hover and MUST null it on
    * confirm/cancel. Pass a NEW array per change — it doubles as the cache key.
@@ -63,6 +81,8 @@ export class Renderer {
   constructor(private readonly ctx: GlContext) {
     const { gl, canvas } = ctx;
     this.meshPass = new MeshPass(gl, createMatcapTexture(gl));
+    this.studioPass = new StudioPass(gl);
+    this.wirePass = new WirePass(gl);
     this.gridPass = new GridPass(gl);
     this.outlinePass = new OutlinePass(gl, canvas.width, canvas.height);
     this.pickingPass = new PickingPass(gl, canvas.width, canvas.height);
@@ -78,6 +98,7 @@ export class Renderer {
     const cached = this.gpuMeshes.get(obj.id);
     if (cached && cached.version === obj.mesh.version) return cached;
     cached?.triangles.dispose();
+    cached?.edges.dispose();
 
     const data = meshToRenderData(obj.mesh);
     const entry: GpuMesh = {
@@ -85,10 +106,23 @@ export class Renderer {
         { location: 0, size: 3, data: data.trianglePositions },
         { location: 1, size: 3, data: data.triangleNormals },
       ]),
+      edges: new VertexArray(this.ctx.gl, [
+        { location: 0, size: 3, data: data.edgePositions },
+      ]),
       version: obj.mesh.version,
     };
     this.gpuMeshes.set(obj.id, entry);
     return entry;
+  }
+
+  /**
+   * Advance the shading mode one step (matcap → wireframe → studio → matcap)
+   * and return the new mode. Called by the Z keybind and the topbar chip.
+   */
+  cycleShadingMode(): ShadingMode {
+    const i = SHADING_CYCLE.indexOf(this.shadingMode);
+    this.shadingMode = SHADING_CYCLE[(i + 1) % SHADING_CYCLE.length];
+    return this.shadingMode;
   }
 
   render(scene: Scene, camera: OrbitCamera): void {
@@ -106,11 +140,26 @@ export class Renderer {
     const proj = camera.projMatrix(canvas.width / canvas.height);
     const visible = scene.objects.filter((o) => o.visible);
 
-    // Solid matcap meshes
-    this.meshPass.begin(view, proj);
-    for (const obj of visible) {
-      this.meshPass.setObject(obj.transform.matrix(), view);
-      this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+    // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
+    // no fill; matcap/studio fill triangles with their respective shaders.
+    if (this.shadingMode === 'wireframe') {
+      this.wirePass.begin(view, proj);
+      for (const obj of visible) {
+        this.wirePass.setObject(obj.transform.matrix());
+        this.gpuMesh(obj).edges.draw(gl.LINES);
+      }
+    } else if (this.shadingMode === 'studio') {
+      this.studioPass.begin(view, proj);
+      for (const obj of visible) {
+        this.studioPass.setObject(obj.transform.matrix(), view);
+        this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+      }
+    } else {
+      this.meshPass.begin(view, proj);
+      for (const obj of visible) {
+        this.meshPass.setObject(obj.transform.matrix(), view);
+        this.gpuMesh(obj).triangles.draw(gl.TRIANGLES);
+      }
     }
 
     // Grid (blended, after opaque)

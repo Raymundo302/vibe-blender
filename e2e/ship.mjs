@@ -141,4 +141,80 @@ runE2e(async (t) => {
   t.check('malformed OBJ import throws', threwObj === true);
   t.check('scene untouched after failed OBJ import',
     (await t.evaluate('window.__app.scene.objects.length')) === beforeBadObj);
+
+  // --- P3-3: shading modes (matcap / wireframe / studio) ---
+
+  // Reload a clean single-Cube scene and reset shading so this section is deterministic.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  await t.sleep(60);
+
+  const shadingChipText = () =>
+    t.evaluate(`document.querySelector('.topbar-btn[data-action="shading-mode"]').textContent`);
+
+  t.check('starts in matcap',
+    (await t.evaluate('window.__app.renderer.shadingMode')) === 'matcap');
+  t.check('shading chip present + labeled Matcap',
+    (await shadingChipText()) === 'Matcap');
+
+  // Capture a matcap screenshot for human review.
+  const matcapPng = await t.screenshot('/tmp/p3-3-matcap.png');
+
+  // Z → wireframe.
+  await t.key('z', 'KeyZ', 0);
+  t.check('Z cycles matcap → wireframe',
+    (await t.evaluate('window.__app.renderer.shadingMode')) === 'wireframe');
+  t.check('chip follows to Wireframe', (await shadingChipText()) === 'Wireframe');
+  await t.sleep(60);
+  const wirePng = await t.screenshot('/tmp/p3-3-wireframe.png');
+
+  // Z → studio.
+  await t.key('z', 'KeyZ', 0);
+  t.check('Z cycles wireframe → studio',
+    (await t.evaluate('window.__app.renderer.shadingMode')) === 'studio');
+  t.check('chip follows to Studio', (await shadingChipText()) === 'Studio');
+  await t.sleep(60);
+  const studioPng = await t.screenshot('/tmp/p3-3-studio.png');
+
+  // Z → back to matcap (full cycle).
+  await t.key('z', 'KeyZ', 0);
+  t.check('Z cycles studio → matcap (wraps)',
+    (await t.evaluate('window.__app.renderer.shadingMode')) === 'matcap');
+
+  // Clicking the chip cycles too.
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="shading-mode"]').click()`);
+  await t.sleep(60);
+  t.check('clicking the chip cycles to wireframe',
+    (await t.evaluate('window.__app.renderer.shadingMode')) === 'wireframe');
+
+  // The three renders must actually differ — compare saved PNG byte lengths as a
+  // cheap proxy (all three are also saved to /tmp for human review).
+  const { statSync } = await import('node:fs');
+  const sz = (p) => statSync(p).size;
+  const mSz = sz(matcapPng), wSz = sz(wirePng), sSz = sz(studioPng);
+  t.check('matcap / wireframe / studio renders differ',
+    mSz !== wSz && wSz !== sSz && mSz !== sSz, `${mSz} / ${wSz} / ${sSz}`);
+
+  // --- Edit mode still fully works while in wireframe shading ---
+  await t.evaluate(`window.__app.renderer.shadingMode = 'wireframe'`);
+  await t.sleep(60);
+  // Tab into edit mode on the active Cube.
+  await t.key('Tab', 'Tab', 0);
+  t.check('Tab enters edit mode under wireframe shading',
+    (await t.evaluate('!!window.__app.scene.editMode')) === true);
+  // A: select all verts.
+  await t.key('a', 'KeyA', 0);
+  const selCount = await t.evaluate(
+    'window.__app.scene.editMode.selectedVertIds(window.__app.scene.editObject.mesh).size');
+  t.check('A selects all verts in wireframe edit mode', selCount === 8);
+  // G then confirm — a modal move must run without throwing.
+  await t.key('g', 'KeyG', 0);
+  await t.mouse('mouseMoved', 700, 380);
+  await t.mouse('mouseMoved', 740, 400);
+  await t.click(740, 400); // click confirms the modal move
+  t.check('G move confirms in wireframe edit mode (still editing, still alive)',
+    (await t.evaluate('!!window.__app.scene.editMode && !!window.__app.renderer')) === true);
+  // Tab back to object mode and restore matcap so the suite ends clean.
+  await t.key('Tab', 'Tab', 0);
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
 });

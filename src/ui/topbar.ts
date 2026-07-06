@@ -1,4 +1,5 @@
 import type { Scene } from '../core/scene/Scene';
+import type { Renderer } from '../render/Renderer';
 
 /**
  * Callbacks the topbar chip-buttons fire. Phase 3 tasks extend this as they add
@@ -23,9 +24,14 @@ export interface TopbarActions {
 export class Topbar {
   private readonly statusEl: HTMLSpanElement;
   private readonly chipEl: HTMLSpanElement;
+  private readonly shadingEl: HTMLButtonElement;
   private lastSig = '';
 
-  constructor(private readonly scene: Scene, actions: TopbarActions) {
+  constructor(
+    private readonly scene: Scene,
+    private readonly renderer: Renderer,
+    actions: TopbarActions,
+  ) {
     const root = document.getElementById('topbar') as HTMLElement;
     root.replaceChildren();
 
@@ -36,6 +42,13 @@ export class Topbar {
     const chip = document.createElement('span');
     chip.className = 'topbar-chip';
     this.chipEl = chip;
+
+    // Shading-mode chip: clickable, cycles matcap → wireframe → studio like Z.
+    const shading = Topbar.makeButton('Matcap', 'shading-mode', () => {
+      this.renderer.cycleShadingMode();
+      this.update();
+    });
+    this.shadingEl = shading;
 
     const spacer = document.createElement('div');
     spacer.className = 'topbar-spacer';
@@ -49,7 +62,8 @@ export class Topbar {
     this.statusEl.className = 'topbar-status';
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
-    root.append(title, chip, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, this.statusEl);
+    // The shading chip sits next to the mode chip on the left.
+    root.append(title, chip, shading, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, this.statusEl);
     this.update();
   }
 
@@ -68,12 +82,15 @@ export class Topbar {
     const count = this.scene.objects.length;
     const edit = this.scene.editMode;
     const mode = edit ? `Edit Mode · ${edit.elementMode}` : 'Object Mode';
-    const sig = `${active ? active.name : ''}#${count}#${mode}`;
+    const shading = this.renderer.shadingMode;
+    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
     this.chipEl.textContent = mode;
     this.chipEl.classList.toggle('topbar-chip-edit', !!edit);
+    // Capitalize the shading label for display (matcap → Matcap).
+    this.shadingEl.textContent = shading.charAt(0).toUpperCase() + shading.slice(1);
     const noun = count === 1 ? 'object' : 'objects';
     this.statusEl.textContent = active
       ? `${active.name} — ${count} ${noun}`

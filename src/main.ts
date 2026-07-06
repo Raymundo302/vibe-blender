@@ -143,7 +143,7 @@ shell.sidebar.classList.add('outliner-floating');
 
 // The header bar is not a sidebar Panel — it fills #topbar and is updated
 // directly in the frame loop alongside shell.update().
-const topbar = new Topbar(scene, {
+const topbar = new Topbar(scene, renderer, {
   saveScene, openScene,
   exportObj: exportObjFile,
   importObj: importObjFile,

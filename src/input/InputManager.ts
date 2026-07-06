@@ -221,6 +221,16 @@ export class InputManager {
       return;
     }
 
+    // Z: cycle viewport shading (matcap → wireframe → studio). Works in both
+    // object and edit mode; placed before the edit-mode branch so it applies to
+    // both. Plain Z only — Ctrl+Z (undo) is handled above and already returned.
+    if (key === 'z' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const mode = this.renderer.cycleShadingMode();
+      this.ctx.setStatus(`Shading: ${mode}`);
+      return;
+    }
+
     if (this.ctx.scene.editMode) {
       this.onEditModeKey(e, key);
       return; // object-mode keys (G/R/S on objects, X, Shift-A/D) don't apply here
