@@ -134,5 +134,5 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 |----|------|-------|---------|--------|
 | P5-1 | Edit-mode delete UX: Delete-key alias for X menu, dissolve verts/edges | opus | — | verified |
 | P5-2 | Bridge edge loops (two selected loops → connecting quads) | opus | — | verified |
-| P5-3 | Bevel edges (Ctrl+B, modal width) | opus | — | pending |
+| P5-3 | Bevel edges (Ctrl+B, modal width) | opus | — | built |
 | P5-4 | F fill face, subdivide selection, frame selection (period) | opus | — | pending |

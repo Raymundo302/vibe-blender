@@ -9,6 +9,7 @@ import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { LoopCutOperator } from '../tools/loopCut';
+import { BevelOperator } from '../tools/bevel';
 import { bridgeLoops } from '../core/mesh/ops/bridge';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
@@ -371,6 +372,14 @@ export class InputManager {
     }
     if (key === 'a' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       edit.selectAll(mesh);
+      return;
+    }
+    // Ctrl+B: bevel the selected edges (edge mode). Modal width drag; the op
+    // reports its own error for unsupported selections. Must precede plain-B box
+    // select (which guards !e.ctrlKey) and preventDefault the browser bookmark.
+    if (key === 'b' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.startOperator(new BevelOperator());
       return;
     }
     // B: box select. Starts a modal operator whose next LMB drag draws the rect;

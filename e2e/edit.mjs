@@ -531,4 +531,76 @@ runE2e(async (t) => {
 
   await t.key('z', 'KeyZ', 2); // ctrl-z
   t.check('Ctrl+Z restores pre-bridge faces', (await bFaces()) === facesBeforeBridge);
+
+  // --- P5-3: bevel edges (Ctrl+B) ---
+  // Fresh cube via OBJ import (the bridge section left an imported mesh behind).
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    for (const o of [...s.objects]) s.remove(o.id);
+  })()`);
+  const cubeObj = 'v -1 -1 -1\nv 1 -1 -1\nv 1 1 -1\nv -1 1 -1\nv -1 -1 1\nv 1 -1 1\nv 1 1 1\nv -1 1 1\n' +
+    'f 5 6 7 8\nf 2 1 4 3\nf 6 2 3 7\nf 1 5 8 4\nf 8 7 3 4\nf 1 2 6 5\n';
+  await t.evaluate('window.__app.io.importObj(' + JSON.stringify(cubeObj) + ')');
+  t.check('cube OBJ imported (8 verts, 6 faces)',
+    (await t.evaluate('window.__app.scene.objects[0].mesh.verts.size')) === 8 &&
+    (await t.evaluate('window.__app.scene.objects[0].mesh.faces.size')) === 6);
+
+  await t.key('Tab', 'Tab');
+  t.check('entered edit mode on imported cube', (await mode()) === 'edit');
+  await t.key('2', 'Digit2'); // edge select
+  await t.key('a', 'KeyA', 1); // deselect all
+  const bvFaces = () => t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  const facesPreBevel = await bvFaces();
+
+  // Find a pickable (front-facing) edge the same way loop cut does.
+  const bvEdge = await t.evaluate(`(() => {
+    const app = window.__app, obj = app.scene.editObject, cam = app.camera;
+    const canvas = document.querySelector('canvas');
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    const vp = cam.projMatrix(w / h).mul(cam.viewMatrix());
+    for (const [key, e] of obj.mesh.edges()) {
+      const a = obj.mesh.verts.get(e.v0).co, b = obj.mesh.verts.get(e.v1).co;
+      const mid = { x: (a.x+b.x)/2, y: (a.y+b.y)/2, z: (a.z+b.z)/2 };
+      const world = obj.transform.matrix().transformPoint(mid);
+      const ndc = vp.transformPoint(world);
+      const cssX = (ndc.x + 1) / 2 * w, cssY = (1 - ndc.y) / 2 * h;
+      const hit = app.renderer.pickElement(app.scene, cam, cssX, cssY, 'edge');
+      if (hit && hit.kind === 'edge' && hit.key === key) {
+        return { key, pageX: rect.left + cssX, pageY: rect.top + cssY };
+      }
+    }
+    return null;
+  })()`);
+  t.check('a front edge is pickable for bevel', bvEdge !== null);
+
+  // Select it, then Ctrl+B → drag right to grow width → LMB confirm. +1 face.
+  await t.click(Math.round(bvEdge.pageX), Math.round(bvEdge.pageY));
+  t.check('one edge selected before bevel', (await editSel('e.edges.size')) === 1);
+  await t.mouse('mouseMoved', Math.round(bvEdge.pageX), Math.round(bvEdge.pageY));
+  await t.key('b', 'KeyB', 2); // ctrl+b
+  t.check('bevel modal is live', await t.evaluate(`document.getElementById('status').textContent.startsWith('Bevel')`));
+  await t.mouse('mouseMoved', Math.round(bvEdge.pageX) + 70, Math.round(bvEdge.pageY));
+  await t.sleep(120);
+  await t.click(Math.round(bvEdge.pageX) + 70, Math.round(bvEdge.pageY)); // confirm
+  t.check('bevel one edge grows the cube to 7 faces',
+    (await bvFaces()) === facesPreBevel + 1, `${facesPreBevel} → ${await bvFaces()}`);
+  t.check('bevel leaves 10 verts',
+    (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === 10);
+
+  // Ctrl+Z restores the 6-face cube.
+  await t.key('z', 'KeyZ', 2);
+  t.check('Ctrl+Z restores 6 faces after bevel', (await bvFaces()) === facesPreBevel);
+
+  // Esc cancels a bevel without touching the mesh.
+  await t.key('a', 'KeyA', 1); // deselect
+  await t.click(Math.round(bvEdge.pageX), Math.round(bvEdge.pageY)); // reselect the edge
+  const facesBeforeCancel = await bvFaces();
+  await t.mouse('mouseMoved', Math.round(bvEdge.pageX), Math.round(bvEdge.pageY));
+  await t.key('b', 'KeyB', 2); // ctrl+b
+  await t.mouse('mouseMoved', Math.round(bvEdge.pageX) + 70, Math.round(bvEdge.pageY));
+  await t.sleep(80);
+  await t.key('Escape', 'Escape');
+  t.check('Esc cancels bevel without changes', (await bvFaces()) === facesBeforeCancel);
 });
