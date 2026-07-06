@@ -127,7 +127,7 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 | P4-3 | Properties editor: vertical tab strip + Object tab (transform, rename, visibility) | opus | P4-1 | verified |
 | P4-4 | Modifier tab UI (add/remove/toggle/apply/params) + sceneJson v2 with modifiers | opus | P4-2,3 | verified |
 | P4-5 | Mirror + Array modifiers | opus | P4-2 | verified |
-| P4-6 | Subdivision Surface modifier (Catmull-Clark) | opus | P4-2 | built |
+| P4-6 | Subdivision Surface modifier (Catmull-Clark) | opus | P4-2 | verified |
 
 ### Phase 5 — Modeling tools (night session)
 | ID | Task | Owner | Depends | Status |
