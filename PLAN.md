@@ -144,5 +144,5 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 | P6-2 | N-panel: viewport overlay sidebar (N key) with item transform + dims | opus | — | verified |
 | P6-3 | Per-object viewport color: color field, matcap tint + studio base color, Object tab picker | opus | — | verified |
 | P6-4 | Autosave: localStorage every 30s + crash-restore prompt on boot | opus | — | verified |
-| P6-5 | Proportional editing (O): falloff-weighted G/R/S in edit mode, wheel radius, circle overlay | opus | — | built |
+| P6-5 | Proportional editing (O): falloff-weighted G/R/S in edit mode, wheel radius, circle overlay | opus | — | verified |
 | P6-6 | Shortcut overlay + status-hint audit: every wired key listed, grouped | opus | — | pending |
