@@ -160,13 +160,13 @@ export class Renderer {
     } else if (this.shadingMode === 'studio') {
       this.studioPass.begin(view, proj);
       for (const obj of visible) {
-        this.studioPass.setObject(obj.transform.matrix(), view);
+        this.studioPass.setObject(obj.transform.matrix(), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else {
       this.meshPass.begin(view, proj);
       for (const obj of visible) {
-        this.meshPass.setObject(obj.transform.matrix(), view);
+        this.meshPass.setObject(obj.transform.matrix(), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     }

@@ -1,4 +1,5 @@
 import { Shader } from '../gl/Shader';
+import { Vec3 } from '../../core/math/vec3';
 import type { Mat4 } from '../../core/math/mat4';
 
 const VERT = /* glsl */ `#version 300 es
@@ -20,6 +21,7 @@ void main() {
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_viewNormal;
+uniform vec3 u_color; // per-object base albedo (0..1)
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
@@ -31,7 +33,7 @@ void main() {
   float k = max(dot(n, keyDir), 0.0);
   float f = max(dot(n, fillDir), 0.0);
   vec3 lit = vec3(0.12) + keyCol * k + fillCol * f;
-  vec3 base = vec3(0.62);
+  vec3 base = u_color;
   outColor = vec4(base * lit, 1.0);
 }`;
 
@@ -50,8 +52,9 @@ export class StudioPass {
     this.shader.setMat4('u_proj', proj);
   }
 
-  setObject(model: Mat4, view: Mat4): void {
+  setObject(model: Mat4, view: Mat4, color: readonly [number, number, number]): void {
     this.shader.setMat4('u_model', model);
     this.shader.setMat3('u_normalMat', view.mul(model).normalMatrix());
+    this.shader.setVec3('u_color', new Vec3(color[0], color[1], color[2]));
   }
 }

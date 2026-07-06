@@ -68,6 +68,7 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       name: obj.name,
       visible: obj.visible,
       shadeSmooth: obj.shadeSmooth,
+      color: [num(obj.color[0]), num(obj.color[1]), num(obj.color[2])],
       transform: {
         position: vec(obj.transform.position),
         rotation: quat(obj.transform.rotation),
@@ -106,6 +107,7 @@ interface ObjectData {
   name: string;
   visible: boolean;
   shadeSmooth?: boolean;
+  color: [number, number, number];
   position: [number, number, number];
   rotation: [number, number, number, number];
   scale: [number, number, number];
@@ -117,8 +119,17 @@ interface SceneData {
   objects: ObjectData[];
 }
 
+/** Default viewport color for files saved before per-object color existed. */
+const DEFAULT_COLOR: [number, number, number] = [0.69, 0.69, 0.69];
+
 function fail(msg: string): never {
   throw new Error(`Invalid scene file: ${msg}`);
+}
+
+/** Parse an optional [r,g,b] color; absent → default grey, present → validated. */
+function parseColor(v: unknown, i: number): [number, number, number] {
+  if (v === undefined) return [...DEFAULT_COLOR];
+  return numArray(v, 3, `objects[${i}].color`) as [number, number, number];
 }
 
 function numArray(v: unknown, len: number, where: string): number[] {
@@ -191,6 +202,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     name: obj.name,
     visible: obj.visible,
     shadeSmooth: obj.shadeSmooth === true, // absent in v1/v2 files → flat
+    color: parseColor(obj.color, i), // absent in older files → default grey
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
@@ -292,6 +304,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
     const obj = scene.add(od.name, mesh);
     obj.visible = od.visible;
     obj.shadeSmooth = od.shadeSmooth === true;
+    obj.color = [od.color[0], od.color[1], od.color[2]];
     obj.transform = new Transform(
       Vec3.fromArray(od.position),
       new Quat(od.rotation[0], od.rotation[1], od.rotation[2], od.rotation[3]),

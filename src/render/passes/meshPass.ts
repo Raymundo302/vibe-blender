@@ -1,4 +1,5 @@
 import { Shader } from '../gl/Shader';
+import { Vec3 } from '../../core/math/vec3';
 import type { Mat4 } from '../../core/math/mat4';
 
 const VERT = /* glsl */ `#version 300 es
@@ -18,11 +19,12 @@ const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_viewNormal;
 uniform sampler2D u_matcap;
+uniform vec3 u_color; // per-object viewport tint (0..1)
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
   vec2 uv = n.xy * 0.495 + 0.5;
-  outColor = vec4(texture(u_matcap, uv).rgb, 1.0);
+  outColor = vec4(texture(u_matcap, uv).rgb * 2.0 * u_color, 1.0);
 }`;
 
 /** Matcap-shaded solid mesh pass. */
@@ -46,8 +48,9 @@ export class MeshPass {
     this.shader.setInt('u_matcap', 0);
   }
 
-  setObject(model: Mat4, view: Mat4): void {
+  setObject(model: Mat4, view: Mat4, color: readonly [number, number, number]): void {
     this.shader.setMat4('u_model', model);
     this.shader.setMat3('u_normalMat', view.mul(model).normalMatrix());
+    this.shader.setVec3('u_color', new Vec3(color[0], color[1], color[2]));
   }
 }

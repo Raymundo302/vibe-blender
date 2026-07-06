@@ -8,6 +8,8 @@ export class SceneObject {
   visible = true;
   /** Shade Smooth (per-vertex normals) vs Flat (Blender default). */
   shadeSmooth = false;
+  /** Viewport display color (0..1 RGB floats). Default neutral grey (#b0b0b0-ish). */
+  color: [number, number, number] = [0.69, 0.69, 0.69];
   /** Non-destructive modifier stack, evaluated top-to-bottom. */
   readonly modifiers: Modifier[] = [];
   /** Bump after ANY stack mutation (add/remove/reorder/param/enable). */

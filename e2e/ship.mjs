@@ -656,4 +656,64 @@ runE2e(async (t) => {
   await t.sleep(80);
 
   await t.screenshot('/tmp/p6-2-npanel.png');
+
+  // --- P6-3: per-object viewport color ---
+  // Layout workspace (Properties panel visible), clean single-Cube scene, cube
+  // active + Object tab open so the color picker row is in the DOM.
+  await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
+  await t.sleep(150);
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`(() => { const s = window.__app.scene; if (s.editMode) s.exitEditMode(); s.selectOnly(s.objects[0].id); })()`);
+  await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="object"]')?.click()`);
+  await t.sleep(120);
+
+  t.check('object color picker row present',
+    await t.until(`!!document.querySelector('.properties-color')`, 5000));
+
+  const objColor0 = () => t.evaluate('window.__app.scene.objects[0].color[0]');
+  const setGrey = async () => {
+    await t.evaluate(`(() => { window.__app.scene.objects[0].color = [0.69, 0.69, 0.69]; })()`);
+    await t.sleep(80);
+  };
+  const setRedViaPicker = async () => {
+    await t.evaluate(`(() => {
+      const inp = document.querySelector('.properties-color');
+      inp.value = '#ff0000';
+      inp.dispatchEvent(new Event('input'));
+    })()`);
+    await t.sleep(80);
+  };
+
+  const { statSync: statP63 } = await import('node:fs');
+  const szP63 = (p) => statP63(p).size;
+
+  // Matcap: grey vs red renders must differ, and the picker sets a red-dominant color.
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  await setGrey();
+  const matcapGrey = await t.screenshot('/tmp/p6-3-matcap-grey.png');
+  await setRedViaPicker();
+  t.check('picker sets a red-dominant color (matcap)', (await objColor0()) > 0.9);
+  const matcapRed = await t.screenshot('/tmp/p6-3-matcap-red.png');
+  t.check('matcap tint: grey vs red renders differ',
+    szP63(matcapGrey) !== szP63(matcapRed), `${szP63(matcapGrey)} / ${szP63(matcapRed)}`);
+
+  // Studio: same check under the studio shader (base color replaced by u_color).
+  await t.evaluate(`window.__app.renderer.shadingMode = 'studio'`);
+  await setGrey();
+  const studioGrey = await t.screenshot('/tmp/p6-3-studio-grey.png');
+  await setRedViaPicker();
+  t.check('picker sets a red-dominant color (studio)', (await objColor0()) > 0.9);
+  const studioRed = await t.screenshot('/tmp/p6-3-studio-red.png');
+  t.check('studio tint: grey vs red renders differ',
+    szP63(studioGrey) !== szP63(studioRed), `${szP63(studioGrey)} / ${szP63(studioRed)}`);
+
+  // Color persists through save/load (v2 scene file carries a color triple).
+  const p63json = JSON.parse(await t.evaluate('window.__app.io.serialize()'));
+  t.check('serialized object carries a color triple',
+    Array.isArray(p63json.objects[0].color) && p63json.objects[0].color.length === 3 &&
+    p63json.objects[0].color[0] > 0.9);
+
+  // Restore clean state so the suite ends as it began.
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
 });

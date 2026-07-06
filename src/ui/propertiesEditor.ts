@@ -8,6 +8,18 @@ import { RenameObjectCommand } from '../core/undo/objectCommands';
 const DEG = 180 / Math.PI;
 const RAD = Math.PI / 180;
 
+/** 0..1 RGB floats → lowercase "#rrggbb" for a native color input. */
+function rgbToHex(c: readonly [number, number, number]): string {
+  const h = (n: number) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, '0');
+  return `#${h(c[0])}${h(c[1])}${h(c[2])}`;
+}
+
+/** "#rrggbb" → 0..1 RGB float triple. */
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
 /**
  * Properties editor (Phase 4) — Blender's tabbed properties panel. A slim
  * VERTICAL strip of icon buttons on the left edge switches which tab's content
@@ -279,6 +291,7 @@ class ObjectTab {
   private readonly nameInput: HTMLInputElement;
   private readonly visibleInput: HTMLInputElement;
   private smoothInput!: HTMLInputElement;
+  private colorInput!: HTMLInputElement;
   private readonly transformFields: TransformFields;
 
   /** Active object id shown last frame; -1 sentinel means "nothing shown". */
@@ -342,6 +355,23 @@ class ObjectTab {
     smoothRow.append(this.smoothInput, smoothLabel);
     this.body.append(smoothRow);
 
+    // Viewport display color (like visibility: view state, no undo). The native
+    // color picker stores hex; we convert to/from the object's 0..1 RGB floats.
+    const colorRow = document.createElement('label');
+    colorRow.className = 'properties-visible-row';
+    this.colorInput = document.createElement('input');
+    this.colorInput.type = 'color';
+    this.colorInput.className = 'properties-color';
+    this.colorInput.dataset.action = 'object-color';
+    this.colorInput.addEventListener('input', () => {
+      const obj = this.scene.activeObject;
+      if (obj) obj.color = hexToRgb(this.colorInput.value);
+    });
+    const colorLabel = document.createElement('span');
+    colorLabel.textContent = 'Color';
+    colorRow.append(this.colorInput, colorLabel);
+    this.body.append(colorRow);
+
     // Editable Location / Rotation / Scale — shared with the viewport N-panel.
     this.transformFields = new TransformFields(this.scene, this.undo);
     this.body.appendChild(this.transformFields.element);
@@ -374,6 +404,8 @@ class ObjectTab {
     this.nameBefore = obj.name;
     if (this.visibleInput.checked !== obj.visible) this.visibleInput.checked = obj.visible;
     if (this.smoothInput.checked !== obj.shadeSmooth) this.smoothInput.checked = obj.shadeSmooth;
+    const hex = rgbToHex(obj.color);
+    if (this.colorInput.value !== hex) this.colorInput.value = hex;
 
     this.transformFields.update();
   }

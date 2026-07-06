@@ -53,6 +53,7 @@ function makeScene(): { scene: Scene; camera: OrbitCamera } {
     Quat.fromEulerXYZ(0.3, -0.4, 0.5),
     new Vec3(2, 1, 0.5),
   );
+  a.color = [1, 0, 0.5];
 
   const gappy = makeCube();
   gappy.deleteVerts([3]); // removes vert 3 and its faces → non-contiguous ids
@@ -111,6 +112,7 @@ describe('sceneJson round trip', () => {
     const cube = dst.objects[0];
     expect(cube.transform.position.equalsApprox(new Vec3(1, 2, 3))).toBe(true);
     expect(cube.transform.scale.equalsApprox(new Vec3(2, 1, 0.5))).toBe(true);
+    expect(cube.color).toEqual([1, 0, 0.5]);
     expect(dst.objects[1].visible).toBe(false);
     expect(cam.distance).toBeCloseTo(12.5, 6);
     expect(cam.target.equalsApprox(new Vec3(0.5, 1, -2))).toBe(true);
@@ -197,6 +199,42 @@ describe('sceneJson format v2 modifiers', () => {
     });
     expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/unknown modifier type/i);
     expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
+  });
+});
+
+describe('sceneJson per-object color', () => {
+  it('defaults a new object to neutral grey', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    expect(obj.color).toEqual([0.69, 0.69, 0.69]);
+  });
+
+  it('serializes color and round-trips it', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    obj.color = [0.25, 0.5, 0.75];
+    const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(parsed.objects[0].color).toEqual([0.25, 0.5, 0.75]);
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.objects[0].color).toEqual([0.25, 0.5, 0.75]);
+  });
+
+  it('loads an older file with no color key using the default', () => {
+    const legacy = JSON.stringify({
+      format: 'vibe-blender-scene', version: 2,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      objects: [{
+        name: 'Legacy', visible: true,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [[0, 0, 0, 0], [1, 1, 0, 0], [2, 1, 1, 0]], faces: [[0, [0, 1, 2]]] },
+        modifiers: [],
+      }],
+    });
+    const dst = new Scene();
+    applySceneJson(legacy, dst, new OrbitCamera());
+    expect(dst.objects[0].color).toEqual([0.69, 0.69, 0.69]);
   });
 });
 
