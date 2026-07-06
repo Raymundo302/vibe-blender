@@ -5,3 +5,4 @@
  */
 import './mirror';
 import './array';
+import './subsurf';

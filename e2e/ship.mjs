@@ -530,4 +530,46 @@ runE2e(async (t) => {
   t.check('Ctrl+Z restores the stack (1 → 2)', (await p45mods()) === 2);
 
   await t.screenshot('/tmp/p4-5-mirror-array.png');
+
+  // --- P4-6: Subdivision Surface modifier (Catmull-Clark) ---
+  // Clean single-Cube scene, cube active, Modifiers tab open.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`window.__app.scene.selectOnly(window.__app.scene.objects[0].id)`);
+  await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="modifier"]')?.click()`);
+  await t.sleep(140);
+
+  // 'subsurf' is registered in the Add-Modifier dropdown.
+  t.check('Subdivision option present in the Add-Modifier dropdown',
+    await t.evaluate(`[...document.querySelector('.modifier-add-select').options].some((o) => o.value === 'subsurf')`));
+
+  // Add Subdivision via the dropdown → level 1 evaluates the cube to 26 verts,
+  // base mesh stays 8.
+  await addMod('subsurf');
+  t.check('Subdivision added to the stack', (await p45mods()) === 1);
+  t.check('Subsurf level 1: evaluated 26 verts while base stays 8',
+    (await p45eval()) === 26 && (await p45base()) === 8);
+
+  // Set the Levels field to 2 through the param input → evaluated 98.
+  await t.evaluate(`(() => {
+    const input = document.querySelector('.modifier-entry input.modifier-param[data-key="levels"]');
+    input.value = '2';
+    input.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(160);
+  t.check('Subsurf levels field → 2 evaluates to 98 verts', (await p45eval()) === 98);
+
+  // Performance guard: level 3 on the cube evaluates in < 200ms.
+  const p46perf = await t.evaluate(`(() => {
+    const obj = window.__app.scene.activeObject;
+    obj.modifiers[0].setParam('levels', 3);
+    obj.modifiersVersion++;
+    const t0 = performance.now();
+    const m = obj.evaluatedMesh();
+    const dt = performance.now() - t0;
+    return { verts: m.verts.size, dt };
+  })()`);
+  t.check('Subsurf level 3 produces geometry', p46perf.verts > 98);
+  t.check('Subsurf level 3 evaluates in < 200ms', p46perf.dt < 200, `${p46perf.dt.toFixed(1)}ms`);
+
+  await t.screenshot('/tmp/p4-6-subsurf.png');
 });
