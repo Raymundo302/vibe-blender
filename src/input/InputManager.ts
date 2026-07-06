@@ -51,6 +51,8 @@ export class InputManager {
     private readonly canvas: HTMLCanvasElement,
     private readonly ctx: OperatorContext,
     private readonly renderer: Renderer,
+    /** File shortcuts (Ctrl+S / Ctrl+O). DOM plumbing lives in main.ts. */
+    private readonly fileActions: { save(): void; open(): void },
   ) {
     canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -188,6 +190,20 @@ export class InputManager {
       e.preventDefault();
       const name = e.shiftKey ? this.ctx.undo.redo() : this.ctx.undo.undo();
       this.ctx.setStatus(name ? `${e.shiftKey ? 'Redo' : 'Undo'}: ${name}` : 'Nothing to undo');
+      return;
+    }
+
+    // Ctrl+S save / Ctrl+O open — work in both object and edit mode (handled
+    // above the edit-mode branch below). preventDefault stops the browser's own
+    // save/open dialogs. The load path (main.ts) exits edit mode before applying.
+    if (e.ctrlKey && key === 's' && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.fileActions.save();
+      return;
+    }
+    if (e.ctrlKey && key === 'o' && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.fileActions.open();
       return;
     }
 

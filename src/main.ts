@@ -9,6 +9,7 @@ import { UiShell } from './ui/shell';
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesPanel } from './ui/properties';
 import { Topbar } from './ui/topbar';
+import { serializeScene, applySceneJson } from './io/sceneJson';
 import type { OperatorContext } from './core/operator/Operator';
 import './ui/theme.css';
 
@@ -33,7 +34,51 @@ const opCtx: OperatorContext = {
   setStatus: (text) => { statusEl.textContent = text; },
 };
 
-new InputManager(canvas, opCtx, renderer);
+// --- Scene save / load (P3-2) ----------------------------------------------
+/** Download the current scene as a .vibe.json file. */
+function saveScene(): void {
+  const json = serializeScene(scene, camera);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'scene.vibe.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  opCtx.setStatus('Saved scene.vibe.json');
+}
+
+/** Apply a saved scene string: exit edit mode, replace scene, drop undo history. */
+function loadSceneJson(json: string): void {
+  if (scene.editMode) scene.exitEditMode();
+  applySceneJson(json, scene, camera);
+  undo.clear();
+  opCtx.setStatus('Loaded scene');
+}
+
+/** Prompt for a .json file and load it (thin, untested DOM plumbing). */
+function openScene(): void {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    file.text().then(
+      (text) => {
+        try {
+          loadSceneJson(text);
+        } catch (err) {
+          opCtx.setStatus(`Load failed: ${(err as Error).message}`);
+        }
+      },
+      () => opCtx.setStatus('Load failed: could not read file'),
+    );
+  });
+  input.click();
+}
+
+new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene });
 const shell = new UiShell();
 shell.addPanel(new OutlinerPanel(scene, undo));
 shell.addPanel(new PropertiesPanel(scene, undo));
@@ -44,10 +89,14 @@ shell.sidebar.classList.add('outliner-floating');
 
 // The header bar is not a sidebar Panel — it fills #topbar and is updated
 // directly in the frame loop alongside shell.update().
-const topbar = new Topbar(scene);
+const topbar = new Topbar(scene, { saveScene, openScene });
 
-// Debug/test handle (used by e2e smoke tests; harmless in production)
-(window as unknown as Record<string, unknown>).__app = { scene, camera, undo, renderer, shell };
+// Debug/test handle (used by e2e smoke tests; harmless in production).
+// __app.io exposes the same serialize/apply the buttons use, for e2e.
+(window as unknown as Record<string, unknown>).__app = {
+  scene, camera, undo, renderer, shell,
+  io: { serialize: () => serializeScene(scene, camera), apply: (json: string) => loadSceneJson(json) },
+};
 
 function frame(): void {
   renderer.render(scene, camera);

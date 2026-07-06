@@ -65,6 +65,21 @@
   border-color: var(--vb-accent, #fe730f);
   color: var(--vb-accent, #fe730f);
 }
+/* Right-side action chips (Save / Open / …). Modeled on topbar-chip, clickable. */
+.topbar-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--vb-border);
+  border-radius: 10px;
+  background: var(--vb-panel);
+  color: var(--vb-text);
+  font: var(--vb-font);
+  font-size: 11px;
+  cursor: pointer;
+}
+.topbar-btn:hover {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+}
 .topbar-spacer { flex: 1; }
 .topbar-status {
   color: var(--vb-muted);
