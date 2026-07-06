@@ -62,4 +62,18 @@ export class Scene {
     this.selection.clear();
     this.activeId = null;
   }
+
+  /** Remove an object from the scene (drops it from the selection too). */
+  remove(id: number): void {
+    const i = this.objects.findIndex((o) => o.id === id);
+    if (i < 0) return;
+    this.objects.splice(i, 1);
+    this.selection.delete(id);
+    if (this.activeId === id) this.activeId = [...this.selection].pop() ?? null;
+  }
+
+  /** Re-insert a previously removed object at its old list index (undo restore). */
+  insertAt(obj: SceneObject, index: number): void {
+    this.objects.splice(Math.min(index, this.objects.length), 0, obj);
+  }
 }

@@ -5,6 +5,7 @@ import { OrbitCamera } from './camera/OrbitCamera';
 import { UndoStack } from './core/undo/UndoStack';
 import { makeCube } from './core/mesh/primitives';
 import { InputManager } from './input/InputManager';
+import { UiShell } from './ui/shell';
 import type { OperatorContext } from './core/operator/Operator';
 
 const canvas = document.getElementById('viewport') as HTMLCanvasElement;
@@ -29,12 +30,14 @@ const opCtx: OperatorContext = {
 };
 
 new InputManager(canvas, opCtx, renderer);
+const shell = new UiShell();
 
 // Debug/test handle (used by e2e smoke tests; harmless in production)
-(window as unknown as Record<string, unknown>).__app = { scene, camera, undo, renderer };
+(window as unknown as Record<string, unknown>).__app = { scene, camera, undo, renderer, shell };
 
 function frame(): void {
   renderer.render(scene, camera);
+  shell.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
