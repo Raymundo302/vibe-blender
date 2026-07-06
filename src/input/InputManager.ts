@@ -6,6 +6,7 @@ import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '../tools/editTransform';
 import { ExtrudeOperator } from '../tools/extrude';
+import { InsetOperator } from '../tools/inset';
 import { AddMenu } from '../ui/addMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 
@@ -323,6 +324,15 @@ export class InputManager {
         return;
       }
       this.startOperator(new ExtrudeOperator());
+      return;
+    }
+    // I: inset each selected face individually. Face mode only.
+    if (key === 'i' && !e.ctrlKey && !e.altKey) {
+      if (edit.elementMode !== 'face') {
+        this.ctx.setStatus('Inset: face mode only');
+        return;
+      }
+      this.startOperator(new InsetOperator());
       return;
     }
   }
