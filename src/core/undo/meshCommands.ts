@@ -26,6 +26,20 @@ export class MeshEditCommand implements Command {
     return new MeshEditCommand(name, mesh, before, mesh.clone());
   }
 
+  /**
+   * For MODAL topology tools (extrude, inset): snapshot before starting, mutate
+   * freely during the preview, then build the command from both snapshots on
+   * confirm. On cancel, `mesh.copyFrom(before)` and push nothing.
+   */
+  static fromSnapshots(
+    name: string,
+    mesh: EditableMesh,
+    before: EditableMesh,
+    after: EditableMesh,
+  ): MeshEditCommand {
+    return new MeshEditCommand(name, mesh, before, after);
+  }
+
   undo(): void {
     this.mesh.copyFrom(this.before);
   }
