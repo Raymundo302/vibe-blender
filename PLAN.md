@@ -88,7 +88,7 @@ object add/delete/rename undo commands, UiShell topbar/sidebar mounts.
 | P2-5 | Inset (I) | opus | P2-4 | verified |
 | P2-6 | Delete verts/edges/faces, merge verts | opus | P2-1 | verified |
 | P2-7 | Loop cut (Ctrl-R) — quad-strip walk | fable | P2-2 | pending |
-| P2-8 | Box select (B), select-all (A), invert | opus | P2-2 | built |
+| P2-8 | Box select (B), select-all (A), invert | opus | P2-2 | verified |
 
 ### Phase 3 — Ship the Demo
 | ID | Task | Owner | Depends | Status |
