@@ -89,6 +89,49 @@ runE2e(async (t) => {
   await t.click(100, 100);
   t.check('clicking empty space clears selection', (await editSel('e.faces.size')) === 0);
 
+  // --- P2-3: G/R/S on selected elements ---
+  // Back to vert mode, select all 8 verts of the cube.
+  await t.key('1', 'Digit1');
+  await t.key('a', 'KeyA');
+  t.check('all verts selected for transform', (await editSel('e.verts.size')) === 8);
+
+  const vert0 = () => t.evaluate('(() => { const c = window.__app.scene.editObject.mesh.verts.get(0).co; return { x: c.x, y: c.y, z: c.z }; })()');
+
+  // G: grab, move the pointer, LMB-confirm → vert 0 moved.
+  const before = await vert0();
+  await t.key('g', 'KeyG');
+  await t.mouse('mouseMoved', 780, 300);
+  await t.sleep(120);
+  await t.click(780, 300); // LMB confirms
+  const afterMove = await vert0();
+  t.check('G moved vert 0', before.x !== afterMove.x || before.y !== afterMove.y || before.z !== afterMove.z);
+
+  // Ctrl+Z restores the moved vert.
+  await t.key('z', 'KeyZ', 2); // ctrl
+  const afterUndo = await vert0();
+  t.check('Ctrl+Z restores vert 0 after move',
+    Math.abs(afterUndo.x - before.x) < 1e-6 && Math.abs(afterUndo.y - before.y) < 1e-6 && Math.abs(afterUndo.z - before.z) < 1e-6);
+
+  // S with numeric "2" + Enter → vert 0 doubled from the origin pivot.
+  await t.key('a', 'KeyA'); // reselect all (undo may have refreshed selection)
+  const preScale = await vert0();
+  await t.key('s', 'KeyS');
+  await t.key('2', 'Digit2');
+  await t.key('Enter', 'Enter');
+  const afterScale = await vert0();
+  t.check('S "2" doubles vert 0 from pivot',
+    Math.abs(afterScale.x - preScale.x * 2) < 1e-6 &&
+    Math.abs(afterScale.y - preScale.y * 2) < 1e-6 &&
+    Math.abs(afterScale.z - preScale.z * 2) < 1e-6);
+
+  // Ctrl+Z restores the scaled vert.
+  await t.key('z', 'KeyZ', 2);
+  const afterScaleUndo = await vert0();
+  t.check('Ctrl+Z restores vert 0 after scale',
+    Math.abs(afterScaleUndo.x - preScale.x) < 1e-6 &&
+    Math.abs(afterScaleUndo.y - preScale.y) < 1e-6 &&
+    Math.abs(afterScaleUndo.z - preScale.z) < 1e-6);
+
   await t.key('Tab', 'Tab');
   t.check('Tab exits back to object mode', (await mode()) === 'object');
 });

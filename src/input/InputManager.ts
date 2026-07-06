@@ -4,6 +4,7 @@ import type { Scene } from '../core/scene/Scene';
 import { TranslateOperator } from '../tools/translate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
+import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '../tools/editTransform';
 import { AddMenu } from '../ui/addMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 
@@ -298,6 +299,19 @@ export class InputManager {
     }
     if (key === 'a' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       edit.selectAll(mesh);
+      return;
+    }
+    // G/R/S: modal move/rotate/scale of the selected elements' verts.
+    if (key === 'g' && !e.ctrlKey && !e.altKey) {
+      this.startOperator(new EditTranslateOperator());
+      return;
+    }
+    if (key === 'r' && !e.ctrlKey && !e.altKey) {
+      this.startOperator(new EditRotateOperator());
+      return;
+    }
+    if (key === 's' && !e.ctrlKey && !e.altKey) {
+      this.startOperator(new EditScaleOperator());
       return;
     }
   }
