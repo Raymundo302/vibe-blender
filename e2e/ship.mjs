@@ -14,7 +14,7 @@ runE2e(async (t) => {
 
   const parsed = JSON.parse(saved);
   t.check('format + version are correct',
-    parsed.format === 'vibe-blender-scene' && parsed.version === 1);
+    parsed.format === 'vibe-blender-scene' && parsed.version === 2);
   t.check('the default Cube is serialized',
     parsed.objects.length === 1 && parsed.objects[0].name === 'Cube');
 
@@ -365,4 +365,86 @@ runE2e(async (t) => {
   t.check('Ctrl+Z undoes the transform edit', Math.abs((await locX()) - beforeX) < 1e-6);
 
   await t.screenshot('/tmp/p4-3-properties.png');
+
+  // --- P4-4: Modifier tab UI + scene format v2 ---
+  // Make the cube active and switch the Properties panel to the Modifiers tab.
+  await t.evaluate(`(() => {
+    const scene = window.__app.scene;
+    if (!scene.activeObject && scene.objects.length) scene.selectOnly(scene.objects[0].id);
+    const btn = document.querySelector('.properties-tab-btn[data-tab="modifier"]');
+    if (btn) btn.click();
+  })()`);
+  await t.sleep(140);
+
+  t.check('Modifiers tab button exists',
+    await t.evaluate(`!!document.querySelector('.properties-tab-btn[data-tab="modifier"]')`));
+
+  const optCount = await t.evaluate(`(() => {
+    const sel = document.querySelector('.modifier-add-select');
+    return sel ? sel.options.length : -1;
+  })()`);
+  t.check('Add-Modifier dropdown renders (placeholder + one option per type)', optCount >= 1);
+
+  const modCount = () => t.evaluate('window.__app.scene.activeObject.modifiers.length');
+
+  if (optCount > 1) {
+    // At least one modifier type is registered (P4-5 landed) — exercise add/param/undo.
+    const firstType = await t.evaluate(`document.querySelector('.modifier-add-select').options[1].value`);
+    const before = await modCount();
+    const addOne = async () => {
+      await t.evaluate(`(() => {
+        const sel = document.querySelector('.modifier-add-select');
+        sel.value = ${JSON.stringify(firstType)};
+        sel.dispatchEvent(new Event('change'));
+      })()`);
+      await t.sleep(160);
+    };
+
+    await addOne();
+    t.check('adding a modifier from the dropdown grows the stack', (await modCount()) === before + 1);
+    await t.key('z', 'KeyZ', 2); // ctrl+z
+    await t.sleep(160);
+    t.check('Ctrl+Z removes the added modifier', (await modCount()) === before);
+
+    // Param-edit undo probe (only if the modifier exposes a number param).
+    await addOne();
+    const probe = await t.evaluate(`(() => {
+      const input = document.querySelector('.modifier-entry input[type=number].modifier-param');
+      if (!input) return null;
+      const key = input.dataset.key;
+      const orig = window.__app.scene.activeObject.modifiers[0].params()[key];
+      input.value = String(Number(orig) + 3);
+      input.dispatchEvent(new Event('change'));
+      return { key, orig };
+    })()`);
+    if (probe) {
+      await t.sleep(160);
+      const paramVal = (k) => t.evaluate(`window.__app.scene.activeObject.modifiers[0].params()[${JSON.stringify(k)}]`);
+      t.check('param edit changes the modifier value',
+        Math.abs((await paramVal(probe.key)) - (probe.orig + 3)) < 1e-6);
+      await t.key('z', 'KeyZ', 2);
+      await t.sleep(160);
+      t.check('Ctrl+Z restores the param value',
+        Math.abs((await paramVal(probe.key)) - probe.orig) < 1e-6);
+    } else {
+      console.log('SKIP  registered modifier exposes no number param — param-edit probe skipped');
+    }
+    // Clean up: undo the second add so the suite leaves the stack as it found it.
+    await t.key('z', 'KeyZ', 2);
+    await t.sleep(140);
+    t.check('stack restored after cleanup undo', (await modCount()) === before);
+  } else {
+    console.log('SKIP  no modifier types registered yet (P4-5) — add/undo checks skipped; empty dropdown asserted');
+    t.check('empty dropdown shows only the placeholder option', optCount === 1);
+    t.check('empty stack shows the "No modifiers" hint',
+      await t.evaluate(`!!document.querySelector('.modifier-stack .properties-empty')`));
+  }
+
+  // v2: serialized scene reports version 2 and every object carries a modifiers array.
+  const v2 = JSON.parse(await t.evaluate('window.__app.io.serialize()'));
+  t.check('scene serializes as format version 2', v2.version === 2);
+  t.check('every object has a modifiers array',
+    Array.isArray(v2.objects[0].modifiers));
+
+  await t.screenshot('/tmp/p4-4-modifiers.png');
 });

@@ -4,6 +4,12 @@ import { Transform } from '../core/math/transform';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
+import {
+  createModifier,
+  modifierTypes,
+  type Modifier,
+  type ModifierParams,
+} from '../core/modifiers/Modifier';
 
 /**
  * Scene save/load as versioned JSON (task P3-2).
@@ -16,7 +22,9 @@ import type { OrbitCamera } from '../camera/OrbitCamera';
  */
 
 const FORMAT = 'vibe-blender-scene';
-const VERSION = 1;
+/** Version we WRITE. Loader also accepts v1 (a scene with no modifier stacks). */
+const VERSION = 2;
+const SUPPORTED_VERSIONS = [1, 2];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -30,6 +38,19 @@ function vec(v: Vec3): [number, number, number] {
 
 function quat(q: Quat): [number, number, number, number] {
   return [num(q.x), num(q.y), num(q.z), num(q.w)];
+}
+
+/**
+ * Modifier params, serialized deterministically: keys sorted, numbers rounded
+ * through num(). Booleans and axis strings pass through as-is.
+ */
+function serializeParams(p: ModifierParams): Record<string, number | boolean | string> {
+  const out: Record<string, number | boolean | string> = {};
+  for (const key of Object.keys(p).sort()) {
+    const v = p[key];
+    out[key] = typeof v === 'number' ? num(v) : v;
+  }
+  return out;
 }
 
 /** Serialize the whole scene + camera to a deterministic JSON string. */
@@ -56,6 +77,13 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
         verts: [...obj.mesh.verts.values()].map((v) => [v.id, num(v.co.x), num(v.co.y), num(v.co.z)]),
         faces: [...obj.mesh.faces.values()].map((f) => [f.id, [...f.verts]]),
       },
+      // Stack order = evaluation order; serialized top-to-bottom as shown.
+      modifiers: obj.modifiers.map((m) => ({
+        type: m.type,
+        name: m.name,
+        enabled: m.enabled,
+        params: serializeParams(m.params()),
+      })),
     })),
   };
   return JSON.stringify(data, null, 2);
@@ -67,6 +95,12 @@ interface MeshData {
   verts: [number, number, number, number][];
   faces: [number, number[]][];
 }
+interface ModifierData {
+  type: string;
+  name: string;
+  enabled: boolean;
+  params: ModifierParams;
+}
 interface ObjectData {
   name: string;
   visible: boolean;
@@ -74,6 +108,7 @@ interface ObjectData {
   rotation: [number, number, number, number];
   scale: [number, number, number];
   mesh: MeshData;
+  modifiers: ModifierData[];
 }
 interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
@@ -102,7 +137,9 @@ function parseScene(json: string): SceneData {
   if (typeof raw !== 'object' || raw === null) fail('root is not an object');
   const root = raw as Record<string, unknown>;
   if (root.format !== FORMAT) fail(`unrecognized format ${JSON.stringify(root.format)} (expected "${FORMAT}")`);
-  if (root.version !== VERSION) fail(`unsupported version ${JSON.stringify(root.version)} (expected ${VERSION})`);
+  if (typeof root.version !== 'number' || !SUPPORTED_VERSIONS.includes(root.version)) {
+    fail(`unsupported version ${JSON.stringify(root.version)} (expected one of ${SUPPORTED_VERSIONS.join(', ')})`);
+  }
 
   const cam = root.camera as Record<string, unknown> | undefined;
   if (typeof cam !== 'object' || cam === null) fail('missing camera');
@@ -155,7 +192,41 @@ function parseObject(o: unknown, i: number): ObjectData {
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
     mesh: { verts, faces },
+    modifiers: parseModifiers(obj.modifiers, i),
   };
+}
+
+/**
+ * Parse an object's modifier stack (absent in v1 → empty). Every type must be
+ * registered NOW — an unknown type throws the standard readable error during
+ * validation, before applySceneJson mutates anything.
+ */
+function parseModifiers(v: unknown, i: number): ModifierData[] {
+  if (v === undefined) return []; // v1 file, or object saved before modifiers existed
+  if (!Array.isArray(v)) fail(`objects[${i}].modifiers must be an array`);
+  const known = new Set(modifierTypes().map((m) => m.type));
+  return (v as unknown[]).map((m, mi) => {
+    if (typeof m !== 'object' || m === null) fail(`objects[${i}].modifiers[${mi}] is not an object`);
+    const mod = m as Record<string, unknown>;
+    if (typeof mod.type !== 'string') fail(`objects[${i}].modifiers[${mi}].type must be a string`);
+    if (!known.has(mod.type)) fail(`objects[${i}].modifiers[${mi}] has unknown modifier type "${mod.type}"`);
+    if (typeof mod.name !== 'string') fail(`objects[${i}].modifiers[${mi}].name must be a string`);
+    if (typeof mod.enabled !== 'boolean') fail(`objects[${i}].modifiers[${mi}].enabled must be a boolean`);
+    if (typeof mod.params !== 'object' || mod.params === null || Array.isArray(mod.params)) {
+      fail(`objects[${i}].modifiers[${mi}].params must be an object`);
+    }
+    const params: ModifierParams = {};
+    for (const [key, val] of Object.entries(mod.params as Record<string, unknown>)) {
+      if (typeof val !== 'number' && typeof val !== 'boolean' && typeof val !== 'string') {
+        fail(`objects[${i}].modifiers[${mi}].params.${key} must be a number, boolean or string`);
+      }
+      if (typeof val === 'number' && !Number.isFinite(val)) {
+        fail(`objects[${i}].modifiers[${mi}].params.${key} must be a finite number`);
+      }
+      params[key] = val;
+    }
+    return { type: mod.type, name: mod.name, enabled: mod.enabled, params };
+  });
 }
 
 /**
@@ -183,6 +254,14 @@ function buildMesh(data: MeshData): EditableMesh {
   return mesh;
 }
 
+/** Reconstruct a live Modifier from its plain data (type already validated). */
+function buildModifier(data: ModifierData): Modifier {
+  const mod = createModifier(data.type, data.params);
+  mod.name = data.name;
+  mod.enabled = data.enabled;
+  return mod;
+}
+
 /**
  * Replace the scene's contents with a saved JSON string and restore the camera.
  * Throws a readable Error (leaving the scene untouched) on malformed input:
@@ -191,7 +270,14 @@ function buildMesh(data: MeshData): EditableMesh {
  */
 export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera): void {
   const data = parseScene(json);
-  const built = data.objects.map((od) => ({ od, mesh: buildMesh(od.mesh) }));
+  // Build meshes AND modifier instances up front — any failure here (already
+  // ruled out by validation, but createModifier is the source of truth) throws
+  // before the first scene mutation, so a bad file can never half-load.
+  const built = data.objects.map((od) => ({
+    od,
+    mesh: buildMesh(od.mesh),
+    modifiers: od.modifiers.map(buildModifier),
+  }));
 
   // Past validation — now it's safe to mutate. Drop existing objects via the
   // public API (never `objects.length = 0`).
@@ -199,7 +285,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   for (const obj of [...scene.objects]) scene.remove(obj.id);
   scene.deselectAll();
 
-  for (const { od, mesh } of built) {
+  for (const { od, mesh, modifiers } of built) {
     const obj = scene.add(od.name, mesh);
     obj.visible = od.visible;
     obj.transform = new Transform(
@@ -207,6 +293,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       new Quat(od.rotation[0], od.rotation[1], od.rotation[2], od.rotation[3]),
       Vec3.fromArray(od.scale),
     );
+    obj.modifiers.push(...modifiers);
+    if (modifiers.length > 0) obj.modifiersVersion++;
   }
   if (scene.objects.length > 0) scene.selectOnly(scene.objects[0].id);
 

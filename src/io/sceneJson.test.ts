@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { serializeScene, applySceneJson } from './sceneJson';
 import { Scene } from '../core/scene/Scene';
 import { OrbitCamera } from '../camera/OrbitCamera';
@@ -6,6 +6,38 @@ import { makeCube } from '../core/mesh/primitives';
 import { Transform } from '../core/math/transform';
 import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
+import { registerModifier, createModifier, type Modifier } from '../core/modifiers/Modifier';
+import type { EditableMesh } from '../core/mesh/EditableMesh';
+
+/**
+ * Test-local modifier exercising every param kind (number, bool, axis) so the
+ * v2 round trip covers serialize/deserialize of all of them. Registered here —
+ * we do NOT depend on P4-5's real modifiers existing yet.
+ */
+function makeStretch(params?: Record<string, number | boolean | string>): Modifier {
+  let amount = typeof params?.amount === 'number' ? params.amount : 2;
+  let flip = typeof params?.flip === 'boolean' ? params.flip : false;
+  let axis = typeof params?.axis === 'string' ? params.axis : 'x';
+  return {
+    type: 'stretch',
+    name: 'Stretch',
+    enabled: true,
+    apply(mesh: EditableMesh) { return mesh.clone(); },
+    params: () => ({ amount, flip, axis }),
+    setParam(key, value) {
+      if (key === 'amount') amount = value as number;
+      else if (key === 'flip') flip = value as boolean;
+      else if (key === 'axis') axis = value as string;
+    },
+    fields: () => [
+      { key: 'amount', label: 'Amount', kind: 'number' as const },
+      { key: 'flip', label: 'Flip', kind: 'bool' as const },
+      { key: 'axis', label: 'Axis', kind: 'axis' as const },
+    ],
+  };
+}
+
+beforeAll(() => registerModifier('stretch', 'Stretch (test)', makeStretch));
 
 /**
  * Build a 2-object scene: a plain cube and a cube with a gap in its vert ids
@@ -94,6 +126,77 @@ describe('sceneJson round trip', () => {
     const before = new Set(mesh.verts.keys());
     const newId = mesh.addVert(new Vec3(9, 9, 9));
     expect(before.has(newId)).toBe(false); // no collision with a restored id
+  });
+});
+
+describe('sceneJson format v2 modifiers', () => {
+  it('writes version 2', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(parsed.version).toBe(2);
+    expect(parsed.objects[0].modifiers).toEqual([]);
+  });
+
+  it('round-trips a 2-modifier stack with custom params/enabled', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    const m0 = createModifier('stretch', { amount: 3.5, flip: true, axis: 'z' });
+    m0.name = 'First';
+    m0.enabled = false;
+    const m1 = createModifier('stretch', { amount: -1.25, flip: false, axis: 'y' });
+    m1.name = 'Second';
+    obj.modifiers.push(m0, m1);
+    obj.modifiersVersion++;
+
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+
+    const mods = dst.objects[0].modifiers;
+    expect(mods.length).toBe(2);
+    expect(mods[0].name).toBe('First');
+    expect(mods[0].enabled).toBe(false);
+    expect(mods[0].params()).toEqual({ amount: 3.5, flip: true, axis: 'z' });
+    expect(mods[1].name).toBe('Second');
+    expect(mods[1].enabled).toBe(true);
+    expect(mods[1].params()).toEqual({ amount: -1.25, flip: false, axis: 'y' });
+
+    // serialize → apply → serialize is byte-identical (deterministic).
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+
+  it('accepts a v1 file (no modifiers key) as an empty stack', () => {
+    const v1 = JSON.stringify({
+      format: 'vibe-blender-scene', version: 1,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      objects: [{
+        name: 'Legacy', visible: true,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [[0, 0, 0, 0], [1, 1, 0, 0], [2, 1, 1, 0]], faces: [[0, [0, 1, 2]]] },
+      }],
+    });
+    const dst = new Scene();
+    applySceneJson(v1, dst, new OrbitCamera());
+    expect(dst.objects[0].name).toBe('Legacy');
+    expect(dst.objects[0].modifiers).toEqual([]);
+  });
+
+  it('throws on an unknown modifier type before mutating the scene', () => {
+    const scene = new Scene();
+    scene.add('Keep', makeCube());
+    const bad = JSON.stringify({
+      format: 'vibe-blender-scene', version: 2,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      objects: [{
+        name: 'Broken', visible: true,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [[0, 0, 0, 0], [1, 1, 0, 0], [2, 1, 1, 0]], faces: [[0, [0, 1, 2]]] },
+        modifiers: [{ type: 'no-such-modifier', name: 'X', enabled: true, params: {} }],
+      }],
+    });
+    expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/unknown modifier type/i);
+    expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
   });
 });
 
