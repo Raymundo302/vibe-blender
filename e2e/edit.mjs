@@ -492,4 +492,43 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 2); // ctrl-z
   t.check('Ctrl+Z restores the object deleted with Delete',
     (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeDel);
+
+  // --- P5-2: bridge edge loops (Ctrl+E) ---
+  // Clean slate, then import a two-quad OBJ: two parallel quads offset +2 on Y.
+  // Their boundaries are two separate 4-edge loops — the bridge inputs.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    for (const o of [...s.objects]) s.remove(o.id);
+  })()`);
+  const objFixture = 'v 0 0 0\nv 1 0 0\nv 1 0 1\nv 0 0 1\nv 0 2 0\nv 1 2 0\nv 1 2 1\nv 0 2 1\nf 1 2 3 4\nf 5 6 7 8\n';
+  await t.evaluate('window.__app.io.importObj(' + JSON.stringify(objFixture) + ')');
+  t.check('two-quad OBJ imported as one object',
+    (await t.evaluate('window.__app.scene.objects.length')) === 1 &&
+    (await t.evaluate('window.__app.scene.objects[0].mesh.faces.size')) === 2);
+
+  await t.key('Tab', 'Tab');
+  t.check('entered edit mode on imported mesh', (await mode()) === 'edit');
+  const bFaces = () => t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  const facesBeforeBridge = await bFaces();
+
+  // Ctrl+E in vert mode: status message, no mutation.
+  await t.key('1', 'Digit1');
+  await t.key('a', 'KeyA'); // select all verts
+  await t.key('e', 'KeyE', 2); // ctrl+e
+  t.check('Ctrl+E in vert mode shows edge-mode-only status',
+    (await t.evaluate(`document.getElementById('status').textContent`)).includes('edge mode only'));
+  t.check('Ctrl+E in vert mode mutates nothing', (await bFaces()) === facesBeforeBridge);
+
+  // Edge mode, select all → Ctrl+E bridges the two loops (+4 faces).
+  await t.key('2', 'Digit2');
+  await t.key('a', 'KeyA'); // select all 8 edges
+  t.check('all 8 edges selected for bridge', (await editSel('e.edges.size')) === 8);
+  await t.key('e', 'KeyE', 2); // ctrl+e
+  t.check('bridge added 4 faces', (await bFaces()) === facesBeforeBridge + 4,
+    `${facesBeforeBridge} → ${await bFaces()}`);
+  t.check('bridge status reported', (await t.evaluate(`document.getElementById('status').textContent`)).startsWith('Bridged'));
+
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z restores pre-bridge faces', (await bFaces()) === facesBeforeBridge);
 });

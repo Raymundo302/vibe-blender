@@ -9,6 +9,8 @@ import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { LoopCutOperator } from '../tools/loopCut';
+import { bridgeLoops } from '../core/mesh/ops/bridge';
+import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
@@ -405,6 +407,30 @@ export class InputManager {
     }
     if (key === 's' && !e.ctrlKey && !e.altKey) {
       this.startOperator(new EditScaleOperator());
+      return;
+    }
+    // Ctrl+E: bridge two selected edge loops into a ring of quads. Edge mode
+    // only; the op reports its own error (mismatched/too-many loops) with no
+    // mutation. Placed before plain-E extrude (which guards !e.ctrlKey).
+    if (key === 'e' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (edit.elementMode !== 'edge') {
+        this.ctx.setStatus('Bridge Edge Loops: edge mode only');
+        return;
+      }
+      const edgeKeys = new Set(edit.edges);
+      let result!: { newFaceIds: number[] } | { error: string };
+      const cmd = MeshEditCommand.capture('Bridge Edge Loops', mesh, () => {
+        result = bridgeLoops(mesh, edgeKeys);
+      });
+      if ('error' in result) {
+        this.ctx.setStatus(`Bridge: ${result.error}`);
+        return; // nothing mutated — drop the no-op command
+      }
+      this.ctx.undo.push(cmd);
+      edit.prune(mesh);
+      edit.touch();
+      this.ctx.setStatus(`Bridged loops — ${result.newFaceIds.length} faces`);
       return;
     }
     // E: extrude. Face mode rides the region along its average normal; vert/edge
