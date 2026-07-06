@@ -5,6 +5,7 @@ import { TranslateOperator } from '../tools/translate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '../tools/editTransform';
+import { ExtrudeOperator } from '../tools/extrude';
 import { AddMenu } from '../ui/addMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 
@@ -312,6 +313,16 @@ export class InputManager {
     }
     if (key === 's' && !e.ctrlKey && !e.altKey) {
       this.startOperator(new EditScaleOperator());
+      return;
+    }
+    // E: extrude. Face mode rides the region along its average normal; vert/edge
+    // mode is not supported in v1 (just tell the user).
+    if (key === 'e' && !e.ctrlKey && !e.altKey) {
+      if (edit.elementMode !== 'face') {
+        this.ctx.setStatus('Extrude: face mode only (v1)');
+        return;
+      }
+      this.startOperator(new ExtrudeOperator());
       return;
     }
   }
