@@ -760,11 +760,10 @@ runE2e(async (t) => {
   await t.key('Tab', 'Tab');           // enter edit mode on the cube
   t.check('P7-2: entered edit mode', (await mode()) === 'edit');
   await t.key('3', 'Digit3');          // face select mode
-  // Select exactly one face deterministically.
-  await t.evaluate(`(() => {
-    const e = window.__app.scene.editMode, m = window.__app.scene.editObject.mesh;
-    e.faces.clear(); e.faces.add([...m.faces.keys()][0]); e.touch();
-  })()`);
+  // Click the front cube face (canvas centre) — exercises real pick-based select.
+  await t.click(ccX, ccY);
+  t.check('P7-2: clicking a face selects exactly one',
+    (await t.evaluate('window.__app.scene.editMode.faces.size')) === 1);
   const objCountBeforeSep = await t.evaluate('window.__app.scene.objects.length');
 
   await t.key('p', 'KeyP');            // separate
