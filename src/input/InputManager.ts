@@ -8,6 +8,7 @@ import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '..
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
+import { LoopCutOperator } from '../tools/loopCut';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
@@ -335,6 +336,13 @@ export class InputManager {
       e.preventDefault();
       invertSelection(edit, mesh);
       this.ctx.setStatus('Inverted selection');
+      return;
+    }
+    // Ctrl+R: loop cut. Must precede the plain-R rotate check, and must
+    // preventDefault so the browser doesn't reload the page.
+    if (key === 'r' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.startOperator(new LoopCutOperator(this.renderer));
       return;
     }
     // G/R/S: modal move/rotate/scale of the selected elements' verts.

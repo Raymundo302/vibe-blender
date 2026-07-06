@@ -367,6 +367,71 @@ runE2e(async (t) => {
   t.check('box-select overlay removed after cancel',
     await t.evaluate(`!document.querySelector('.box-select-rect')`));
 
+  // --- P2-7: loop cut (Ctrl+R) ---
+  // Fresh state: reselect nothing, vert counts back to the cube's 8 via undo
+  // stack is NOT guaranteed here, so read counts dynamically instead.
+  await t.key('2', 'Digit2'); // edge select
+  await t.key('a', 'KeyA', 1); // alt: deselect all
+  const vertsBefore = await t.evaluate('window.__app.scene.editObject.mesh.verts.size');
+  const facesBefore = await t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+
+  // Find a pickable (front-facing) edge by projecting each edge midpoint and
+  // asking the edge-mode pick pass what's actually hit there.
+  const edgeHit = await t.evaluate(`(() => {
+    const app = window.__app, obj = app.scene.editObject, cam = app.camera;
+    const canvas = document.querySelector('canvas');
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    const vp = cam.projMatrix(w / h).mul(cam.viewMatrix());
+    for (const [key, e] of obj.mesh.edges()) {
+      const a = obj.mesh.verts.get(e.v0).co, b = obj.mesh.verts.get(e.v1).co;
+      const mid = { x: (a.x+b.x)/2, y: (a.y+b.y)/2, z: (a.z+b.z)/2 };
+      const world = obj.transform.matrix().transformPoint(mid);
+      const ndc = vp.transformPoint(world);
+      const cssX = (ndc.x + 1) / 2 * w, cssY = (1 - ndc.y) / 2 * h;
+      const hit = app.renderer.pickElement(app.scene, cam, cssX, cssY, 'edge');
+      if (hit && hit.kind === 'edge' && hit.key === key) {
+        return { key, pageX: rect.left + cssX, pageY: rect.top + cssY };
+      }
+    }
+    return null;
+  })()`);
+  t.check('a front edge is hoverable for loop cut', edgeHit !== null);
+
+  // Ctrl+R at that edge → preview appears (status + renderer preview buffer).
+  await t.mouse('mouseMoved', Math.round(edgeHit.pageX), Math.round(edgeHit.pageY));
+  await t.sleep(80);
+  await t.key('r', 'KeyR', 2); // ctrl
+  await t.mouse('mouseMoved', Math.round(edgeHit.pageX), Math.round(edgeHit.pageY));
+  await t.sleep(120);
+  t.check('loop-cut preview is live',
+    await t.evaluate(`document.getElementById('status').textContent.startsWith('Loop Cut')`));
+  t.check('preview polyline exists', await t.evaluate('!!window.__app.renderer.editPreviewLines'));
+
+  // LMB confirms the cut: +4 verts, +4 faces on a pristine ring, new loop selected.
+  await t.click(Math.round(edgeHit.pageX), Math.round(edgeHit.pageY));
+  const vertsAfter = await t.evaluate('window.__app.scene.editObject.mesh.verts.size');
+  const facesAfter = await t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  t.check('loop cut added ring verts', vertsAfter > vertsBefore, `${vertsBefore} → ${vertsAfter}`);
+  t.check('loop cut split strip faces', facesAfter > facesBefore, `${facesBefore} → ${facesAfter}`);
+  t.check('new loop selected in edge mode',
+    (await editSel('e.elementMode')) === 'edge' && (await editSel('e.edges.size')) > 0);
+  t.check('preview cleared after confirm',
+    await t.evaluate('window.__app.renderer.editPreviewLines === null'));
+
+  // Ctrl+Z restores the original topology.
+  await t.key('z', 'KeyZ', 2);
+  t.check('Ctrl+Z restores pre-cut topology',
+    (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === vertsBefore);
+
+  // Esc cancels a pending preview without touching the mesh.
+  await t.key('r', 'KeyR', 2);
+  await t.sleep(80);
+  await t.key('Escape', 'Escape');
+  t.check('Esc cancels loop cut without changes',
+    (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === vertsBefore &&
+    (await t.evaluate('window.__app.renderer.editPreviewLines === null')));
+
   await t.key('Tab', 'Tab');
   t.check('Tab exits back to object mode', (await mode()) === 'object');
 });

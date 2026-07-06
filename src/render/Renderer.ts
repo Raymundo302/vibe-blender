@@ -53,6 +53,13 @@ export class Renderer {
    */
   gizmoVisible = true;
 
+  /**
+   * Ad-hoc overlay polyline in the edit object's LOCAL space (loop-cut
+   * preview). Owning operator sets it on hover and MUST null it on
+   * confirm/cancel. Pass a NEW array per change — it doubles as the cache key.
+   */
+  editPreviewLines: Float32Array | null = null;
+
   constructor(private readonly ctx: GlContext) {
     const { gl, canvas } = ctx;
     this.meshPass = new MeshPass(gl, createMatcapTexture(gl));
@@ -127,6 +134,7 @@ export class Renderer {
     if (editObj && editObj.visible && scene.editMode) {
       const mvp = proj.mul(view).mul(editObj.transform.matrix());
       this.editOverlayPass.render(mvp, editObj.mesh, scene.editMode);
+      if (this.editPreviewLines) this.editOverlayPass.renderPreview(mvp, this.editPreviewLines);
     }
 
     // Translate gizmo — on top of everything (clear depth after outlines).
@@ -184,7 +192,13 @@ export class Renderer {
    * reads a 9×9 region so small elements have click tolerance. Returns element
    * ids/keys (not indices), or null for a miss / when not in edit mode.
    */
-  pickElement(scene: Scene, camera: OrbitCamera, cssX: number, cssY: number): ElementPickResult | null {
+  pickElement(
+    scene: Scene,
+    camera: OrbitCamera,
+    cssX: number,
+    cssY: number,
+    kindOverride?: 'vert' | 'edge' | 'face',
+  ): ElementPickResult | null {
     const editObj = scene.editObject;
     const sel = scene.editMode;
     if (!editObj || !sel) return null;
@@ -193,7 +207,7 @@ export class Renderer {
     const view = camera.viewMatrix();
     const proj = camera.projMatrix(canvas.width / canvas.height);
     const mvp = proj.mul(view).mul(editObj.transform.matrix());
-    this.elementPickPass.render(mvp, editObj.mesh, sel.elementMode);
+    this.elementPickPass.render(mvp, editObj.mesh, kindOverride ?? sel.elementMode);
 
     // Center a clamped 9×9 window on the cursor (device pixels, GL bottom-up).
     const dpr = window.devicePixelRatio || 1;

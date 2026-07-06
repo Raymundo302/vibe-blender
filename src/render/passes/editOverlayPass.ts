@@ -79,6 +79,33 @@ export class EditOverlayPass {
         : null;
   }
 
+  /**
+   * Draw an ad-hoc yellow polyline over the cage (loop-cut preview). The
+   * VertexArray is cached per Float32Array identity — callers pass a new array
+   * only when the preview actually changes.
+   */
+  renderPreview(mvp: Mat4, segments: Float32Array): void {
+    if (segments.length === 0) return;
+    const gl = this.gl;
+    if (this.previewSource !== segments) {
+      this.previewVa?.dispose();
+      const colors = new Float32Array(segments.length);
+      for (let i = 0; i < colors.length; i += 3) colors.set([1.0, 0.85, 0.1], i);
+      this.previewVa = new VertexArray(gl, [
+        { location: 0, size: 3, data: segments },
+        { location: 1, size: 3, data: colors },
+      ]);
+      this.previewSource = segments;
+    }
+    this.wireShader.use();
+    this.wireShader.setMat4('u_mvp', mvp);
+    this.wireShader.setFloat('u_depthBias', 0.002);
+    this.wireShader.setFloat('u_pointSize', 1.0);
+    this.previewVa!.draw(gl.LINES);
+  }
+  private previewVa: VertexArray | null = null;
+  private previewSource: Float32Array | null = null;
+
   render(mvp: Mat4, mesh: EditableMesh, sel: EditModeState): void {
     const gl = this.gl;
     this.rebuild(mesh, sel);
