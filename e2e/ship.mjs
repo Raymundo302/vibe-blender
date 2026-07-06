@@ -225,9 +225,10 @@ runE2e(async (t) => {
   await t.evaluate(`localStorage.removeItem('vibe-blender-splash-seen')`);
   await t.send('Page.reload', {});
   await t.until('!!window.__app');
-  await t.sleep(150);
+  // Poll for the splash instead of a fixed sleep — under load (chained e2e
+  // suites) the first paint can land later than any hardcoded delay.
   t.check('splash visible on fresh load',
-    await t.evaluate(`!!document.querySelector('.splash')`));
+    await t.until(`!!document.querySelector('.splash')`, 5000));
   t.check('splash-seen flag not set before dismiss',
     (await t.evaluate(`localStorage.getItem('vibe-blender-splash-seen')`)) === null);
 
@@ -249,9 +250,8 @@ runE2e(async (t) => {
 
   // F1 opens the shortcut overlay.
   await t.key('F1', 'F1', 0);
-  await t.sleep(80);
   t.check('F1 opens the shortcut overlay',
-    await t.evaluate(`!!document.querySelector('.help-overlay')`));
+    await t.until(`!!document.querySelector('.help-overlay')`, 5000));
 
   // Spot-check that representative shortcuts are listed.
   const overlayText = await t.evaluate(`document.querySelector('.help-overlay').textContent`);

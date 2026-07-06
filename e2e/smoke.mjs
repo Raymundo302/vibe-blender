@@ -15,10 +15,13 @@ const CHROME = process.env.CHROME_BIN ?? 'google-chrome-stable';
 const chrome = spawn(CHROME, [
   '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
   `--remote-debugging-port=${PORT}`, '--window-size=1280,800',
-  '--user-data-dir=/tmp/vibe-blender-e2e-profile', 'about:blank',
+  `--user-data-dir=/tmp/vibe-blender-e2e-profile-${process.pid}`, 'about:blank',
 ], { stdio: 'ignore' });
 
-const cleanup = () => { try { chrome.kill(); } catch { /* already dead */ } };
+const cleanup = () => {
+  try { chrome.kill(); } catch { /* already dead */ }
+  import('node:fs').then((fs) => fs.rmSync(`/tmp/vibe-blender-e2e-profile-${process.pid}`, { recursive: true, force: true })).catch(() => {});
+};
 process.on('exit', cleanup);
 
 async function waitForDevtools() {
