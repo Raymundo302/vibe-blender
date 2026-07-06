@@ -2,6 +2,7 @@ import type { EditModeState } from '../core/scene/EditMode';
 import type { EditableMesh } from '../core/mesh/EditableMesh';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { MeshEditCommand } from '../core/undo/meshCommands';
+import { dissolveEdges } from '../core/mesh/ops/dissolve';
 
 /**
  * Delete a subset of the current edit-mode selection, wrapped in one snapshot
@@ -67,6 +68,33 @@ export function mergeAtCenter(
   setStatus('Merged at center');
 }
 
+/**
+ * Blender's "Dissolve Edges": remove the selected interior edges while merging
+ * their adjacent faces into n-gons (see ops/dissolve). Only edges with two
+ * distinct faces dissolve; a selection with no such edges is a no-op that
+ * pushes nothing. Leaves nothing selected, matching delete's behaviour.
+ */
+export function dissolveEdgeSelection(
+  sel: EditModeState,
+  mesh: EditableMesh,
+  undo: UndoStack,
+  setStatus: (text: string) => void,
+): void {
+  const keys = new Set(sel.edges);
+  const dissolvable = [...keys].filter((k) => {
+    const e = mesh.edges().get(k);
+    return e !== undefined && new Set(e.faces).size === 2;
+  });
+  if (dissolvable.length === 0) {
+    setStatus('Dissolve Edges: select interior edges');
+    return;
+  }
+  undo.push(MeshEditCommand.capture('Dissolve Edges', mesh, () => dissolveEdges(mesh, keys)));
+  sel.clearSelection(); // also touches
+  sel.prune(mesh);
+  setStatus(`Dissolved ${dissolvable.length} edge(s)`);
+}
+
 /** Everything the popup needs; kept free of InputManager internals. */
 export interface DeleteMenuOptions {
   /** Positioned host — the pointer coords are relative to this element. */
@@ -109,6 +137,8 @@ export class DeleteMenu {
       () => deleteSelection('edge', sel, mesh, opts.undo, opts.setStatus));
     this.addItem('Faces', sel.elementMode === 'face' && sel.faces.size > 0,
       () => deleteSelection('face', sel, mesh, opts.undo, opts.setStatus));
+    this.addItem('Dissolve Edges', sel.elementMode === 'edge' && sel.edges.size > 0,
+      () => dissolveEdgeSelection(sel, mesh, opts.undo, opts.setStatus));
     this.addItem('Merge at Center', vertCount >= 2,
       () => mergeAtCenter(sel, mesh, opts.undo, opts.setStatus));
 

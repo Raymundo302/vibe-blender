@@ -304,6 +304,47 @@ runE2e(async (t) => {
   t.check('X with empty selection keeps the object',
     (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeX);
 
+  // --- P5-1: Delete-key alias for X + Dissolve Edges ---
+  // Delete opens the SAME edit-mode menu as X (users kept pressing Delete).
+  await t.key('3', 'Digit3'); // face mode
+  await t.evaluate(`(() => {
+    const e = window.__app.scene.editMode;
+    const fid = [...window.__app.scene.editObject.mesh.faces.keys()][0];
+    e.clearSelection(); e.faces.add(fid); e.touch();
+  })()`);
+  await t.key('Delete', 'Delete');
+  t.check('Delete key opens the edit-mode Delete menu',
+    await t.evaluate(`document.querySelector('.add-menu .add-menu-heading')?.textContent === 'Delete'`));
+  t.check('Delete menu is the same one X opens (has Faces + Dissolve Edges)',
+    await t.evaluate(`(() => { const labels = [...document.querySelectorAll('.add-menu-item')].map((b) => b.textContent); return labels.includes('Faces') && labels.includes('Dissolve Edges'); })()`));
+  await t.key('Escape', 'Escape');
+  t.check('Escape closes the Delete menu', await t.evaluate(`!document.querySelector('.add-menu')`));
+
+  // Edge mode: select an interior cube edge, dissolve it → faces merge (6 → 5).
+  await t.key('2', 'Digit2');
+  await t.evaluate(`(() => {
+    const e = window.__app.scene.editMode;
+    e.clearSelection(); e.edges.add('0,1'); e.touch();
+  })()`);
+  const facesPreDissolve = await t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  await t.key('x', 'KeyX');
+  t.check('Dissolve Edges entry is enabled with an interior edge selected',
+    await t.evaluate(`(() => { const b = [...document.querySelectorAll('.add-menu-item')].find((x) => x.textContent === 'Dissolve Edges'); return !!b && !b.disabled; })()`));
+  await t.evaluate(`(() => {
+    [...document.querySelectorAll('.add-menu-item')].find((b) => b.textContent === 'Dissolve Edges').click();
+  })()`);
+  await t.sleep(60);
+  const facesPostDissolve = await t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  t.check('Dissolve Edges merges the two faces (6 → 5)',
+    facesPostDissolve === facesPreDissolve - 1, `${facesPreDissolve} → ${facesPostDissolve}`);
+  t.check('dissolve keeps all 8 verts',
+    (await t.evaluate('window.__app.scene.editObject.mesh.verts.size')) === 8);
+  t.check('a 6-gon exists after dissolve',
+    await t.evaluate('[...window.__app.scene.editObject.mesh.faces.values()].some((f) => f.verts.length === 6)'));
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z restores faces after dissolve',
+    (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === facesPreDissolve);
+
   // --- P2-8: box select (B) + invert (Ctrl+I) ---
   // Project all cube verts to page-space so we can drag a rect around them.
   const vertPts = await t.evaluate(`(() => {
@@ -439,4 +480,16 @@ runE2e(async (t) => {
 
   await t.key('Tab', 'Tab');
   t.check('Tab exits back to object mode', (await mode()) === 'object');
+
+  // --- P5-1: Delete key deletes the active object in object mode (undoable) ---
+  await t.click(ccX, ccY); // select the cube
+  const objCountBeforeDel = await t.evaluate('window.__app.scene.objects.length');
+  t.check('cube selected for object-mode delete',
+    (await t.evaluate('window.__app.scene.selection.size')) > 0);
+  await t.key('Delete', 'Delete');
+  t.check('Delete key removes the object in object mode',
+    (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeDel - 1);
+  await t.key('z', 'KeyZ', 2); // ctrl-z
+  t.check('Ctrl+Z restores the object deleted with Delete',
+    (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeDel);
 });

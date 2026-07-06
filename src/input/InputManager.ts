@@ -205,7 +205,10 @@ export class InputManager {
       return;
     }
 
-    const key = e.key.toLowerCase();
+    // The Delete key aliases X everywhere X acts (users kept pressing Delete and
+    // concluding delete didn't exist): object-mode object delete AND the
+    // edit-mode Delete menu. Normalise it to 'x' before any key dispatch.
+    const key = e.key === 'Delete' ? 'x' : e.key.toLowerCase();
     if (e.ctrlKey && key === 'z') {
       e.preventDefault();
       const name = e.shiftKey ? this.ctx.undo.redo() : this.ctx.undo.undo();
