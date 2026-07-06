@@ -13,6 +13,8 @@ export interface TopbarActions {
   importObj(): void;
   /** Toggle the keyboard-shortcut overlay (also bound to F1). */
   toggleHelp(): void;
+  /** Toggle the path-traced render window (F12's reliable stand-in). */
+  toggleRender(): void;
 }
 
 /**
@@ -70,6 +72,10 @@ export class Topbar {
     const openBtn = Topbar.makeButton('Open', 'open-scene', () => actions.openScene());
     const exportObjBtn = Topbar.makeButton('Export OBJ', 'export-obj', () => actions.exportObj());
     const importObjBtn = Topbar.makeButton('Import OBJ', 'import-obj', () => actions.importObj());
+    // 🎬 opens the path-traced render window. Also bound to F12, but browsers
+    // reserve F12 for devtools, so the button is the reliable entry point.
+    const renderBtn = Topbar.makeButton('🎬 Render', 'render', () => actions.toggleRender());
+    renderBtn.title = 'Render image (F12)';
     // "?" opens the shortcut cheat-sheet (same overlay as F1).
     const helpBtn = Topbar.makeButton('?', 'help', () => actions.toggleHelp());
     helpBtn.title = 'Keyboard shortcuts (F1)';
@@ -79,7 +85,7 @@ export class Topbar {
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, snap, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, helpBtn, this.statusEl);
+    root.append(title, chip, shading, snap, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, helpBtn, this.statusEl);
     this.update();
   }
 

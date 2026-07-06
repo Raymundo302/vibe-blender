@@ -19,7 +19,13 @@ export interface RenderEngineContext {
  * While the window is open, Esc closes it (stopPropagation so it doesn't leak
  * into other window-level handlers); F12 always toggles.
  */
-export function initRenderEngine(ctx: RenderEngineContext): void {
+/** Controls handed back to the app shell (topbar Render button). */
+export interface RenderEngineControls {
+  /** Open + start a render, or close the window if it is open (F12 behavior). */
+  toggle(): void;
+}
+
+export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls {
   const win = new RenderWindow(ctx.host);
   let worker: Worker | null = null;
   let startTime = 0;
@@ -87,4 +93,6 @@ export function initRenderEngine(ctx: RenderEngineContext): void {
     start: startRender,
     close,
   };
+
+  return { toggle: () => (win.isOpen ? close() : startRender()) };
 }

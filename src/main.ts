@@ -166,7 +166,9 @@ const nPanel = new NPanel(viewportWrap, scene, undo);
 new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
 
 // F12 render engine (P8-4): owns its own keydown listener + result window.
-initRenderEngine({ scene, camera, setStatus: opCtx.setStatus, host: document.body });
+// Browsers reserve F12 for devtools, so the topbar Render button drives the
+// same toggle through the returned controls.
+const renderEngine = initRenderEngine({ scene, camera, setStatus: opCtx.setStatus, host: document.body });
 
 // First-visit splash inside #viewport-wrap. It auto-dismisses on the first canvas
 // pointer event or any key (listeners below); dismiss() is idempotent so these
@@ -274,6 +276,7 @@ const topbar = new Topbar(scene, renderer, {
   exportObj: exportObjFile,
   importObj: importObjFile,
   toggleHelp: () => helpOverlay.toggle(),
+  toggleRender: () => renderEngine.toggle(),
 });
 topbar.mountTabs(workspaces.createTabs());
 
