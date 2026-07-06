@@ -146,3 +146,12 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 | P6-4 | Autosave: localStorage every 30s + crash-restore prompt on boot | opus | — | verified |
 | P6-5 | Proportional editing (O): falloff-weighted G/R/S in edit mode, wheel radius, circle overlay | opus | — | verified |
 | P6-6 | Shortcut overlay + status-hint audit: every wired key listed, grouped | opus | — | verified |
+
+### Phase 7 — Object management & precision (night session, cont.)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| P7-1 | Join objects (Ctrl+J): merge selected meshes into the active object, transforms baked | opus | — | pending |
+| P7-2 | Separate selection (P): edit-mode selected faces → new object | opus | — | pending |
+| P7-3 | Edge slide (GG): slide selected verts along adjacent rail edges | opus | — | pending |
+| P7-4 | Grid snapping: Shift+Tab toggle + Ctrl-hold during G, topbar magnet indicator | opus | — | pending |
+| P7-5 | Duplicate in edit mode (Shift+D): copy selected faces inside the mesh + ride G | opus | — | pending |
