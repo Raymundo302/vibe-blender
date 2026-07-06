@@ -317,6 +317,32 @@
 }
 .splash-foot { color: var(--vb-muted); font-size: 11px; font-style: italic; }
 
+/* ------------------------------------------------- crash-restore toast (P6-4) */
+/* A small non-blocking prompt pinned near the top of the window. The card itself
+ * is pointer-events:none so it never intercepts viewport/topbar clicks — only the
+ * two buttons are interactive. */
+.restore-toast {
+  position: fixed; top: 52px; left: 50%; transform: translateX(-50%);
+  z-index: 150; display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 6px;
+  background: var(--vb-panel); border: 1px solid var(--vb-border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  font: var(--vb-font); color: var(--vb-text);
+  pointer-events: none; user-select: none;
+}
+.restore-toast-msg { font-size: 12px; }
+.restore-toast-btn {
+  pointer-events: auto; cursor: pointer;
+  font-family: inherit; font-size: 11px; color: var(--vb-text);
+  background: var(--vb-inset); border: 1px solid var(--vb-border);
+  border-radius: 4px; padding: 3px 10px;
+}
+.restore-toast-btn:hover { border-color: var(--vb-accent, #fe730f); color: #fff; }
+.restore-toast-btn[data-action="restore"] {
+  background: var(--vb-accent, #fe730f); border-color: var(--vb-accent, #fe730f); color: #fff;
+}
+.restore-toast-btn[data-action="restore"]:hover { filter: brightness(1.1); }
+
 /* ------------------------------------------------------ shortcut overlay (P3-4) */
 /* Modal cheat-sheet. Interactive (pointer-events auto) — backdrop click and the
  * × close it; InputManager swallows the keyboard while it is open. */

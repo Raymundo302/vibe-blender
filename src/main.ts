@@ -15,6 +15,8 @@ import { HelpOverlay } from './ui/helpOverlay';
 import { NPanel } from './ui/nPanel';
 import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
+import { Autosave } from './io/autosave';
+import { RestoreToast } from './ui/restoreToast';
 import { exportObj, parseObj } from './io/obj';
 import { EditableMesh } from './core/mesh/EditableMesh';
 import { AddObjectsCommand } from './core/undo/objectCommands';
@@ -43,6 +45,13 @@ const opCtx: OperatorContext = {
   setStatus: (text) => { statusEl.textContent = text; },
 };
 
+// --- Autosave + crash restore (P6-4) ---------------------------------------
+// Snapshot the pristine default scene (single Cube + default camera) NOW, before
+// anything can mutate it — the boot prompt only fires when a stored autosave
+// differs from this. The Autosave instance owns the 30s interval + save-on-hidden.
+const pristineScene = serializeScene(scene, camera);
+const autosave = new Autosave({ serialize: () => serializeScene(scene, camera) });
+
 // --- Scene save / load (P3-2) ----------------------------------------------
 /** Download the current scene as a .vibe.json file. */
 function saveScene(): void {
@@ -54,6 +63,8 @@ function saveScene(): void {
   a.download = 'scene.vibe.json';
   a.click();
   URL.revokeObjectURL(url);
+  // The file is now the source of truth — drop the crash-restore autosave.
+  autosave.clear();
   opCtx.setStatus('Saved scene.vibe.json');
 }
 
@@ -62,6 +73,8 @@ function loadSceneJson(json: string): void {
   if (scene.editMode) scene.exitEditMode();
   applySceneJson(json, scene, camera);
   undo.clear();
+  // Loading a file replaces the working scene — the stale autosave no longer applies.
+  autosave.clear();
   opCtx.setStatus('Loaded scene');
 }
 
@@ -163,6 +176,30 @@ idleHint.id = 'idle-hint';
 idleHint.textContent = 'F1 — shortcuts';
 viewportWrap.append(idleHint);
 
+// Crash-restore prompt: if a stored autosave exists and differs from the pristine
+// default scene, offer to restore it. Mounted on <body> (non-blocking — see
+// theme.css) so it coexists with the splash without racing its dismissal.
+const storedAutosave = autosave.load();
+if (storedAutosave && storedAutosave.scene !== pristineScene) {
+  new RestoreToast(document.body, {
+    onRestore: () => {
+      try {
+        if (scene.editMode) scene.exitEditMode();
+        applySceneJson(storedAutosave.scene, scene, camera);
+        undo.clear();
+        opCtx.setStatus('Restored previous session');
+      } catch (err) {
+        opCtx.setStatus(`Restore failed: ${(err as Error).message}`);
+      }
+    },
+    onDiscard: () => {
+      autosave.clear();
+      opCtx.setStatus('Discarded autosave');
+    },
+  });
+}
+autosave.start();
+
 // --- Workspaces (P4-1) -------------------------------------------------------
 // The screen is a grid of areas, each hosting a switchable editor. The 3D
 // viewport is a singleton editor wrapping #viewport-wrap (the WebGL canvas
@@ -237,6 +274,10 @@ topbar.mountTabs(workspaces.createTabs());
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
   scene, camera, undo, renderer, workspaces, nPanel,
+  autosave: {
+    saveNow: () => autosave.saveNow(),
+    clear: () => autosave.clear(),
+  },
   io: {
     serialize: () => serializeScene(scene, camera),
     apply: (json: string) => loadSceneJson(json),

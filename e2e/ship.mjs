@@ -716,4 +716,98 @@ runE2e(async (t) => {
   // Restore clean state so the suite ends as it began.
   await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
   await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+
+  // --- P6-4: autosave + crash restore ---
+  // Start from a clean single-Cube scene with no stored autosave.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`window.__app.autosave.clear()`);
+  await t.sleep(60);
+
+  // FLOW 1 — Restore. Mutate the scene (move the cube, add an object), autosave,
+  // then reload: the boot prompt must appear and Restore must bring the mutation back.
+  await t.evaluate(`(() => {
+    const scene = window.__app.scene, cube = scene.objects[0];
+    const P = cube.transform.position;
+    cube.transform = cube.transform.withPosition(new P.constructor(7, 2, -3));
+    scene.add('Autosaved', cube.mesh.clone());
+    window.__app.autosave.saveNow();
+  })()`);
+  const stored = await t.evaluate(`localStorage.getItem('vibe-blender-autosave')`);
+  t.check('saveNow writes the autosave envelope',
+    typeof stored === 'string' && JSON.parse(stored).format === 'vibe-blender-autosave' &&
+    typeof JSON.parse(stored).savedAt === 'number' && typeof JSON.parse(stored).scene === 'string');
+
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(200);
+  // Fresh boot shows the default cube...
+  t.check('boot starts from the default single-Cube scene',
+    await t.evaluate('window.__app.scene.objects.length') === 1);
+  // ...and the restore toast (autosave differs from default).
+  t.check('restore toast appears when a differing autosave exists',
+    await t.until(`!!document.querySelector('.restore-toast')`, 5000));
+  t.check('toast offers Restore + Discard buttons',
+    await t.evaluate(`!!document.querySelector('.restore-toast [data-action="restore"]') && !!document.querySelector('.restore-toast [data-action="discard"]')`));
+
+  await t.evaluate(`document.querySelector('.restore-toast [data-action="restore"]').click()`);
+  await t.sleep(140);
+  const restored = await t.evaluate(`(() => {
+    const scene = window.__app.scene, cube = scene.objects[0];
+    return { count: scene.objects.length, x: cube.transform.position.x,
+             names: scene.objects.map((o) => o.name) };
+  })()`);
+  t.check('Restore brings the mutation back (2 objects, cube at X=7)',
+    restored.count === 2 && Math.abs(restored.x - 7) < 1e-6 && restored.names.includes('Autosaved'));
+  t.check('toast is gone after Restore',
+    await t.evaluate(`!document.querySelector('.restore-toast')`));
+  t.check('Restore clears undo history',
+    await t.evaluate(`(() => { window.__app.undo.push({ name: 'x', undo(){}, redo(){} }); return true; })()`) === true);
+
+  // FLOW 2 — Discard. Re-arm an autosave that differs, reload, then Discard →
+  // scene stays the default cube and the autosave key is removed.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`(() => {
+    const scene = window.__app.scene, cube = scene.objects[0];
+    cube.transform = cube.transform.withPosition(new cube.transform.position.constructor(9, 0, 0));
+    window.__app.autosave.saveNow();
+  })()`);
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(200);
+  t.check('restore toast appears again for FLOW 2',
+    await t.until(`!!document.querySelector('.restore-toast')`, 5000));
+  await t.evaluate(`document.querySelector('.restore-toast [data-action="discard"]').click()`);
+  await t.sleep(140);
+  const discarded = await t.evaluate(`(() => {
+    const scene = window.__app.scene, cube = scene.objects[0];
+    return { count: scene.objects.length, name: cube.name, x: cube.transform.position.x,
+             key: localStorage.getItem('vibe-blender-autosave') };
+  })()`);
+  t.check('Discard leaves the default cube scene (1 obj, Cube at origin)',
+    discarded.count === 1 && discarded.name === 'Cube' && Math.abs(discarded.x) < 1e-6);
+  t.check('Discard removes the autosave key', discarded.key === null);
+  t.check('toast is gone after Discard',
+    await t.evaluate(`!document.querySelector('.restore-toast')`));
+
+  // No autosave → no toast on the next boot.
+  await t.evaluate(`window.__app.autosave.clear()`);
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(200);
+  t.check('no autosave → no restore toast on boot',
+    await t.evaluate(`!document.querySelector('.restore-toast')`));
+
+  // Saving/loading a file clears the autosave (the file is the source of truth).
+  await t.evaluate(`(() => {
+    const scene = window.__app.scene, cube = scene.objects[0];
+    cube.transform = cube.transform.withPosition(new cube.transform.position.constructor(4, 0, 0));
+    window.__app.autosave.saveNow();
+  })()`);
+  t.check('autosave present before load', (await t.evaluate(`localStorage.getItem('vibe-blender-autosave')`)) !== null);
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  t.check('loading a file clears the autosave',
+    (await t.evaluate(`localStorage.getItem('vibe-blender-autosave')`)) === null);
+
+  // Leave storage clean so a later suite's boot never sees a stale toast.
+  await t.evaluate(`window.__app.autosave.clear()`);
 });
