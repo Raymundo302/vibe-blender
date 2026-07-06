@@ -427,12 +427,7 @@ export class InputManager {
       const scene = this.ctx.scene;
       const selected = scene.selectedObjects;
       if (selected.length === 0) return;
-      const dups = selected.map((obj) => {
-        const dup = scene.add(nextDupName(scene, obj.name), obj.mesh.clone());
-        dup.transform = obj.transform; // Transform is immutable — sharing the copy is safe.
-        dup.visible = obj.visible;
-        return dup;
-      });
+      const dups = selected.map((obj) => scene.duplicate(obj, nextDupName(scene, obj.name)));
       scene.selection.clear();
       for (const d of dups) scene.selection.add(d.id);
       scene.activeId = dups.at(-1)?.id ?? null;

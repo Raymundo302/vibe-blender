@@ -163,6 +163,25 @@ export class Scene {
     return this.objects.find((o) => o.id === id);
   }
 
+  /**
+   * Kind-aware copy of an object (Shift+D): clones the mesh for mesh objects,
+   * deep-copies light/camera payloads, carries transform / visibility /
+   * shading / color / material. Modifier stacks are NOT copied (matches the
+   * pre-P8 behavior; revisit if it ever bites).
+   */
+  duplicate(src: SceneObject, name: string): SceneObject {
+    const obj = new SceneObject(this.nextId++, name, src.mesh.clone(), src.kind);
+    if (src.light) obj.light = { ...src.light, color: [...src.light.color] };
+    if (src.camera) obj.camera = { ...src.camera };
+    obj.transform = src.transform; // Transform is immutable — sharing is safe.
+    obj.visible = src.visible;
+    obj.shadeSmooth = src.shadeSmooth;
+    obj.color = [...src.color];
+    obj.materialId = src.materialId;
+    this.objects.push(obj);
+    return obj;
+  }
+
   get selectedObjects(): SceneObject[] {
     return this.objects.filter((o) => this.selection.has(o.id));
   }

@@ -1,7 +1,14 @@
-import type { Scene } from '../core/scene/Scene';
+import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
+import type { LightType } from '../core/scene/objectData';
+
+const LIGHTS: { name: string; type: LightType }[] = [
+  { name: 'Point', type: 'point' },
+  { name: 'Sun', type: 'sun' },
+  { name: 'Spot', type: 'spot' },
+];
 
 /** Everything the popup needs; kept free of InputManager internals. */
 export interface AddMenuOptions {
@@ -30,19 +37,20 @@ export class AddMenu {
     this.root = document.createElement('div');
     this.root.className = 'add-menu';
 
-    const heading = document.createElement('div');
-    heading.className = 'add-menu-heading';
-    heading.textContent = 'Add Mesh';
-    this.root.appendChild(heading);
-
+    this.heading('Add Mesh');
     for (const def of PRIMITIVES) {
-      const item = document.createElement('button');
-      item.className = 'add-menu-item';
-      item.type = 'button';
-      item.textContent = def.name;
-      item.addEventListener('click', () => this.addPrimitive(def));
-      this.root.appendChild(item);
+      this.item(def.name, () => this.addPrimitive(def));
     }
+
+    this.heading('Add Light');
+    for (const { name, type } of LIGHTS) {
+      this.item(name, () =>
+        this.commitAdd(name, this.opts.scene.addLight(name, type)));
+    }
+
+    this.heading('Add Camera');
+    this.item('Camera', () =>
+      this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
 
     // Position at the pointer, then clamp so the menu stays inside the host.
     this.root.style.left = `${opts.x}px`;
@@ -57,13 +65,33 @@ export class AddMenu {
     window.addEventListener('pointerdown', this.onOutsidePointer, true);
   }
 
+  private heading(text: string): void {
+    const heading = document.createElement('div');
+    heading.className = 'add-menu-heading';
+    heading.textContent = text;
+    this.root.appendChild(heading);
+  }
+
+  private item(label: string, onClick: () => void): void {
+    const item = document.createElement('button');
+    item.className = 'add-menu-item';
+    item.type = 'button';
+    item.textContent = label;
+    item.addEventListener('click', onClick);
+    this.root.appendChild(item);
+  }
+
   private addPrimitive(def: PrimitiveDef): void {
+    this.commitAdd(def.name, this.opts.scene.add(def.name, def.make()));
+  }
+
+  /** Select the freshly added object, push ONE undo entry, close. */
+  private commitAdd(name: string, obj: SceneObject): void {
     const { scene, undo, setStatus } = this.opts;
-    const obj = scene.add(def.name, def.make());
     scene.selectOnly(obj.id);
     // Construct AFTER scene.add so the command captures the real list index.
-    undo.push(new AddObjectsCommand('Add ' + def.name, scene, [obj]));
-    setStatus(`Added ${def.name}`);
+    undo.push(new AddObjectsCommand('Add ' + name, scene, [obj]));
+    setStatus(`Added ${name}`);
     this.close();
   }
 
