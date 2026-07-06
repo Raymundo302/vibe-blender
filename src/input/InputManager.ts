@@ -18,6 +18,7 @@ import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
+import { JoinObjectsCommand } from '../core/undo/joinCommand';
 
 /**
  * Blender-style duplicate name: strip a trailing `.NNN`, then pick the lowest
@@ -343,6 +344,25 @@ export class InputManager {
       this.ctx.undo.push(new AddObjectsCommand('Duplicate', scene, dups));
       this.ctx.setStatus(`Duplicated ${dups.length} object(s)`);
       this.startOperator(new TranslateOperator());
+      return;
+    }
+    // Ctrl+J: join every selected mesh into the active object (Blender semantics).
+    // Object mode only — the edit-mode branch above already returned.
+    if (key === 'j' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      if (scene.selection.size < 2) {
+        this.ctx.setStatus('Join needs 2 or more selected objects');
+        return;
+      }
+      const count = scene.selection.size;
+      const cmd = JoinObjectsCommand.perform('Join', scene);
+      if (!cmd) {
+        this.ctx.setStatus('Join needs the active object to be selected');
+        return;
+      }
+      this.ctx.undo.push(cmd);
+      this.ctx.setStatus(`Joined ${count} objects`);
       return;
     }
     // X: delete the selection (no confirmation, no modifiers).

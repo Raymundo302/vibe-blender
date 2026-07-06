@@ -813,6 +813,64 @@ runE2e(async (t) => {
   t.check('loading a file clears the autosave',
     (await t.evaluate(`localStorage.getItem('vibe-blender-autosave')`)) === null);
 
+  // --- P7-1: Join objects (Ctrl+J) ---
+  // Clean single-Cube scene, then add a second cube moved +3 on X. Origin cube is
+  // the active (join target); both are selected.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    const a = s.objects[0];                 // origin Cube = active / join target
+    const b = s.add('Cube.moved', a.mesh.clone());
+    b.transform = b.transform.withPosition(new a.transform.position.constructor(3, 0, 0));
+    s.selection.clear();
+    s.selection.add(a.id); s.selection.add(b.id);
+    s.activeId = a.id;
+  })()`);
+  await t.sleep(80);
+  const p71before = await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    return { count: s.objects.length, sel: s.selection.size, activeVerts: s.activeObject.mesh.verts.size };
+  })()`);
+  t.check('P7-1 setup: 2 objects, both selected, active cube has 8 verts',
+    p71before.count === 2 && p71before.sel === 2 && p71before.activeVerts === 8);
+
+  // Ctrl+J merges the moved cube into the active cube.
+  await t.key('j', 'KeyJ', 2); // ctrl+j
+  await t.sleep(120);
+  const p71joined = await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    return { count: s.objects.length, evalVerts: s.activeObject.evaluatedMesh().verts.size,
+             status: document.getElementById('status').textContent };
+  })()`);
+  t.check('Ctrl+J merges into a single object', p71joined.count === 1);
+  t.check('joined object evaluates to 16 verts (two cubes baked)', p71joined.evalVerts === 16);
+  t.check('Ctrl+J reports a Join status', p71joined.status.includes('Joined'));
+
+  // A baked vert lands at the moved cube's world corner: (3,0,0)+(1,1,1) = (4,1,1).
+  const p71baked = await t.evaluate(`(() => {
+    const m = window.__app.scene.activeObject.mesh;
+    return [...m.verts.values()].some((v) =>
+      Math.abs(v.co.x - 4) < 1e-6 && Math.abs(v.co.y - 1) < 1e-6 && Math.abs(v.co.z - 1) < 1e-6);
+  })()`);
+  t.check('a baked vert lands at the source cube world position (4,1,1)', p71baked === true);
+
+  // Ctrl+Z restores both objects, the active mesh, and the moved cube's position.
+  await t.key('z', 'KeyZ', 2); // ctrl+z
+  await t.sleep(120);
+  const p71undo = await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    const moved = s.objects.find((o) => o.name === 'Cube.moved');
+    return { count: s.objects.length, activeVerts: s.activeObject.mesh.verts.size,
+             movedX: moved ? moved.transform.position.x : null };
+  })()`);
+  t.check('Ctrl+Z restores 2 objects', p71undo.count === 2);
+  t.check('Ctrl+Z restores the active mesh to 8 verts', p71undo.activeVerts === 8);
+  t.check('Ctrl+Z restores the moved cube at X=3', Math.abs(p71undo.movedX - 3) < 1e-6);
+
+  // Restore the default scene so the suite ends clean.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+
   // Leave storage clean so a later suite's boot never sees a stale toast.
   await t.evaluate(`window.__app.autosave.clear()`);
 });
