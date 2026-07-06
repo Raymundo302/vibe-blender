@@ -6,6 +6,7 @@ import { UndoStack } from './core/undo/UndoStack';
 import { makeCube } from './core/mesh/primitives';
 import { InputManager } from './input/InputManager';
 import { UiShell } from './ui/shell';
+import { OutlinerPanel } from './ui/outliner';
 import type { OperatorContext } from './core/operator/Operator';
 
 const canvas = document.getElementById('viewport') as HTMLCanvasElement;
@@ -31,6 +32,7 @@ const opCtx: OperatorContext = {
 
 new InputManager(canvas, opCtx, renderer);
 const shell = new UiShell();
+shell.addPanel(new OutlinerPanel(scene, undo));
 
 // Debug/test handle (used by e2e smoke tests; harmless in production)
 (window as unknown as Record<string, unknown>).__app = { scene, camera, undo, renderer, shell };
