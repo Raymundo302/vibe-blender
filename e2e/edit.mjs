@@ -783,4 +783,57 @@ runE2e(async (t) => {
     (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeSep);
   t.check('Ctrl+Z restores the source to 6 faces',
     (await t.evaluate('window.__app.scene.editObject.mesh.faces.size')) === 6);
+
+  // --- P7-3: edge slide (GG) ---
+  // Pristine single-cube scene.
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(200);
+
+  await t.key('Tab', 'Tab');   // enter edit mode on the cube
+  t.check('P7-3: entered edit mode', (await mode()) === 'edit');
+  await t.key('2', 'Digit2');  // edge select mode
+
+  // Select one vertical edge (its two verts share x,z and differ in y). Sliding
+  // moves each vert along its horizontal rails, keeping it on its y-plane.
+  const vedge = await t.evaluate(`(() => {
+    const m = window.__app.scene.editObject.mesh, e = window.__app.scene.editMode;
+    for (const [key, ed] of m.edges()) {
+      const a = m.verts.get(ed.v0).co, b = m.verts.get(ed.v1).co;
+      if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.z - b.z) < 1e-6 && Math.abs(a.y - b.y) > 1e-6) {
+        e.clearSelection(); e.edges.add(key); e.touch();
+        return { key, v0: ed.v0, v1: ed.v1 };
+      }
+    }
+    return null;
+  })()`);
+  t.check('P7-3: selected a vertical edge', vedge !== null);
+
+  const vc = (id) => t.evaluate(`(() => { const c = window.__app.scene.editObject.mesh.verts.get(${id}).co; return { x: c.x, y: c.y, z: c.z }; })()`);
+  const b0 = await vc(vedge.v0), b1 = await vc(vedge.v1);
+
+  // G then G → edge slide (status mentions Slide).
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('g', 'KeyG');
+  await t.key('g', 'KeyG');
+  t.check('P7-3: GG enters edge slide (status contains Slide)',
+    (await t.evaluate("document.getElementById('status').textContent")).includes('Slide'));
+
+  // Horizontal drag right, LMB confirm.
+  await t.mouse('mouseMoved', ccX + 130, ccY);
+  await t.sleep(100);
+  await t.click(ccX + 130, ccY);
+
+  const a0 = await vc(vedge.v0), a1 = await vc(vedge.v1);
+  const sd = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+  t.check('P7-3: both edge verts slid along their rails',
+    sd(a0, b0) > 1e-4 && sd(a1, b1) > 1e-4, `d0=${sd(a0, b0).toFixed(4)} d1=${sd(a1, b1).toFixed(4)}`);
+  t.check('P7-3: each vert stayed on its horizontal (top/bottom) plane',
+    Math.abs(a0.y - b0.y) < 1e-6 && Math.abs(a1.y - b1.y) < 1e-6);
+
+  // Ctrl+Z restores both verts.
+  await t.key('z', 'KeyZ', 2);
+  const u0 = await vc(vedge.v0), u1 = await vc(vedge.v1);
+  t.check('P7-3: Ctrl+Z restores the slid verts',
+    sd(u0, b0) < 1e-6 && sd(u1, b1) < 1e-6);
 });

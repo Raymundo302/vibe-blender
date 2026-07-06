@@ -278,6 +278,9 @@ export class EditTranslateOperator extends EditTransformBase {
   private startHit = Vec3.ZERO;
   private delta = Vec3.ZERO;
   private axis: AxisLock = null;
+  /** Set true when 'g' is pressed mid-Move: a sentinel the InputManager reads to
+   *  swap this Move for an Edge Slide (Blender's GG). */
+  slideRequested = false;
 
   protected onStart(ctx: OperatorContext, pointer: PointerState): boolean {
     const hit = this.planeHit(ctx, pointer);
@@ -324,6 +327,10 @@ export class EditTranslateOperator extends EditTransformBase {
 
   onKey(ctx: OperatorContext, key: string): boolean {
     const k = key.toLowerCase();
+    if (k === 'g') {
+      this.slideRequested = true; // consumed by the InputManager swap (GG → Edge Slide)
+      return true;
+    }
     if (k !== 'x' && k !== 'y' && k !== 'z') return false;
     this.axis = this.axis === k ? null : k;
     const hit = this.planeHit(ctx, this.lastPointer);

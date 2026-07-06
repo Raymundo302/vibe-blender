@@ -152,6 +152,6 @@ Pages from gh-pages branch, re-deploy = build + force-push dist). 126 unit tests
 |----|------|-------|---------|--------|
 | P7-1 | Join objects (Ctrl+J): merge selected meshes into the active object, transforms baked | opus | — | verified |
 | P7-2 | Separate selection (P): edit-mode selected faces → new object | opus | — | verified |
-| P7-3 | Edge slide (GG): slide selected verts along adjacent rail edges | opus | — | pending |
+| P7-3 | Edge slide (GG): slide selected verts along adjacent rail edges | opus | — | built |
 | P7-4 | Grid snapping: Shift+Tab toggle + Ctrl-hold during G, topbar magnet indicator | opus | — | pending |
 | P7-5 | Duplicate in edit mode (Shift+D): copy selected faces inside the mesh + ride G | opus | — | pending |

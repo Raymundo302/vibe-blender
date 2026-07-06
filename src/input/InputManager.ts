@@ -5,6 +5,7 @@ import { TranslateOperator } from '../tools/translate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { EditTranslateOperator, EditRotateOperator, EditScaleOperator, EditTransformBase, proportional } from '../tools/editTransform';
+import { EdgeSlideOperator } from '../tools/edgeSlide';
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
@@ -218,7 +219,17 @@ export class InputManager {
     if (this.activeOp) {
       if (e.key === 'Escape') this.endOperator(false);
       else if (e.key === 'Enter') this.endOperator(true);
-      else if (this.activeOp.onKey(this.ctx, e.key)) e.preventDefault();
+      else if (this.activeOp.onKey(this.ctx, e.key)) {
+        e.preventDefault();
+        // GG: a second G during an edit-mode Move swaps it for Edge Slide. The
+        // Move sets a sentinel; we cancel it (restore, push nothing) and hand the
+        // same selection to a fresh Edge Slide operator.
+        if (this.activeOp instanceof EditTranslateOperator && this.activeOp.slideRequested) {
+          this.activeOp.cancel(this.ctx);
+          this.activeOp = null;
+          this.startOperator(new EdgeSlideOperator());
+        }
+      }
       return;
     }
 
