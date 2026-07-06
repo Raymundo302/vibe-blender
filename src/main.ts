@@ -7,7 +7,7 @@ import { makeCube } from './core/mesh/primitives';
 import { InputManager } from './input/InputManager';
 import { WorkspaceManager, type EditorFactory, type WorkspaceConfig } from './ui/workspace';
 import { OutlinerPanel } from './ui/outliner';
-import { PropertiesPanel } from './ui/properties';
+import { PropertiesEditor } from './ui/propertiesEditor';
 import { Topbar } from './ui/topbar';
 import { HelpOverlay } from './ui/helpOverlay';
 import { Splash } from './ui/splash';
@@ -179,8 +179,8 @@ const editorFactories: EditorFactory[] = [
     type: 'properties',
     title: 'Properties',
     create: () => {
-      const panel = new PropertiesPanel(scene, undo);
-      return wrapPanel('Properties', panel);
+      const editor = new PropertiesEditor({ scene, undo });
+      return wrapPanel('Properties', editor);
     },
   },
 ];

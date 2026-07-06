@@ -151,14 +151,48 @@
 .outliner-empty { padding: 6px 8px; color: var(--vb-muted); font-style: italic; }
 
 /* ---------------------------------------------------------------- properties */
+/*
+ * Tabbed properties editor (P4-3): a slim vertical strip of icon buttons on the
+ * left edge, active tab highlighted with the accent color; the tab's content
+ * fills the rest. New tabs (Modifier, P4-4) register through registerPropertiesTab
+ * and render an extra strip button automatically.
+ */
+.properties-editor { display: flex; align-items: stretch; min-height: 0; height: 100%; }
+.properties-tabstrip {
+  flex: none; display: flex; flex-direction: column; gap: 2px;
+  padding: 4px 2px; background: var(--vb-bg, #1d1d1d);
+  border-right: 1px solid var(--vb-border);
+}
+.properties-tab-btn {
+  width: 26px; height: 26px; flex: none; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: 3px;
+  color: var(--vb-muted); font-size: 13px; cursor: pointer; line-height: 1;
+}
+.properties-tab-btn:hover { color: var(--vb-text); background: var(--vb-panel); }
+.properties-tab-active {
+  color: var(--vb-accent); border-color: var(--vb-accent);
+  background: var(--vb-panel);
+}
+.properties-content { flex: 1; min-width: 0; overflow-y: auto; }
+.properties-pane { min-width: 0; }
+
 .properties-body {
   font: var(--vb-font);
   color: var(--vb-text); user-select: none; padding: 2px 8px 8px;
 }
-.properties-name {
-  color: #fff; font-weight: 600; padding: 2px 0 6px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.properties-name-row { padding: 4px 0 6px; }
+.properties-name-input {
+  width: 100%; box-sizing: border-box; font: inherit; color: #fff; font-weight: 600;
+  background: var(--vb-inset); border: 1px solid var(--vb-border); border-radius: 2px;
+  padding: 2px 4px; outline: none;
 }
+.properties-name-input:focus { border-color: var(--vb-accent); box-shadow: 0 0 0 1px var(--vb-accent); }
+.properties-visible-row {
+  display: flex; align-items: center; gap: 5px; padding: 0 0 8px;
+  color: var(--vb-muted); cursor: pointer;
+}
+.properties-visible { flex: none; cursor: pointer; accent-color: var(--vb-accent); }
 .properties-group { margin-bottom: 8px; }
 .properties-group-title { color: var(--vb-muted); margin-bottom: 3px; }
 .properties-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }

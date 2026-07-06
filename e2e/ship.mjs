@@ -285,4 +285,84 @@ runE2e(async (t) => {
   await t.sleep(60);
   t.check('F1 toggles the overlay closed again',
     await t.evaluate(`!document.querySelector('.help-overlay')`));
+
+  // --- P4-3: tabbed Properties editor (vertical tab strip + Object tab) ---
+
+  // Force the Layout workspace (outliner + properties both visible) and a clean
+  // single-Cube scene with that Cube selected/active.
+  await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
+  await t.sleep(150);
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+  await t.evaluate(`window.__app.scene.selectOnly(window.__app.scene.objects[0].id)`);
+  await t.sleep(120);
+
+  // Tab strip renders with the Object tab, active by default, tooltip 'Object'.
+  t.check('properties tab strip renders the Object tab button',
+    await t.evaluate(`!!document.querySelector('.properties-tabstrip .properties-tab-btn[data-tab="object"]')`));
+  t.check('Object tab is active by default',
+    await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="object"]').classList.contains('properties-tab-active')`));
+  t.check('Object tab tooltip reads "Object"',
+    (await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="object"]').title`)) === 'Object');
+
+  // Rename via the name input → updates the object, the outliner, and the topbar.
+  await t.evaluate(`(() => {
+    const inp = document.querySelector('.properties-name-input');
+    inp.value = 'Renamed';
+    inp.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(140);
+  t.check('name input rename updates the active object',
+    (await t.evaluate('window.__app.scene.activeObject.name')) === 'Renamed');
+  t.check('rename reflected in the outliner',
+    await t.evaluate(`[...document.querySelectorAll('.outliner-name')].some((n) => n.textContent === 'Renamed')`));
+  t.check('rename reflected in the topbar status',
+    (await t.evaluate(`document.querySelector('.topbar-status').textContent`)).includes('Renamed'));
+
+  // Rename pushes RenameObjectCommand → Ctrl+Z reverts it.
+  await t.key('z', 'KeyZ', 2); // ctrl+z
+  await t.sleep(80);
+  t.check('Ctrl+Z reverts the rename',
+    (await t.evaluate('window.__app.scene.activeObject.name')) === 'Cube');
+
+  // Visibility checkbox hides the object in the viewport (center pick → null).
+  const pickCenter = () => t.evaluate(`(() => {
+    const r = document.querySelector('canvas').getBoundingClientRect();
+    return window.__app.renderer.pick(window.__app.scene, window.__app.camera, r.width / 2, r.height / 2);
+  })()`);
+  t.check('center pick hits something while the object is visible',
+    (await pickCenter()) !== null);
+  await t.evaluate(`(() => {
+    const cb = document.querySelector('.properties-visible');
+    cb.checked = false;
+    cb.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(100);
+  t.check('unchecking Visible hides the object', (await t.evaluate('window.__app.scene.activeObject.visible')) === false);
+  t.check('hidden object: center pick returns null', (await pickCenter()) === null);
+  // Restore visibility so the suite ends clean.
+  await t.evaluate(`(() => {
+    const cb = document.querySelector('.properties-visible');
+    cb.checked = true;
+    cb.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(80);
+  t.check('re-checking Visible shows the object again',
+    (await t.evaluate('window.__app.scene.activeObject.visible')) === true);
+
+  // Transform edit still works and undoes: set Location X, then Ctrl+Z.
+  const locX = () => t.evaluate('window.__app.scene.activeObject.transform.position.x');
+  const beforeX = await locX();
+  await t.evaluate(`(() => {
+    const locGroup = document.querySelectorAll('.properties-group')[0];
+    const xInput = locGroup.querySelectorAll('.properties-input')[0];
+    xInput.value = '4';
+    xInput.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(100);
+  t.check('transform edit applies (Location X = 4)', Math.abs((await locX()) - 4) < 1e-6);
+  await t.key('z', 'KeyZ', 2); // ctrl+z
+  await t.sleep(80);
+  t.check('Ctrl+Z undoes the transform edit', Math.abs((await locX()) - beforeX) < 1e-6);
+
+  await t.screenshot('/tmp/p4-3-properties.png');
 });
