@@ -14,6 +14,8 @@ import { BevelOperator } from '../tools/bevel';
 import { bridgeLoops } from '../core/mesh/ops/bridge';
 import { fillVerts, fillEdges } from '../core/mesh/ops/fill';
 import { subdivideFaces } from '../core/mesh/ops/subdivide';
+import { duplicateFaces } from '../core/mesh/ops/duplicateFaces';
+import type { EditableMesh } from '../core/mesh/EditableMesh';
 import { frameSelection } from '../tools/frame';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
@@ -35,6 +37,69 @@ function nextDupName(scene: Scene, name: string): string {
     if (!used.has(candidate)) return candidate;
   }
   return `${base}.001`;
+}
+
+/**
+ * Shift+D in edit mode (face select): copy the selected faces INSIDE the mesh
+ * (seam-free island — every vert duplicated, verts shared between two selected
+ * faces get a single shared copy), select the copies, then ride the pointer with
+ * a Move — exactly like object-mode Shift+D starts a TranslateOperator.
+ *
+ * Reuses all of EditTranslateOperator's move behaviour (view-plane drag, X/Y/Z
+ * axis lock, grid snapping) by subclassing it, but wraps the WHOLE gesture in
+ * ONE undo command (modal-TOPOLOGY pattern): snapshot before the copy, push
+ * `MeshEditCommand.fromSnapshots` on confirm. Cancel (Esc/RMB) removes the
+ * duplicated geometry entirely — a documented v1 deviation from Blender (which
+ * leaves the copy in place), chosen for a cleaner "no stray geometry" result.
+ */
+class DuplicateFacesOperator extends EditTranslateOperator {
+  private snapshot: EditableMesh | null = null;
+
+  start(ctx: OperatorContext, pointer: PointerState): boolean {
+    const sel = ctx.scene.editMode;
+    const obj = ctx.scene.editObject;
+    if (!sel || !obj || sel.elementMode !== 'face') return false;
+    const faceIds = [...sel.faces].filter((id) => obj.mesh.faces.has(id));
+    if (faceIds.length === 0) return false;
+
+    const snapshot = obj.mesh.clone();
+    const { newFaceIds } = duplicateFaces(obj.mesh, faceIds);
+    sel.faces.clear();
+    for (const id of newFaceIds) sel.faces.add(id);
+    sel.touch();
+
+    // Base start captures the (now-duplicated) selection's verts as the move set.
+    if (!super.start(ctx, pointer)) {
+      obj.mesh.copyFrom(snapshot);
+      sel.prune(obj.mesh);
+      sel.touch();
+      return false;
+    }
+    this.snapshot = snapshot;
+    return true;
+  }
+
+  onKey(ctx: OperatorContext, key: string): boolean {
+    // Swallow a second G: Shift+D then G stays a plain Move, never Edge Slide.
+    if (key.toLowerCase() === 'g') return true;
+    return super.onKey(ctx, key);
+  }
+
+  confirm(ctx: OperatorContext): void {
+    // Label the ONE combined command 'Duplicate' regardless of the base's 'Move'.
+    ctx.undo.push(MeshEditCommand.fromSnapshots('Duplicate', this.mesh, this.snapshot!, this.mesh.clone()));
+    this.sel.touch();
+    if (this.renderer && this.proportionalActive) this.renderer.editPreviewLines = null;
+    ctx.setStatus('');
+  }
+
+  cancel(ctx: OperatorContext): void {
+    this.mesh.copyFrom(this.snapshot!);
+    this.sel.prune(this.mesh);
+    this.sel.touch();
+    if (this.renderer && this.proportionalActive) this.renderer.editPreviewLines = null;
+    ctx.setStatus('');
+  }
 }
 
 /**
@@ -611,6 +676,24 @@ export class InputManager {
       for (const fid of res.newFaceIds) edit.faces.add(fid);
       edit.touch();
       this.ctx.setStatus(`Subdivided ${faceIds.length} face(s)`);
+      return;
+    }
+    // Shift+D: duplicate the selected faces inside the mesh, then ride a Move
+    // (the operator does the copy + reselect on start). Face mode only in v1; the
+    // whole gesture is ONE undo step. Must precede any plain-D handling and win
+    // over Ctrl+D (guarded !e.ctrlKey).
+    if (key === 'd' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (edit.elementMode !== 'face') {
+        this.ctx.setStatus('Duplicate: face mode only (v1)');
+        return;
+      }
+      const faceIds = [...edit.faces].filter((id) => mesh.faces.has(id));
+      if (faceIds.length === 0) {
+        this.ctx.setStatus('Duplicate: select one or more faces');
+        return;
+      }
+      this.startOperator(new DuplicateFacesOperator(this.renderer));
       return;
     }
     // M: Merge at Center directly (Blender muscle memory).

@@ -836,4 +836,63 @@ runE2e(async (t) => {
   const u0 = await vc(vedge.v0), u1 = await vc(vedge.v1);
   t.check('P7-3: Ctrl+Z restores the slid verts',
     sd(u0, b0) < 1e-6 && sd(u1, b1) < 1e-6);
+
+  // --- P7-5: duplicate in edit mode (Shift+D) ---
+  // Pristine single-cube scene.
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(200);
+
+  await t.key('Tab', 'Tab');   // enter edit mode on the cube
+  t.check('P7-5: entered edit mode', (await mode()) === 'edit');
+  await t.key('3', 'Digit3');  // face select mode
+  await t.click(ccX, ccY);     // select the front face
+  t.check('P7-5: one face selected before duplicate',
+    (await t.evaluate('window.__app.scene.editMode.faces.size')) === 1);
+
+  const dupFaces = () => t.evaluate('window.__app.scene.editObject.mesh.faces.size');
+  const dupVerts = () => t.evaluate('window.__app.scene.editObject.mesh.verts.size');
+  t.check('P7-5: cube starts at 6 faces / 8 verts',
+    (await dupFaces()) === 6 && (await dupVerts()) === 8);
+
+  // Shift+D → drag the pointer → LMB confirm. Copy adds 1 face + 4 verts.
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('d', 'KeyD', 8); // shift
+  await t.mouse('mouseMoved', ccX + 120, ccY - 70);
+  await t.sleep(120);
+  await t.click(ccX + 120, ccY - 70); // LMB confirms
+  t.check('P7-5: Shift+D duplicates a face (6 → 7)', (await dupFaces()) === 7,
+    `faces=${await dupFaces()}`);
+  t.check('P7-5: duplicate added 4 verts (8 → 12)', (await dupVerts()) === 12,
+    `verts=${await dupVerts()}`);
+  t.check('P7-5: the duplicate is selected', (await editSel('e.faces.size')) === 1);
+
+  // ONE undo step restores the original 6 faces / 8 verts.
+  await t.key('z', 'KeyZ', 2);
+  t.check('P7-5: one Ctrl+Z restores 6 faces', (await dupFaces()) === 6,
+    `faces=${await dupFaces()}`);
+  t.check('P7-5: one Ctrl+Z restores 8 verts', (await dupVerts()) === 8);
+
+  // Esc path: Shift+D then cancel removes the duplicated geometry entirely
+  // (v1 deviation — no stray verts left behind).
+  await t.key('a', 'KeyA', 1); // deselect all
+  await t.click(ccX, ccY);     // reselect the front face
+  t.check('P7-5: face reselected before cancel-duplicate',
+    (await editSel('e.faces.size')) === 1);
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('d', 'KeyD', 8); // shift
+  await t.mouse('mouseMoved', ccX + 120, ccY - 70);
+  await t.sleep(120);
+  await t.key('Escape', 'Escape'); // cancel removes the copy
+  t.check('P7-5: Esc leaves 6 faces (copy removed)', (await dupFaces()) === 6,
+    `faces=${await dupFaces()}`);
+  t.check('P7-5: Esc leaves no stray verts (8)', (await dupVerts()) === 8,
+    `verts=${await dupVerts()}`);
+
+  // Vert mode: Shift+D only reports "face mode only" and mutates nothing.
+  await t.key('1', 'Digit1');
+  await t.key('d', 'KeyD', 8);
+  t.check('P7-5: Shift+D in vert mode shows face-only status',
+    await t.evaluate(`document.getElementById('status').textContent.includes('face mode only')`));
+  t.check('P7-5: vert-mode Shift+D mutates nothing', (await dupVerts()) === 8);
 });
