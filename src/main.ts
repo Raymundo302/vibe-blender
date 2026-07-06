@@ -33,6 +33,10 @@ const opCtx: OperatorContext = {
 new InputManager(canvas, opCtx, renderer);
 const shell = new UiShell();
 shell.addPanel(new OutlinerPanel(scene, undo));
+// Float the panel over the viewport's right edge rather than docking it, so the
+// sidebar doesn't shrink the canvas and invalidate viewport-space coordinates
+// (picking + e2e). See the .outliner-floating rule in outliner.ts for why.
+shell.sidebar.classList.add('outliner-floating');
 
 // Debug/test handle (used by e2e smoke tests; harmless in production)
 (window as unknown as Record<string, unknown>).__app = { scene, camera, undo, renderer, shell };

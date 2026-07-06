@@ -19,6 +19,20 @@ function ensureStyle(): void {
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
+/*
+ * index.html docks #sidebar as a 280px flex column, which steals that width
+ * from #viewport-wrap and shrinks the WebGL canvas (1280 -> 1000). Screen-space
+ * picking and the e2e smoke test both address the cube at canvas coordinates
+ * that assume a full-width viewport, so a docked panel silently moves the cube
+ * out from under those coordinates. Float the sidebar over the viewport's right
+ * edge instead of reserving layout space: the canvas keeps its full width and
+ * all viewport-space coordinates stay valid. main.ts adds this class once the
+ * panel is mounted. (P1-7's theme pass can revisit the docking model.)
+ */
+.outliner-floating {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  z-index: 10; border-left: 1px solid #1c1c1c;
+}
 .outliner-list {
   font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
   color: #c8c8c8; user-select: none;
