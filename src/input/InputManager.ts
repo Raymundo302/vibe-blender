@@ -7,6 +7,7 @@ import { ScaleOperator } from '../tools/scale';
 import { EditTranslateOperator, EditRotateOperator, EditScaleOperator } from '../tools/editTransform';
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
+import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
@@ -39,6 +40,9 @@ export class InputManager {
   /** True while an LMB drag on a gizmo handle owns the active operator. Unlike
    *  keyboard-G (click confirms), a gizmo drag confirms on pointer *release*. */
   private gizmoDrag = false;
+  /** Non-null while a box-select operator is active; its LMB drag defines the
+   *  rect, so pointerdown anchors (not confirms) and pointerup confirms. */
+  private boxSelectOp: BoxSelectOperator | null = null;
   private addMenu: AddMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
 
@@ -73,6 +77,7 @@ export class InputManager {
     if (confirm) this.activeOp.confirm(this.ctx);
     else this.activeOp.cancel(this.ctx);
     this.activeOp = null;
+    this.boxSelectOp = null;
     this.renderer.gizmoVisible = true;
   }
 
@@ -80,9 +85,16 @@ export class InputManager {
     this.pointer = this.toLocal(e);
 
     if (this.activeOp) {
-      // LMB confirms, RMB cancels
-      if (e.button === 0) this.endOperator(true);
-      else if (e.button === 2) this.endOperator(false);
+      // Box select's LMB press anchors the rect (a drag, not a click-confirm).
+      if (this.boxSelectOp && e.button === 0 && !this.boxSelectOp.anchored) {
+        this.boxSelectOp.anchor(this.pointer);
+        this.canvas.setPointerCapture(e.pointerId);
+      } else if (e.button === 0) {
+        this.endOperator(true);
+      } else if (e.button === 2) {
+        if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+        this.endOperator(false);
+      }
       e.preventDefault();
       return;
     }
@@ -147,6 +159,10 @@ export class InputManager {
       // op was already cancelled (Esc/RMB) mid-drag, so this is safe either way.
       if (this.gizmoDrag) {
         this.gizmoDrag = false;
+        this.endOperator(true);
+      } else if (this.boxSelectOp && this.boxSelectOp.anchored) {
+        // Releasing the box-select drag applies the selection (Shift → remove).
+        this.boxSelectOp.setSubtract(e.shiftKey);
         this.endOperator(true);
       }
       if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
@@ -303,6 +319,22 @@ export class InputManager {
     }
     if (key === 'a' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       edit.selectAll(mesh);
+      return;
+    }
+    // B: box select. Starts a modal operator whose next LMB drag draws the rect;
+    // inside elements are added to (Shift at release: removed from) the selection.
+    if (key === 'b' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const op = new BoxSelectOperator(this.canvas.parentElement as HTMLElement);
+      this.startOperator(op);
+      if (this.activeOp === op) this.boxSelectOp = op;
+      return;
+    }
+    // Ctrl+I: invert the current-mode selection.
+    if (key === 'i' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      invertSelection(edit, mesh);
+      this.ctx.setStatus('Inverted selection');
       return;
     }
     // G/R/S: modal move/rotate/scale of the selected elements' verts.

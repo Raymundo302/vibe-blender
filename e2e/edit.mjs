@@ -299,6 +299,74 @@ runE2e(async (t) => {
   t.check('X with empty selection keeps the object',
     (await t.evaluate('window.__app.scene.objects.length')) === objCountBeforeX);
 
+  // --- P2-8: box select (B) + invert (Ctrl+I) ---
+  // Project all cube verts to page-space so we can drag a rect around them.
+  const vertPts = await t.evaluate(`(() => {
+    const app = window.__app, obj = app.scene.editObject, cam = app.camera;
+    const canvas = document.querySelector('canvas');
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    const vp = cam.projMatrix(w / h).mul(cam.viewMatrix()).mul(obj.transform.matrix());
+    const out = [];
+    for (const id of obj.mesh.verts.keys()) {
+      const co = obj.mesh.verts.get(id).co;
+      const ndc = vp.transformPoint(co);
+      out.push({ id, pageX: rect.left + (ndc.x + 1) / 2 * w, pageY: rect.top + (1 - ndc.y) / 2 * h });
+    }
+    return out;
+  })()`);
+  const xs = vertPts.map((p) => p.pageX), ys = vertPts.map((p) => p.pageY);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const midX = (minX + maxX) / 2;
+
+  // Drag a box rect: B, then LMB press→move→release. `shift` at release removes.
+  const boxDrag = async (x0, y0, x1, y1, shift = false) => {
+    await t.key('b', 'KeyB');
+    await t.mouse('mouseMoved', x0, y0);
+    await t.mouse('mousePressed', x0, y0, 'left');
+    await t.sleep(60);
+    await t.mouse('mouseMoved', x1, y1);
+    await t.sleep(60);
+    await t.mouse('mouseReleased', x1, y1, 'left', shift ? { modifiers: 8 } : {});
+    await t.sleep(120);
+  };
+
+  await t.key('1', 'Digit1');       // vert mode
+  await t.key('a', 'KeyA', 1);      // Alt+A: deselect all
+  t.check('cleared before box select', (await editSel('e.verts.size')) === 0);
+
+  // Box around the whole cube → all 8 verts added.
+  await boxDrag(minX - 25, minY - 25, maxX + 25, maxY + 25);
+  t.check('B box around whole cube selects 8 verts', (await editSel('e.verts.size')) === 8);
+
+  // Shift-release box over the left half → those verts removed → fewer selected.
+  await boxDrag(minX - 25, minY - 25, midX, maxY + 25, true);
+  const afterRemove = await editSel('e.verts.size');
+  t.check('B + Shift-release removes inside verts (fewer than 8)',
+    afterRemove < 8 && afterRemove > 0, `${afterRemove} left`);
+
+  // Ctrl+I → complement of the current selection.
+  await t.key('i', 'KeyI', 2);
+  t.check('Ctrl+I inverts to the complement',
+    (await editSel('e.verts.size')) === 8 - afterRemove);
+
+  // Esc during a box drag leaves the selection untouched.
+  const beforeEsc = await editSel('e.verts.size');
+  await t.key('b', 'KeyB');
+  await t.mouse('mouseMoved', minX - 25, minY - 25, 'none');
+  await t.mouse('mousePressed', minX - 25, minY - 25, 'left');
+  await t.sleep(60);
+  await t.mouse('mouseMoved', maxX + 25, maxY + 25);
+  await t.sleep(60);
+  await t.key('Escape', 'Escape');
+  await t.mouse('mouseReleased', maxX + 25, maxY + 25, 'left');
+  await t.sleep(80);
+  t.check('Esc during box drag leaves selection unchanged',
+    (await editSel('e.verts.size')) === beforeEsc, `${beforeEsc}`);
+  t.check('box-select overlay removed after cancel',
+    await t.evaluate(`!document.querySelector('.box-select-rect')`));
+
   await t.key('Tab', 'Tab');
   t.check('Tab exits back to object mode', (await mode()) === 'object');
 });

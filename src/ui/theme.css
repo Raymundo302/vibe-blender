@@ -179,6 +179,17 @@
 }
 .add-menu-item:hover { background: var(--vb-accent); color: #fff; }
 
+/* ------------------------------------------------------------- box select */
+/* Screen-space rectangle drawn while B box-select drags (P2-8). Positioned in
+ * CSS pixels within #viewport-wrap; non-interactive so it never eats events. */
+.box-select-rect {
+  position: absolute;
+  border: 1px dashed var(--vb-text);
+  background: transparent;
+  pointer-events: none;
+  z-index: 20;
+}
+
 /* ---------------------------------------------------------------- scrollbars */
 #sidebar { scrollbar-width: thin; scrollbar-color: #4a4a4a var(--vb-panel); }
 #sidebar::-webkit-scrollbar { width: 10px; }
