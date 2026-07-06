@@ -1,6 +1,8 @@
 import type { Operator, OperatorContext, PointerState } from '../core/operator/Operator';
 import type { Renderer } from '../render/Renderer';
 import { TranslateOperator } from '../tools/translate';
+import { RotateOperator } from '../tools/rotate';
+import { ScaleOperator } from '../tools/scale';
 
 /**
  * Routes raw canvas/window events. Priority order:
@@ -120,6 +122,14 @@ export class InputManager {
     }
     if (key === 'g' && !e.ctrlKey && !e.altKey) {
       this.startOperator(new TranslateOperator());
+      return;
+    }
+    if (key === 'r' && !e.ctrlKey && !e.altKey) {
+      this.startOperator(new RotateOperator());
+      return;
+    }
+    if (key === 's' && !e.ctrlKey && !e.altKey) {
+      this.startOperator(new ScaleOperator());
       return;
     }
     if (key === 'a' && e.altKey) {
