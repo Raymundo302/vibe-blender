@@ -7,6 +7,8 @@ import type { Scene } from '../core/scene/Scene';
 export interface TopbarActions {
   saveScene(): void;
   openScene(): void;
+  exportObj(): void;
+  importObj(): void;
 }
 
 /**
@@ -40,12 +42,14 @@ export class Topbar {
 
     const saveBtn = Topbar.makeButton('Save', 'save-scene', () => actions.saveScene());
     const openBtn = Topbar.makeButton('Open', 'open-scene', () => actions.openScene());
+    const exportObjBtn = Topbar.makeButton('Export OBJ', 'export-obj', () => actions.exportObj());
+    const importObjBtn = Topbar.makeButton('Import OBJ', 'import-obj', () => actions.importObj());
 
     this.statusEl = document.createElement('span');
     this.statusEl.className = 'topbar-status';
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
-    root.append(title, chip, spacer, saveBtn, openBtn, this.statusEl);
+    root.append(title, chip, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, this.statusEl);
     this.update();
   }
 

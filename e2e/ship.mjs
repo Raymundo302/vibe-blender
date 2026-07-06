@@ -92,4 +92,53 @@ runE2e(async (t) => {
   await t.evaluate(`document.querySelector('.topbar-btn[data-action="save-scene"]').click()`);
   t.check('Save button triggers a save',
     (await t.evaluate(`document.getElementById('status').textContent`)).includes('Saved scene'));
+
+  // --- P3-1: OBJ export / import ---
+
+  // Reload a clean single-Cube scene so the following checks start from a known state.
+  await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
+
+  const objText = await t.evaluate('window.__app.io.exportObj()');
+  t.check('io.exportObj returns a string with "o Cube"',
+    typeof objText === 'string' && objText.includes('o Cube') && objText.startsWith('# Vibe Blender'));
+  t.check('exportObj emits 8 v lines for the cube',
+    objText.split('\n').filter((l) => l.startsWith('v ')).length === 8);
+
+  // Export/Import buttons exist with stable data-action hooks.
+  t.check('Export OBJ button present',
+    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="export-obj"]')`));
+  t.check('Import OBJ button present',
+    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="import-obj"]')`));
+
+  // Import a small OBJ string through the same code path the file input uses.
+  const beforeImport = await t.evaluate('window.__app.scene.objects.length');
+  const imported = await t.evaluate(`(() => {
+    window.__app.io.importObj('o Tri\\nv 0 0 0\\nv 1 0 0\\nv 0 1 0\\nf 1 2 3\\n');
+    const scene = window.__app.scene, obj = scene.objects.at(-1);
+    return { count: scene.objects.length, name: obj.name,
+             selected: scene.selection.has(obj.id), active: scene.activeId === obj.id };
+  })()`);
+  t.check('import added one object', imported.count === beforeImport + 1);
+  t.check('imported object named from o line', imported.name === 'Tri');
+  t.check('imported object is selected + active', imported.selected && imported.active);
+
+  // Ctrl+Z removes the import; Ctrl+Shift+Z restores it.
+  await t.key('z', 'KeyZ', 2); // ctrl
+  t.check('Ctrl+Z removes the imported object',
+    (await t.evaluate('window.__app.scene.objects.length')) === beforeImport);
+  await t.key('z', 'KeyZ', 2 | 8); // ctrl+shift
+  const afterRedo = await t.evaluate(`(() => {
+    const scene = window.__app.scene, obj = scene.objects.at(-1);
+    return { count: scene.objects.length, name: obj.name, selected: scene.selection.has(obj.id) };
+  })()`);
+  t.check('Ctrl+Shift+Z restores the imported object',
+    afterRedo.count === beforeImport + 1 && afterRedo.name === 'Tri' && afterRedo.selected);
+
+  // Malformed OBJ import throws and leaves the scene untouched.
+  const beforeBadObj = await t.evaluate('window.__app.scene.objects.length');
+  const threwObj = await t.evaluate(
+    `(() => { try { window.__app.io.importObj('garbage not an obj'); return false; } catch (e) { return true; } })()`);
+  t.check('malformed OBJ import throws', threwObj === true);
+  t.check('scene untouched after failed OBJ import',
+    (await t.evaluate('window.__app.scene.objects.length')) === beforeBadObj);
 });
