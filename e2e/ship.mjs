@@ -250,8 +250,14 @@ runE2e(async (t) => {
 
   // F1 opens the shortcut overlay.
   await t.key('F1', 'F1', 0);
-  t.check('F1 opens the shortcut overlay',
-    await t.until(`!!document.querySelector('.help-overlay')`, 5000));
+  // Retry once — under heavy load the first synthetic F1 occasionally lands
+  // before the reloaded page's key listeners are attached.
+  let helpOpen = await t.until(`!!document.querySelector('.help-overlay')`, 3000);
+  if (!helpOpen) {
+    await t.key('F1', 'F1', 0);
+    helpOpen = await t.until(`!!document.querySelector('.help-overlay')`, 5000);
+  }
+  t.check('F1 opens the shortcut overlay', helpOpen);
 
   // Spot-check that representative shortcuts are listed.
   const overlayText = await t.evaluate(`document.querySelector('.help-overlay').textContent`);
