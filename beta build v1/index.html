@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vibe Blender</title>
+  <style>
+    /* Bare layout skeleton only — all theming lives in src/ui/theme.css. */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1d1d1d; }
+    #app { display: flex; flex-direction: column; width: 100%; height: 100%; }
+    #topbar { flex: none; }
+    #topbar:empty { display: none; }
+    #main { flex: 1; display: flex; min-height: 0; }
+    #viewport-wrap { flex: 1; position: relative; min-width: 0; }
+    #viewport { width: 100%; height: 100%; display: block; cursor: default; }
+    #sidebar { flex: none; width: 280px; overflow-y: auto; }
+    #sidebar:empty { display: none; }
+    #status { position: absolute; left: 12px; bottom: 10px; pointer-events: none; }
+  </style>
+  <script type="module" crossorigin src="./assets/index-BDDzbG7v.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-BZmD7DmD.css">
+</head>
+<body>
+  <div id="app">
+    <header id="topbar"></header>
+    <div id="main">
+      <div id="viewport-wrap">
+        <canvas id="viewport"></canvas>
+        <div id="status"></div>
+      </div>
+      <aside id="sidebar"></aside>
+    </div>
+  </div>
+</body>
+</html>
