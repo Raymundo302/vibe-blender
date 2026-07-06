@@ -53,6 +53,9 @@ export class InputManager {
     private readonly renderer: Renderer,
     /** File shortcuts (Ctrl+S / Ctrl+O). DOM plumbing lives in main.ts. */
     private readonly fileActions: { save(): void; open(): void },
+    /** Shortcut-overlay controller (F1). Structural type keeps InputManager
+     *  decoupled from the HelpOverlay class. */
+    private readonly help: { isOpen(): boolean; toggle(): void; close(): void },
   ) {
     canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
@@ -178,6 +181,23 @@ export class InputManager {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
+    // Help overlay owns the keyboard while open: swallow EVERY key so nothing
+    // leaks to the viewport (a modal G must not start a move). F1 or Escape
+    // closes it. This sits before the activeOp branch so Escape closes the
+    // overlay before it would cancel any modal tool.
+    if (this.help.isOpen()) {
+      if (e.key === 'F1' || e.key === 'Escape') this.help.close()
+      e.preventDefault();
+      return;
+    }
+    // F1 opens the overlay in both object and edit mode; preventDefault stops
+    // the browser's own help.
+    if (e.key === 'F1') {
+      e.preventDefault();
+      this.help.toggle();
+      return;
+    }
+
     if (this.activeOp) {
       if (e.key === 'Escape') this.endOperator(false);
       else if (e.key === 'Enter') this.endOperator(true);

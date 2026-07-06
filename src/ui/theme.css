@@ -205,6 +205,97 @@
   z-index: 20;
 }
 
+/* ----------------------------------------------------------- idle hint (P3-4) */
+/* Passive nudge toward the shortcut sheet, pinned to the viewport's lower-right.
+ * Kept separate from #status so tool status text (which e2e asserts is empty)
+ * never fights it. Non-interactive. */
+#idle-hint {
+  position: absolute; right: 12px; bottom: 10px;
+  font: var(--vb-font); font-size: 11px; color: var(--vb-muted);
+  background: rgba(24, 24, 24, 0.6);
+  padding: 3px 8px; border-radius: 4px;
+  pointer-events: none; user-select: none; opacity: 0.7;
+}
+
+/* --------------------------------------------------------- splash card (P3-4) */
+/* First-visit welcome. The container is pointer-events:none so a click passes
+ * through to the canvas (which reacts + auto-dismisses the splash). Covers the
+ * viewport only, never the topbar/sidebar. */
+.splash {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; user-select: none;
+  background: rgba(20, 20, 20, 0.55);
+}
+.splash-card {
+  min-width: 320px; max-width: 440px;
+  background: var(--vb-panel); border: 1px solid var(--vb-border);
+  border-radius: 8px; padding: 22px 26px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.6);
+  font: var(--vb-font); color: var(--vb-text);
+}
+.splash-title {
+  font-size: 20px; font-weight: 700; color: #fff;
+  letter-spacing: 0.02em; margin-bottom: 4px;
+}
+.splash-pitch { color: var(--vb-muted); font-size: 12px; margin-bottom: 14px; }
+.splash-list { list-style: none; margin: 0 0 14px; padding: 0; }
+.splash-list li { display: flex; align-items: center; gap: 4px; padding: 3px 0; }
+.splash-keys {
+  font-family: inherit; font-size: 11px; color: var(--vb-text);
+  background: var(--vb-inset); border: 1px solid var(--vb-border); border-radius: 3px;
+  padding: 1px 6px; white-space: nowrap;
+}
+.splash-foot { color: var(--vb-muted); font-size: 11px; font-style: italic; }
+
+/* ------------------------------------------------------ shortcut overlay (P3-4) */
+/* Modal cheat-sheet. Interactive (pointer-events auto) — backdrop click and the
+ * × close it; InputManager swallows the keyboard while it is open. */
+.help-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  font: var(--vb-font); color: var(--vb-text); user-select: none;
+}
+.help-card {
+  max-width: 760px; max-height: 82vh; overflow-y: auto;
+  background: var(--vb-panel); border: 1px solid var(--vb-border);
+  border-radius: 8px; padding: 16px 20px 18px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.65);
+}
+.help-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.help-title { font-size: 15px; font-weight: 700; color: #fff; }
+.help-close {
+  border: none; background: none; color: var(--vb-muted);
+  font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.help-close:hover { color: #fff; }
+.help-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px;
+}
+.help-group {
+  color: var(--vb-accent, #fe730f); font-weight: 600; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin: 6px 0 4px; border-bottom: 1px solid var(--vb-border); padding-bottom: 3px;
+}
+.help-table {
+  display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
+  align-items: baseline;
+}
+.help-keys {
+  justify-self: start; font-family: inherit; font-size: 11px; color: var(--vb-text);
+  background: var(--vb-inset); border: 1px solid var(--vb-border); border-radius: 3px;
+  padding: 1px 6px; white-space: nowrap;
+}
+.help-desc { color: var(--vb-muted); font-size: 12px; }
+.help-foot {
+  margin-top: 14px; text-align: center;
+  color: var(--vb-muted); font-size: 11px; font-style: italic;
+}
+
 /* ---------------------------------------------------------------- scrollbars */
 #sidebar { scrollbar-width: thin; scrollbar-color: #4a4a4a var(--vb-panel); }
 #sidebar::-webkit-scrollbar { width: 10px; }

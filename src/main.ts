@@ -9,6 +9,8 @@ import { UiShell } from './ui/shell';
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesPanel } from './ui/properties';
 import { Topbar } from './ui/topbar';
+import { HelpOverlay } from './ui/helpOverlay';
+import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { exportObj, parseObj } from './io/obj';
 import { EditableMesh } from './core/mesh/EditableMesh';
@@ -132,7 +134,28 @@ function importObjFile(): void {
   input.click();
 }
 
-new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene });
+// Shortcut cheat-sheet (F1 / "?" button). Mounted on <body> so it covers the
+// whole window while open; InputManager swallows the keyboard while it is up.
+const helpOverlay = new HelpOverlay(document.body);
+
+new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay);
+
+// First-visit splash inside #viewport-wrap. It auto-dismisses on the first canvas
+// pointer event or any key (listeners below); dismiss() is idempotent so these
+// fire harmlessly for the rest of the session.
+const viewportWrap = canvas.parentElement as HTMLElement;
+const splash = new Splash(viewportWrap);
+const dismissSplash = (): void => splash.dismiss();
+canvas.addEventListener('pointerdown', dismissSplash);
+window.addEventListener('keydown', dismissSplash);
+
+// Idle hint sitting beside the status readout — a persistent nudge toward the
+// shortcut sheet. Kept out of #status so it never collides with tool status text.
+const idleHint = document.createElement('div');
+idleHint.id = 'idle-hint';
+idleHint.textContent = 'F1 — shortcuts';
+viewportWrap.append(idleHint);
+
 const shell = new UiShell();
 shell.addPanel(new OutlinerPanel(scene, undo));
 shell.addPanel(new PropertiesPanel(scene, undo));
@@ -147,6 +170,7 @@ const topbar = new Topbar(scene, renderer, {
   saveScene, openScene,
   exportObj: exportObjFile,
   importObj: importObjFile,
+  toggleHelp: () => helpOverlay.toggle(),
 });
 
 // Debug/test handle (used by e2e smoke tests; harmless in production).

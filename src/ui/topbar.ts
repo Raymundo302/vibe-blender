@@ -10,6 +10,8 @@ export interface TopbarActions {
   openScene(): void;
   exportObj(): void;
   importObj(): void;
+  /** Toggle the keyboard-shortcut overlay (also bound to F1). */
+  toggleHelp(): void;
 }
 
 /**
@@ -57,13 +59,16 @@ export class Topbar {
     const openBtn = Topbar.makeButton('Open', 'open-scene', () => actions.openScene());
     const exportObjBtn = Topbar.makeButton('Export OBJ', 'export-obj', () => actions.exportObj());
     const importObjBtn = Topbar.makeButton('Import OBJ', 'import-obj', () => actions.importObj());
+    // "?" opens the shortcut cheat-sheet (same overlay as F1).
+    const helpBtn = Topbar.makeButton('?', 'help', () => actions.toggleHelp());
+    helpBtn.title = 'Keyboard shortcuts (F1)';
 
     this.statusEl = document.createElement('span');
     this.statusEl.className = 'topbar-status';
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, this.statusEl);
+    root.append(title, chip, shading, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, helpBtn, this.statusEl);
     this.update();
   }
 

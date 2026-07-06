@@ -217,4 +217,72 @@ runE2e(async (t) => {
   // Tab back to object mode and restore matcap so the suite ends clean.
   await t.key('Tab', 'Tab', 0);
   await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+
+  // --- P3-4: first-visit splash + shortcut overlay ---
+
+  // Force a clean first-visit state, then reload so the splash renders fresh.
+  // (The shared e2e profile persists localStorage, so we clear it explicitly.)
+  await t.evaluate(`localStorage.removeItem('vibe-blender-splash-seen')`);
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(150);
+  t.check('splash visible on fresh load',
+    await t.evaluate(`!!document.querySelector('.splash')`));
+  t.check('splash-seen flag not set before dismiss',
+    (await t.evaluate(`localStorage.getItem('vibe-blender-splash-seen')`)) === null);
+
+  // Pressing a key dismisses the splash and records it in localStorage. Escape is
+  // a no-op key in object mode (no active op), so nothing else changes.
+  await t.key('Escape', 'Escape', 0);
+  await t.sleep(80);
+  t.check('a key press dismisses the splash',
+    await t.evaluate(`!document.querySelector('.splash')`));
+  t.check('dismiss sets the localStorage flag',
+    (await t.evaluate(`localStorage.getItem('vibe-blender-splash-seen')`)) === '1');
+
+  // Reload — the remembered flag keeps the splash from reappearing.
+  await t.send('Page.reload', {});
+  await t.until('!!window.__app');
+  await t.sleep(150);
+  t.check('splash stays dismissed after reload',
+    await t.evaluate(`!document.querySelector('.splash')`));
+
+  // F1 opens the shortcut overlay.
+  await t.key('F1', 'F1', 0);
+  await t.sleep(80);
+  t.check('F1 opens the shortcut overlay',
+    await t.evaluate(`!!document.querySelector('.help-overlay')`));
+
+  // Spot-check that representative shortcuts are listed.
+  const overlayText = await t.evaluate(`document.querySelector('.help-overlay').textContent`);
+  t.check('overlay lists Ctrl+R', overlayText.includes('Ctrl+R'));
+  t.check('overlay lists Tab', overlayText.includes('Tab'));
+  t.check('overlay lists F1', overlayText.includes('F1'));
+
+  // While the overlay is open, keyboard must not leak: G does NOT start a move.
+  const cubeX = () => t.evaluate('window.__app.scene.objects[0].transform.position.x');
+  const beforeG = await cubeX();
+  await t.key('g', 'KeyG', 0);
+  await t.mouse('mouseMoved', 760, 380);
+  await t.sleep(80);
+  t.check('overlay still open after G', await t.evaluate(`!!document.querySelector('.help-overlay')`));
+  t.check('G does not start a move while overlay open', (await cubeX()) === beforeG);
+
+  // Escape closes the overlay (and, per the guard, closes it before anything else).
+  await t.key('Escape', 'Escape', 0);
+  await t.sleep(80);
+  t.check('Escape closes the overlay',
+    await t.evaluate(`!document.querySelector('.help-overlay')`));
+
+  // The topbar "?" button toggles the same overlay.
+  t.check('help ("?") button present',
+    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="help"]')`));
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="help"]').click()`);
+  await t.sleep(60);
+  t.check('"?" button opens the overlay',
+    await t.evaluate(`!!document.querySelector('.help-overlay')`));
+  await t.key('F1', 'F1', 0);
+  await t.sleep(60);
+  t.check('F1 toggles the overlay closed again',
+    await t.evaluate(`!document.querySelector('.help-overlay')`));
 });
