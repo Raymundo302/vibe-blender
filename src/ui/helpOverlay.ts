@@ -29,6 +29,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'General', keys: 'Z', description: 'Cycle shading — Matcap / Wireframe / Studio / Rendered' },
   { group: 'General', keys: 'F12', description: 'Render the active camera (render engine)' },
   { group: 'General', keys: 'N', description: 'Toggle the N-panel (item transform + dims)' },
+  { group: 'General', keys: 'Alt+Z', description: 'Toggle X-ray / select-through' },
+  { group: 'General', keys: 'Ctrl+Alt+Numpad0', description: 'Snap the active camera to the current view' },
   { group: 'General', keys: 'Ctrl+Z', description: 'Undo' },
   { group: 'General', keys: 'Ctrl+Shift+Z', description: 'Redo' },
   { group: 'General', keys: 'F1', description: 'Toggle this shortcut sheet' },
@@ -47,6 +49,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
 
   // Edit mode
   { group: 'Edit Mode', keys: 'LMB', description: 'Select element (Shift: toggle)' },
+  { group: 'Edit Mode', keys: 'Alt+LMB', description: 'Loop select (Shift+Alt: add a loop)' },
   { group: 'Edit Mode', keys: '1 / 2 / 3', description: 'Vertex / Edge / Face select mode' },
   { group: 'Edit Mode', keys: 'A', description: 'Select all' },
   { group: 'Edit Mode', keys: 'Alt+A', description: 'Deselect all' },
@@ -63,8 +66,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Edit Mode', keys: 'Ctrl+E', description: 'Bridge two edge loops' },
   { group: 'Edit Mode', keys: 'F', description: 'Fill face from vert / edge chain' },
   { group: 'Edit Mode', keys: 'Ctrl+D', description: 'Subdivide selected faces' },
+  { group: 'Edit Mode', keys: 'Shift+E', description: 'Crease selected edges (modal weight)' },
+  { group: 'Edit Mode', keys: 'Shift+N', description: 'Recalculate normals (selected / all)' },
   { group: 'Edit Mode', keys: 'X / Delete', description: 'Delete menu (verts / edges / faces)' },
   { group: 'Edit Mode', keys: 'M', description: 'Merge at center' },
+  { group: 'Edit Mode', keys: 'Shift+I', description: 'Sculpt: Inflate brush (toggle; Ctrl drag: deflate)' },
+  { group: 'Edit Mode', keys: 'Shift+G', description: 'Sculpt: Grab brush (toggle; LMB drag: pull)' },
+  { group: 'Edit Mode', keys: '[ / ]', description: 'Sculpt brush radius (while a brush is active)' },
 
   // Camera navigation
   { group: 'Camera', keys: 'MMB drag', description: 'Orbit' },

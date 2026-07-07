@@ -1,6 +1,6 @@
 import type { Operator, OperatorContext, PointerState } from '../core/operator/Operator';
 import type { Renderer } from '../render/Renderer';
-import type { Scene } from '../core/scene/Scene';
+import type { Scene, SceneObject } from '../core/scene/Scene';
 import { TranslateOperator } from '../tools/translate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
@@ -11,17 +11,36 @@ import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { LoopCutOperator } from '../tools/loopCut';
 import { BevelOperator } from '../tools/bevel';
+import { CreaseOperator } from '../tools/creaseOp';
 import { bridgeLoops } from '../core/mesh/ops/bridge';
 import { fillVerts, fillEdges } from '../core/mesh/ops/fill';
 import { subdivideFaces } from '../core/mesh/ops/subdivide';
 import { duplicateFaces } from '../core/mesh/ops/duplicateFaces';
-import type { EditableMesh } from '../core/mesh/EditableMesh';
+import { recalcNormals } from '../core/mesh/ops/recalcNormals';
+import { edgeLoop, vertLoop, faceLoop } from '../core/mesh/ops/loopSelect';
+import { EditableMesh } from '../core/mesh/EditableMesh';
 import { frameSelection } from '../tools/frame';
+import { cameraTransformFromView } from '../tools/cameraToView';
+import { Vec3 } from '../core/math/vec3';
+import type { Mat4 } from '../core/math/mat4';
+import type { EditModeState } from '../core/scene/EditMode';
+import { rayPlane } from '../core/math/ray';
+import {
+  sculptState,
+  brushWeights,
+  inflateDeltas,
+  grabPositions,
+  raycastMeshLocal,
+  buildBrushCircle,
+  type SculptTool,
+} from '../tools/sculptBrushes';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
+import { TransformCommand } from '../core/undo/commands';
 import { snapState } from '../core/snap';
+import { xrayState } from '../render/passes/elementPickPass';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
 import { SeparateCommand } from '../core/undo/separateCommand';
 
@@ -103,6 +122,139 @@ class DuplicateFacesOperator extends EditTranslateOperator {
 }
 
 /**
+ * Sculpt-lite brush stroke (P9-7). Unlike G/R/S this is NOT a keyboard modal:
+ * an LMB press on the mesh starts it, dragging paints, and the release confirms
+ * (the InputManager drives it through the `sculptStroke` flag, mirroring the
+ * gizmo-drag path). ONE MeshEditCommand per stroke — the snapshot pattern used
+ * by the modal topology tools.
+ *
+ * Inflate: each applied dab pushes verts within the brush radius along their own
+ * vertex normal by strength × falloff (Ctrl at press → deflate). Dabs are spaced
+ * along the drag so one gesture accumulates smoothly.
+ *
+ * Grab: the verts within the radius are captured at press with their falloffs,
+ * then translated by the pointer's world delta on the view plane through the hit
+ * point (the G-operator's screen-plane mapping) × each vert's falloff.
+ */
+class SculptStrokeOperator implements Operator {
+  readonly name: string;
+
+  private mesh!: EditableMesh;
+  private sel!: EditModeState;
+  private matrix!: Mat4;
+  private invMatrix!: Mat4;
+  private snapshot!: EditableMesh;
+
+  // Grab state (captured at press).
+  private grabWeights = new Map<number, number>();
+  private grabStart = new Map<number, Vec3>();
+  private grabStartHit = Vec3.ZERO; // world-space surface hit at stroke start
+  // Inflate state.
+  private lastDab: Vec3 | null = null; // world-space hit of the last applied dab
+
+  constructor(
+    private readonly renderer: Renderer,
+    private readonly tool: 'inflate' | 'grab',
+    private readonly invert: boolean,
+  ) {
+    this.name = tool === 'inflate' ? 'Inflate' : 'Grab';
+  }
+
+  start(ctx: OperatorContext, pointer: PointerState): boolean {
+    const sel = ctx.scene.editMode;
+    const obj = ctx.scene.editObject;
+    if (!sel || !obj || obj.mesh.verts.size === 0) return false;
+    this.sel = sel;
+    this.mesh = obj.mesh;
+    this.matrix = obj.transform.matrix();
+    this.invMatrix = this.matrix.invert();
+
+    const hit = this.raycast(ctx, pointer);
+    if (!hit) return false; // pressed off the surface — no stroke
+
+    this.snapshot = this.mesh.clone();
+    if (this.tool === 'grab') {
+      this.grabWeights = brushWeights(this.mesh, hit.local, sculptState.radius);
+      for (const id of this.grabWeights.keys()) this.grabStart.set(id, this.mesh.verts.get(id)!.co);
+      this.grabStartHit = hit.world;
+    } else {
+      this.applyInflateDab(hit.local);
+      this.lastDab = hit.world;
+    }
+    this.sel.touch();
+    this.drawCircle(ctx, hit.local);
+    return true;
+  }
+
+  /** Pointer ray → nearest surface hit, in both local and world space. */
+  private raycast(ctx: OperatorContext, pointer: PointerState): { local: Vec3; world: Vec3 } | null {
+    const { width, height } = ctx.viewportSize();
+    const ray = ctx.camera.pointerRay(pointer.x, pointer.y, width, height);
+    const oLocal = this.invMatrix.transformPoint(ray.origin);
+    const dLocal = this.invMatrix.transformDir(ray.dir).normalize();
+    const hit = raycastMeshLocal(this.mesh, oLocal, dLocal);
+    if (!hit) return null;
+    return { local: hit.point, world: this.matrix.transformPoint(hit.point) };
+  }
+
+  private applyInflateDab(centerLocal: Vec3): void {
+    const weights = brushWeights(this.mesh, centerLocal, sculptState.radius);
+    const deltas = inflateDeltas(this.mesh, weights, sculptState.strength, this.invert);
+    for (const [id, d] of deltas) this.mesh.setVertCo(id, this.mesh.verts.get(id)!.co.add(d));
+  }
+
+  onPointerMove(ctx: OperatorContext, pointer: PointerState): void {
+    if (this.tool === 'grab') {
+      const { width, height } = ctx.viewportSize();
+      const ray = ctx.camera.pointerRay(pointer.x, pointer.y, width, height);
+      const hitWorld = rayPlane(ray, this.grabStartHit, ctx.camera.forward);
+      if (!hitWorld) return;
+      const deltaLocal = this.invMatrix.transformDir(hitWorld.sub(this.grabStartHit));
+      const moved = grabPositions(this.grabStart, this.grabWeights, deltaLocal);
+      for (const [id, co] of moved) this.mesh.setVertCo(id, co);
+      this.sel.touch();
+      this.drawCircle(ctx, this.invMatrix.transformPoint(hitWorld));
+      return;
+    }
+    const hit = this.raycast(ctx, pointer);
+    if (!hit) return;
+    // Space dabs along the drag so the stroke does not over-apply at one spot.
+    const spacing = sculptState.radius * 0.3;
+    if (!this.lastDab || hit.world.distanceTo(this.lastDab) >= spacing) {
+      this.applyInflateDab(hit.local);
+      this.lastDab = hit.world;
+      this.sel.touch();
+    }
+    this.drawCircle(ctx, hit.local);
+  }
+
+  private drawCircle(ctx: OperatorContext, centerLocal: Vec3): void {
+    const fLocal = this.invMatrix.transformDir(ctx.camera.forward);
+    this.renderer.editPreviewLines = buildBrushCircle(centerLocal, sculptState.radius, fLocal);
+  }
+
+  onKey(): boolean {
+    return false;
+  }
+
+  confirm(ctx: OperatorContext): void {
+    ctx.undo.push(MeshEditCommand.fromSnapshots(this.name, this.mesh, this.snapshot, this.mesh.clone()));
+    this.sel.prune(this.mesh);
+    this.sel.touch();
+    this.renderer.editPreviewLines = null; // hover redraws the cursor on next move
+    ctx.setStatus('');
+  }
+
+  cancel(ctx: OperatorContext): void {
+    this.mesh.copyFrom(this.snapshot);
+    this.sel.prune(this.mesh);
+    this.sel.touch();
+    this.renderer.editPreviewLines = null;
+    ctx.setStatus('');
+  }
+}
+
+/**
  * Routes raw canvas/window events. Priority order:
  *   1. Active modal operator (owns everything until confirm/cancel)
  *   2. Camera navigation (MMB orbit, Shift+MMB pan, wheel zoom)
@@ -119,6 +271,9 @@ export class InputManager {
   /** Non-null while a box-select operator is active; its LMB drag defines the
    *  rect, so pointerdown anchors (not confirms) and pointerup confirms. */
   private boxSelectOp: BoxSelectOperator | null = null;
+  /** True while an LMB sculpt brush stroke owns the active operator; like the
+   *  gizmo drag it confirms on pointer *release* (see onPointerUp). */
+  private sculptStroke = false;
   private addMenu: AddMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
 
@@ -201,9 +356,20 @@ export class InputManager {
 
     if (e.button === 0) {
       // Edit mode: click-select the vert/edge/face under the cursor for the
-      // current element mode. Shift toggles; a miss (no Shift) clears all.
+      // current element mode. Alt = loop select; Shift toggles/extends; a miss
+      // (no Shift) clears all.
       if (this.ctx.scene.editMode) {
-        this.pickElementAt(e.shiftKey);
+        // Sculpt brush active: LMB (no Alt) paints instead of selecting. The
+        // stroke owns the pointer and confirms on release (sculptStroke).
+        if (sculptState.tool !== 'none' && !e.altKey) {
+          this.canvas.setPointerCapture(e.pointerId);
+          this.startOperator(new SculptStrokeOperator(this.renderer, sculptState.tool, e.ctrlKey));
+          if (this.activeOp) this.sculptStroke = true;
+          else if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+          return;
+        }
+        if (e.altKey) this.loopSelectAt(e.shiftKey);
+        else this.pickElementAt(e.shiftKey);
         return;
       }
       const hit = this.renderer.pick(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
@@ -237,6 +403,48 @@ export class InputManager {
     const dy = this.pointer.y - prev.y;
     if (this.orbiting) this.ctx.camera.orbit(dx, dy);
     else if (this.panning) this.ctx.camera.pan(dx, dy, this.ctx.viewportSize().height);
+    else if (this.ctx.scene.editMode && sculptState.tool !== 'none') this.updateBrushCursor();
+  }
+
+  /**
+   * Draw the sculpt brush cursor (a circle on the surface under the pointer) via
+   * the shared editPreviewLines hook, or clear it on a miss. Called on hover
+   * while a sculpt brush is active and no stroke is running.
+   */
+  private updateBrushCursor(): void {
+    const obj = this.ctx.scene.editObject;
+    if (!obj || obj.mesh.verts.size === 0) { this.renderer.editPreviewLines = null; return; }
+    const inv = obj.transform.matrix().invert();
+    const { width, height } = this.ctx.viewportSize();
+    const ray = this.ctx.camera.pointerRay(this.pointer.x, this.pointer.y, width, height);
+    const oLocal = inv.transformPoint(ray.origin);
+    const dLocal = inv.transformDir(ray.dir).normalize();
+    const hit = raycastMeshLocal(obj.mesh, oLocal, dLocal);
+    if (!hit) { this.renderer.editPreviewLines = null; return; }
+    const fLocal = inv.transformDir(this.ctx.camera.forward);
+    this.renderer.editPreviewLines = buildBrushCircle(hit.point, sculptState.radius, fLocal);
+  }
+
+  /** Toggle a sculpt brush on/off (same key again → off); reset draws the cursor. */
+  private setSculptTool(tool: SculptTool): void {
+    if (sculptState.tool === tool) {
+      sculptState.tool = 'none';
+      this.renderer.editPreviewLines = null;
+      this.ctx.setStatus('Sculpt: off');
+      return;
+    }
+    sculptState.tool = tool;
+    this.updateBrushCursor();
+    const hint = tool === 'inflate' ? 'Ctrl: deflate' : 'drag to pull';
+    this.ctx.setStatus(`Sculpt: ${tool} — LMB drag to brush, [ / ] radius, ${hint}`);
+  }
+
+  /** Turn any active sculpt brush off and clear its cursor (mode exit). */
+  private clearSculptTool(): void {
+    if (sculptState.tool !== 'none') {
+      sculptState.tool = 'none';
+      this.renderer.editPreviewLines = null;
+    }
   }
 
   private onPointerUp(e: PointerEvent): void {
@@ -250,6 +458,10 @@ export class InputManager {
       // op was already cancelled (Esc/RMB) mid-drag, so this is safe either way.
       if (this.gizmoDrag) {
         this.gizmoDrag = false;
+        this.endOperator(true);
+      } else if (this.sculptStroke) {
+        // Releasing a sculpt stroke confirms it (one undo entry per stroke).
+        this.sculptStroke = false;
         this.endOperator(true);
       } else if (this.boxSelectOp && this.boxSelectOp.anchored) {
         // Releasing the box-select drag applies the selection (Shift → remove).
@@ -349,11 +561,21 @@ export class InputManager {
       e.preventDefault();
       const scene = this.ctx.scene;
       if (scene.editMode) {
+        this.clearSculptTool(); // leaving edit mode ends any sculpt brush
         scene.exitEditMode();
         this.ctx.setStatus('');
       } else if (scene.enterEditMode()) {
         this.ctx.setStatus('Edit Mode — 1/2/3: vert/edge/face select, Tab: back to Object Mode');
       }
+      return;
+    }
+
+    // Alt+Z: toggle X-ray / select-through (both modes). Guarded so it never
+    // collides with plain-Z shading (below, !altKey) or Ctrl+Z undo (above).
+    if (key === 'z' && e.altKey && !e.ctrlKey && !e.shiftKey) {
+      e.preventDefault();
+      xrayState.enabled = !xrayState.enabled;
+      this.ctx.setStatus(`X-ray: ${xrayState.enabled ? 'on' : 'off'}`);
       return;
     }
 
@@ -383,6 +605,15 @@ export class InputManager {
     if (key === 'n' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
       e.preventDefault();
       this.nPanel.toggle();
+      return;
+    }
+
+    // Ctrl+Alt+Numpad0: snap the active camera to the current view (create one
+    // Blender-style if the scene has none). Placed before the plain Numpad0
+    // toggle. Works in both modes.
+    if (e.code === 'Numpad0' && e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey) {
+      e.preventDefault();
+      this.snapCameraToView();
       return;
     }
 
@@ -519,6 +750,86 @@ export class InputManager {
     sel.touch();
   }
 
+  /**
+   * Alt+click loop select. Edge/vert modes walk the edge loop through the edge
+   * nearest the cursor (vert mode selects that loop's verts); face mode walks a
+   * quad face loop, entered through the picked face's edge nearest the cursor.
+   * Plain Alt replaces the selection; Shift+Alt adds another loop.
+   */
+  private loopSelectAt(add: boolean): void {
+    const sel = this.ctx.scene.editMode;
+    const obj = this.ctx.scene.editObject;
+    if (!sel || !obj) return;
+    const mesh = obj.mesh;
+    const { x, y } = this.pointer;
+
+    if (sel.elementMode === 'face') {
+      const hit = this.renderer.pickElement(this.ctx.scene, this.ctx.camera, x, y, 'face');
+      if (!hit || hit.kind !== 'face') return;
+      const entry = this.nearestFaceEdge(obj, hit.id);
+      if (!entry) return;
+      if (!add) sel.clearSelection();
+      for (const fid of faceLoop(mesh, hit.id, entry)) sel.faces.add(fid);
+    } else {
+      // Vert + edge modes both ride an edge loop; pick the nearest edge as entry.
+      const hit = this.renderer.pickElement(this.ctx.scene, this.ctx.camera, x, y, 'edge');
+      if (!hit || hit.kind !== 'edge') return;
+      if (!add) sel.clearSelection();
+      if (sel.elementMode === 'edge') {
+        for (const k of edgeLoop(mesh, hit.key)) sel.edges.add(k);
+      } else {
+        for (const v of vertLoop(mesh, hit.key)) sel.verts.add(v);
+      }
+    }
+    sel.touch();
+  }
+
+  /** The picked face's edge whose projected midpoint is nearest the cursor. */
+  private nearestFaceEdge(obj: SceneObject, faceId: number): string | null {
+    const f = obj.mesh.faces.get(faceId);
+    if (!f) return null;
+    const { width, height } = this.ctx.viewportSize();
+    const mvp = this.ctx.camera.projMatrix(width / height).mul(this.ctx.camera.viewMatrix()).mul(obj.transform.matrix());
+    let best: string | null = null;
+    let bestD = Infinity;
+    const vs = f.verts;
+    for (let i = 0; i < vs.length; i++) {
+      const a = obj.mesh.verts.get(vs[i])!.co;
+      const b = obj.mesh.verts.get(vs[(i + 1) % vs.length])!.co;
+      const ndc = mvp.transformPoint(a.add(b).scale(0.5));
+      const sx = ((ndc.x + 1) / 2) * width;
+      const sy = ((1 - ndc.y) / 2) * height;
+      const d = (sx - this.pointer.x) ** 2 + (sy - this.pointer.y) ** 2;
+      if (d < bestD) { bestD = d; best = EditableMesh.edgeKey(vs[i], vs[(i + 1) % vs.length]); }
+    }
+    return best;
+  }
+
+  /**
+   * Ctrl+Alt+Numpad0 — set the active camera's transform to the current view
+   * (position = eye, rotation from the view basis). If the scene has no camera,
+   * create one at the view and register it (Blender creates + aligns a camera).
+   * Undoable: a transform command for an existing camera, an add command for a
+   * freshly created one.
+   */
+  private snapCameraToView(): void {
+    const scene = this.ctx.scene;
+    const cam = this.ctx.camera;
+    const pose = cameraTransformFromView(cam.eye, cam.forward, Vec3.Y);
+    let camObj = scene.activeCamera;
+    if (!camObj) {
+      camObj = scene.addCamera('Camera');
+      camObj.transform = pose;
+      scene.selectOnly(camObj.id);
+      this.ctx.undo.push(new AddObjectsCommand('Camera to View', scene, [camObj]));
+    } else {
+      const before = camObj.transform;
+      camObj.transform = pose;
+      this.ctx.undo.push(new TransformCommand('Camera to View', [{ object: camObj, before, after: pose }]));
+    }
+    this.ctx.setStatus('Camera set to view');
+  }
+
   /** Edit-mode keymap. Element tools (G/R/S, E, I, X, ...) arrive with P2-3..P2-6. */
   private onEditModeKey(e: KeyboardEvent, key: string): void {
     const scene = this.ctx.scene;
@@ -531,6 +842,28 @@ export class InputManager {
       const mode = key === '1' ? 'vert' : key === '2' ? 'edge' : 'face';
       edit.setElementMode(mode, mesh);
       this.ctx.setStatus(`Select mode: ${mode}`);
+      return;
+    }
+    // Sculpt-lite brush toggles (edit-mode tool overlay): Shift+I inflate,
+    // Shift+G grab; the same key again turns the brush off. MUST precede plain-I
+    // (inset) and plain-G (move), which don't guard Shift. While a brush is on,
+    // LMB drag paints instead of selecting; [ / ] resize the brush.
+    if (key === 'i' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      this.setSculptTool('inflate');
+      return;
+    }
+    if (key === 'g' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      this.setSculptTool('grab');
+      return;
+    }
+    if ((key === '[' || key === ']') && sculptState.tool !== 'none' && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const factor = key === ']' ? 1.15 : 1 / 1.15;
+      sculptState.radius = Math.min(50, Math.max(0.02, sculptState.radius * factor));
+      this.updateBrushCursor();
+      this.ctx.setStatus(`Brush radius: ${sculptState.radius.toFixed(2)}`);
       return;
     }
     if (key === 'a' && e.altKey) {
@@ -593,6 +926,42 @@ export class InputManager {
     }
     if (key === 's' && !e.ctrlKey && !e.altKey) {
       this.startOperator(new EditScaleOperator(this.renderer));
+      return;
+    }
+    // Shift+N: recalculate normals — make winding consistent + orient outward.
+    // Operates on the selected faces (all faces when nothing is selected). Must
+    // precede nothing special (plain N toggles the panel in the general branch,
+    // guarded !shiftKey, so it never reaches here).
+    if (key === 'n' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const selFaces = [...edit.faces].filter((id) => mesh.faces.has(id));
+      const faceIds = selFaces.length > 0 ? selFaces : [...mesh.faces.keys()];
+      if (faceIds.length === 0) {
+        this.ctx.setStatus('Recalculate Normals: no faces');
+        return;
+      }
+      const cmd = MeshEditCommand.capture('Recalculate Normals', mesh, () => {
+        recalcNormals(mesh, faceIds);
+      });
+      this.ctx.undo.push(cmd);
+      edit.touch();
+      this.ctx.setStatus('Recalculated normals');
+      return;
+    }
+    // Shift+E: crease the selected edges (modal weight drag). Edge mode only.
+    // Must precede plain-E extrude (which guards only !e.ctrlKey && !e.altKey,
+    // NOT shift) and the Ctrl+E bridge.
+    if (key === 'e' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (edit.elementMode !== 'edge') {
+        this.ctx.setStatus('Crease: edge mode only');
+        return;
+      }
+      if ([...edit.edges].filter((k) => mesh.edges().has(k)).length === 0) {
+        this.ctx.setStatus('Crease: select one or more edges');
+        return;
+      }
+      this.startOperator(new CreaseOperator());
       return;
     }
     // Ctrl+E: bridge two selected edge loops into a ring of quads. Edge mode

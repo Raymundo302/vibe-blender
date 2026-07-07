@@ -1,6 +1,8 @@
 import type { Scene } from '../core/scene/Scene';
 import type { Renderer } from '../render/Renderer';
 import { snapState } from '../core/snap';
+import { xrayState } from '../render/passes/elementPickPass';
+import { sculptState } from '../tools/sculptBrushes';
 
 /**
  * Callbacks the topbar chip-buttons fire. Phase 3 tasks extend this as they add
@@ -31,6 +33,7 @@ export class Topbar {
   private readonly chipEl: HTMLSpanElement;
   private readonly shadingEl: HTMLButtonElement;
   private readonly snapEl: HTMLButtonElement;
+  private readonly xrayEl: HTMLButtonElement;
   private lastSig = '';
 
   constructor(
@@ -65,6 +68,15 @@ export class Topbar {
     snap.title = 'Grid snapping (Shift+Tab)';
     this.snapEl = snap;
 
+    // X-ray chip: select-through toggle (also Alt+Z). Highlighted state mirrors
+    // xrayState.enabled (updated every frame).
+    const xray = Topbar.makeButton('👓 X-ray', 'xray-toggle', () => {
+      xrayState.enabled = !xrayState.enabled;
+      this.update();
+    });
+    xray.title = 'X-ray / select-through (Alt+Z)';
+    this.xrayEl = xray;
+
     const spacer = document.createElement('div');
     spacer.className = 'topbar-spacer';
 
@@ -85,7 +97,7 @@ export class Topbar {
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, snap, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, helpBtn, this.statusEl);
+    root.append(title, chip, shading, snap, xray, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, helpBtn, this.statusEl);
     this.update();
   }
 
@@ -110,9 +122,13 @@ export class Topbar {
     const active = this.scene.activeObject;
     const count = this.scene.objects.length;
     const edit = this.scene.editMode;
-    const mode = edit ? `Edit Mode · ${edit.elementMode}` : 'Object Mode';
+    // A sculpt brush is a tool overlay inside Edit Mode — the chip reflects it.
+    const sculpt = edit && sculptState.tool !== 'none' ? sculptState.tool : null;
+    const mode = edit
+      ? sculpt ? `Sculpt · ${sculpt}` : `Edit Mode · ${edit.elementMode}`
+      : 'Object Mode';
     const shading = this.renderer.shadingMode;
-    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}#${snapState.enabled}`;
+    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}#${snapState.enabled}#${xrayState.enabled}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
@@ -120,6 +136,8 @@ export class Topbar {
     this.chipEl.classList.toggle('topbar-chip-edit', !!edit);
     this.snapEl.classList.toggle('topbar-btn-on', snapState.enabled);
     this.snapEl.setAttribute('aria-pressed', String(snapState.enabled));
+    this.xrayEl.classList.toggle('topbar-btn-on', xrayState.enabled);
+    this.xrayEl.setAttribute('aria-pressed', String(xrayState.enabled));
     // Capitalize the shading label for display (matcap → Matcap).
     this.shadingEl.textContent = shading.charAt(0).toUpperCase() + shading.slice(1);
     const noun = count === 1 ? 'object' : 'objects';

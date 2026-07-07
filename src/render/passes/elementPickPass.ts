@@ -21,6 +21,14 @@ export const VERT_PICK_BASE = 0x000001;
 export const EDGE_PICK_BASE = 0x100000;
 export const FACE_PICK_BASE = 0x200000;
 
+/**
+ * X-ray / select-through toggle (Alt+Z + topbar chip), shared across the element
+ * pick pass, box select and the InputManager the way `snapState` is. When ON,
+ * element picking sees BACK-side elements too: the depth-occluder prepass is
+ * skipped and the depth test disabled so hidden verts/edges are still picked.
+ */
+export const xrayState = { enabled: false };
+
 export type ElementPickResult =
   | { kind: 'vert'; id: number }
   | { kind: 'edge'; key: string }
@@ -195,9 +203,13 @@ export class ElementPickPass {
    */
   render(mvp: Mat4, mesh: EditableMesh, mode: ElementMode): void {
     const gl = this.gl;
+    const xray = xrayState.enabled;
     this.rebuild(mesh);
     this.fbo.bind();
-    gl.enable(gl.DEPTH_TEST);
+    // X-ray: disable the depth test so back-side elements aren't rejected by
+    // front geometry (select-through). Otherwise the usual front-wins depth.
+    if (xray) gl.disable(gl.DEPTH_TEST);
+    else gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.disable(gl.BLEND);
     gl.clearColor(0, 0, 0, 1);
@@ -210,9 +222,12 @@ export class ElementPickPass {
       this.shader.setFloat('u_depthBias', 0);
       this.faceVa!.draw(gl.TRIANGLES);
     } else {
-      // Opaque black occluders first so hidden verts/edges read as background.
-      this.shader.setFloat('u_depthBias', 0);
-      this.occluderVa!.draw(gl.TRIANGLES);
+      // Opaque black occluders first so hidden verts/edges read as background —
+      // skipped in x-ray so those hidden elements stay pickable.
+      if (!xray) {
+        this.shader.setFloat('u_depthBias', 0);
+        this.occluderVa!.draw(gl.TRIANGLES);
+      }
       if (mode === 'edge') {
         this.shader.setFloat('u_depthBias', 0.001);
         this.edgeVa!.draw(gl.LINES);
@@ -223,6 +238,7 @@ export class ElementPickPass {
       }
     }
     this.fbo.unbind();
+    if (xray) gl.enable(gl.DEPTH_TEST); // restore for the next frame's solid pass
   }
 
   get width(): number { return this.fbo.width; }

@@ -179,11 +179,11 @@ New architecture decisions:
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
 | F9-1 | ModifierContext (target-object modifiers), edge creases, face tints, SSS material fields, 'object' field kind | fable | — | verified |
-| P9-1 | Solidify modifier, creased Subsurf, Merge by Distance | opus | F9-1 | spec-ready |
-| P9-2 | Shrinkwrap modifier + closest-point-on-mesh | opus | F9-1 | spec-ready |
-| P9-3 | Adjust-last-operation panel, parametric primitives, Circle | opus | F9-1 | spec-ready |
-| P9-4 | Tracer: soft shadows, SSS, depth of field (+ light radius, SSS UI) | opus | F9-1 | spec-ready |
-| P9-5 | Scatter modifier (sprinkles) + per-instance random tints | opus | F9-1 | spec-ready |
-| P9-6 | Loop select (Alt+click), X-ray select-through, Shift+N recalc normals, Shift+E crease, camera lock-to-view | opus | batch A | pending |
+| P9-1 | Solidify modifier, creased Subsurf, Merge by Distance | opus | F9-1 | verified |
+| P9-2 | Shrinkwrap modifier + closest-point-on-mesh | opus | F9-1 | verified |
+| P9-3 | Adjust-last-operation panel, parametric primitives, Circle | opus | F9-1 | verified |
+| P9-4 | Tracer: soft shadows, SSS, depth of field (+ light radius, SSS UI) | opus | F9-1 | verified |
+| P9-5 | Scatter modifier (sprinkles) + per-instance random tints | opus | F9-1 | verified |
+| P9-6 | Loop select (Alt+click), X-ray select-through, Shift+N recalc normals, Shift+E crease, camera lock-to-view | opus | batch A | verified |
 | P9-7 | Sculpt-lite: Inflate + Grab brushes | opus | P9-6 | pending |
 | P9-8 | The donut dry run: scripted e2e builds the full donut, stage screenshots, final F12 render | opus | all | pending |

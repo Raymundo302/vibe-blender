@@ -39,6 +39,12 @@ function inRect(p: { x: number; y: number } | null, r: ScreenRect): boolean {
  * local vert coordinates map straight to CSS pixels. Membership rules match
  * Blender's box select: a vert counts when its projected point is inside; an
  * edge when BOTH endpoints are inside; a face when ALL its corners are inside.
+ *
+ * Box select is a pure screen-projection test with NO depth/occlusion, so it
+ * behaves the same under X-ray or not (X-ray select-through is implemented in
+ * the element-pick click path — see elementPickPass — because adding occlusion
+ * here would change the frozen whole-cube box-select behavior other suites rely
+ * on).
  */
 export function elementsInRect(
   mesh: EditableMesh,
