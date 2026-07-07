@@ -201,3 +201,63 @@ describe('Subdivision Surface modifier — edge creases', () => {
     }
   });
 });
+
+/** Deterministic string form of a mesh including per-corner UVs. */
+function serializeMesh(m: EditableMesh): string {
+  const r = (n: number) => Math.round(n * 1e6) / 1e6;
+  const verts = [...m.verts.values()].sort((a, b) => a.id - b.id)
+    .map((v) => [v.id, r(v.co.x), r(v.co.y), r(v.co.z)]);
+  const faces = [...m.faces.values()].sort((a, b) => a.id - b.id).map((f) => [f.id, f.verts]);
+  const uvs = [...m.uvs.entries()].sort((a, b) => a[0] - b[0])
+    .map(([id, us]) => [id, us.map(([u, v]) => [r(u), r(v)])]);
+  return JSON.stringify({ verts, faces, uvs });
+}
+
+describe('Subdivision Surface modifier — UVs (P11-5)', () => {
+  // makePlane's single face is [0,3,2,1]; give its 4 corners the unit square.
+  const uvPlane = (): EditableMesh => {
+    const p = makePlane(2);
+    p.setFaceUVs(0, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    return p;
+  };
+
+  it('level 1 → 4 child quads with the exact bilinear-subdivision corner UVs', () => {
+    const out = createModifier('subsurf', { levels: 1 }).apply(uvPlane());
+    // Child faces are ids 0..3, one per parent corner. Face-average uv=(0.5,0.5).
+    expect(out.uvs.get(0)).toEqual([[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]);
+    expect(out.uvs.get(1)).toEqual([[1, 0], [1, 0.5], [0.5, 0.5], [0.5, 0]]);
+    expect(out.uvs.get(2)).toEqual([[1, 1], [0.5, 1], [0.5, 0.5], [1, 0.5]]);
+    expect(out.uvs.get(3)).toEqual([[0, 1], [0, 0.5], [0.5, 0.5], [0.5, 1]]);
+  });
+
+  it('level 2 keeps every corner UV inside the original [0,1] span', () => {
+    const out = createModifier('subsurf', { levels: 2 }).apply(uvPlane());
+    expect(out.uvs.size).toBe(16); // 4 child quads each split into 4
+    for (const us of out.uvs.values()) {
+      for (const [u, v] of us) {
+        expect(u).toBeGreaterThanOrEqual(0);
+        expect(u).toBeLessThanOrEqual(1);
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('a face without UVs stays without UVs', () => {
+    const out = createModifier('subsurf', { levels: 1 }).apply(makePlane(2));
+    expect(out.uvs.size).toBe(0);
+  });
+
+  it('is deterministic — apply twice → byte-equal serialize (UVs included)', () => {
+    const a = createModifier('subsurf', { levels: 2 }).apply(uvPlane());
+    const b = createModifier('subsurf', { levels: 2 }).apply(uvPlane());
+    expect(serializeMesh(a)).toBe(serializeMesh(b));
+  });
+
+  it('is pure — the input mesh UVs are untouched', () => {
+    const p = uvPlane();
+    createModifier('subsurf', { levels: 2 }).apply(p);
+    expect(p.uvs.get(0)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+    expect(p.uvs.size).toBe(1);
+  });
+});

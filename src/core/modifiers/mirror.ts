@@ -44,7 +44,13 @@ class MirrorModifier implements Modifier {
     }
     for (const f of mesh.faces.values()) {
       const verts = f.verts.map((id) => mirroredId.get(id)!).reverse();
-      out.addFace(verts);
+      const fid = out.addFace(verts);
+      // Face UVs (P11-5) copy verbatim onto the mirrored face. Reflection does
+      // not flip UV space — the UV VALUES are unchanged — but the winding is
+      // reversed, so the UV array is reversed too to stay parallel to the
+      // reversed face.verts (each output corner keeps its source corner's uv).
+      const uv = mesh.uvs.get(f.id);
+      if (uv) out.setFaceUVs(fid, uv.map(([u, v]) => [u, v] as [number, number]).reverse());
     }
     return out;
   }

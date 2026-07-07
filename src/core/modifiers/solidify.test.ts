@@ -64,6 +64,34 @@ describe('Solidify modifier — single quad', () => {
   });
 });
 
+describe('Solidify modifier — UVs (P11-5)', () => {
+  const uvPlane = () => {
+    const p = makePlane(2);
+    p.setFaceUVs(0, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    return p;
+  };
+
+  it('both shells carry the source face UVs; rim quads get none', () => {
+    const out = createModifier('solidify', { thickness: 0.1, offset: 1 }).apply(uvPlane());
+    // Faces: 0 = outer shell (verbatim), 1 = inner shell (reversed winding →
+    // reversed UVs), 2..5 = rim quads (no UVs).
+    expect(out.uvs.get(0)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+    expect(out.uvs.get(1)).toEqual([[0, 1], [1, 1], [1, 0], [0, 0]]);
+    expect(out.uvs.size).toBe(2); // exactly the two shells, no rim UVs
+  });
+
+  it('a face without UVs yields no UVs', () => {
+    const out = createModifier('solidify', { thickness: 0.1 }).apply(makePlane(2));
+    expect(out.uvs.size).toBe(0);
+  });
+
+  it('is deterministic — apply twice → identical UVs', () => {
+    const a = createModifier('solidify', { thickness: 0.1, offset: 0.3 }).apply(uvPlane());
+    const b = createModifier('solidify', { thickness: 0.1, offset: 0.3 }).apply(uvPlane());
+    expect([...a.uvs.entries()]).toEqual([...b.uvs.entries()]);
+  });
+});
+
 describe('Solidify modifier — offset mapping', () => {
   it('offset 0 splits the shells symmetrically about the surface', () => {
     const thickness = 0.2;

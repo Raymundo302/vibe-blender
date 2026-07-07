@@ -41,7 +41,11 @@ class ArrayModifier implements Modifier {
         copyId.set(v.id, out.addVert(v.co.add(delta)));
       }
       for (const f of mesh.faces.values()) {
-        out.addFace(f.verts.map((id) => copyId.get(id)!));
+        const fid = out.addFace(f.verts.map((id) => copyId.get(id)!));
+        // Face UVs (P11-5) copy verbatim — array preserves winding, so the
+        // corner order is unchanged and each instanced face maps identically.
+        const uv = mesh.uvs.get(f.id);
+        if (uv) out.setFaceUVs(fid, uv.map(([u, v]) => [u, v] as [number, number]));
       }
     }
     return out;

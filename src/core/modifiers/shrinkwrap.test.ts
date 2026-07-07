@@ -66,6 +66,20 @@ describe('Shrinkwrap modifier', () => {
     expect(evaluated.faceTints.get(faceId)).toEqual([1, 0, 0]);
   });
 
+  it('preserves per-face UVs (P11-5 regression — it clones)', () => {
+    const scene = new Scene();
+    const mesh = hoverPlane();
+    const faceId = [...mesh.faces.keys()][0];
+    mesh.setFaceUVs(faceId, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    const host = scene.add('Host', mesh);
+    const target = scene.add('Target', makeCube());
+    host.modifiers.push(createModifier('shrinkwrap', { target: target.id }));
+    host.modifiersVersion++;
+
+    const evaluated = host.evaluatedMesh(scene.modifierContext(host));
+    expect(evaluated.uvs.get(faceId)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+  });
+
   it('is identity without a ModifierContext', () => {
     const target = 5;
     const mod = createModifier('shrinkwrap', { target, offset: 0.5 });

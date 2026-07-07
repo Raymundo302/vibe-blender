@@ -10,9 +10,15 @@ is the input for a UV fix round and the video script.
 **How to reproduce:** `flock /tmp/vibe-blender-e2e.lock node e2e/p11-uv-dryrun.mjs`
 (dev server on :5199). Deterministic: the loader replay, seam rings, unwrap
 (fixed iteration counts, no RNG), and raster probes are all reproducible — two
-back-to-back runs report identical numbers (checkerChanged=89043,
-checkerVar=2224.1, byte length 663474). Only the F12 tracer carries Monte-Carlo
-noise (seeded), well inside the assertion margins.
+back-to-back runs report identical numbers (checkerChanged=99124 on the FULL
+modified icing, byte length 664529). Only the F12 tracer carries Monte-Carlo
+noise (seeded; checkerVar≈1715 vs noneVar≈477), well inside the assertion
+margins.
+
+**Update (P11-5):** gaps #1 and #2 are FIXED — the modifiers now carry `mesh.uvs`
+to their output, so the checker shows on the EVALUATED icing with its full
+shrinkwrap+solidify+subsurf stack LIVE. The dry run no longer clears the stack
+or hides the torus; the numbers below are re-recorded on the modified icing.
 
 **Artifacts produced**
 - `/tmp/uvrun/NN-*.png` — a viewport screenshot after every stage
@@ -69,32 +75,30 @@ over the procedural checker background (≥2 gray tones probed). Clicked an isla
 and **Ctrl+Z restored** the pre-nudge UVs exactly. One-way 3D-selection sync is
 inactive here (not in edit mode), as designed. Screenshot `03-uv-editor.png`.
 
-### 4. Material → Checker in the RENDERED VIEWPORT — WORKED (after two real gaps)
+### 4. Material → Checker in the RENDERED VIEWPORT — WORKED (on the LIVE stack, P11-5)
 Icing material texKind set to **Checker** through the real Material-tab select.
 The checker maps boldly around the icing's curvature (screenshot
-`04-rendered-checker.png`). Proof is a per-pixel diff of a `none` frame vs a
-`checker` frame over the whole viewport: **checker changes 89 043 pixels, the
+`04-rendered-checker.png`), now on the **FULL modified icing** — shrinkwrap +
+solidify + subsurf all live. Proof is a per-pixel diff of a `none` frame vs a
+`checker` frame over the whole viewport: **checker changes 99 124 pixels, the
 none-vs-none control changes 0** — non-vacuous (the assertion is unreachable when
-texKind stays 'none').
+texKind stays 'none'). Only the icing material is set to checker, so the visible,
+untextured torus is constant across the toggle and cannot manufacture the diff.
 
-Getting there surfaced **the two real gaps** (see punch list):
+Originally (P11-4) this stage surfaced two gaps — now **both FIXED (P11-5)**:
 
-- **🔴 Gap #1 — modifiers drop UVs.** No modifier copies `mesh.uvs`, so the
-  *evaluated* icing (shrinkwrap→solidify→subsurf) has **no UVs at all** — the
-  finished icing renders untextured. The dry run **clears the icing modifier
-  stack** to render the unwrapped base cap. Until a modifier baking/propagation
-  path carries UVs, textures only work on un-modified (or applied-then-unwrapped)
-  meshes.
-- **🔴 Gap #2 — z-fighting after de-modifying.** Clearing the stack also drops
-  the shrinkwrap+solidify **offset**, so the icing cap (cloned from the torus top
-  half) **collapses onto the donut body**. The untextured torus then z-fights and
-  **hides the checkered icing entirely** — toggling the icing texture changed 0
-  visible pixels until the torus was hidden. This cost most of the debugging: the
-  checker and the unwrap were fine all along; the donut body was simply drawn on
-  top. The run **hides the torus for the inspection** (a normal "isolate to
-  inspect UVs" step) and restores it for the save. The underlying fix is Gap #1
-  (bake the offset+UVs) or a small polygon-offset / depth bias so coincident
-  shells don't z-fight.
+- **✅ Gap #1 — modifiers drop UVs → FIXED.** The modifiers now carry `mesh.uvs`
+  to their output: subsurf subdivides corner UVs in per-face UV space (no
+  cross-face averaging, so islands stay intact), solidify copies the source face
+  UVs to both shells (rim quads get none), mirror/array/scatter copy verbatim,
+  and shrinkwrap preserves them via its clone. The *evaluated* icing
+  (shrinkwrap→solidify→subsurf) now has UVs on every shell face, so the finished
+  icing renders textured — no stack-clearing needed.
+- **✅ Gap #2 — z-fighting → GONE.** It was an artefact of Gap #1's workaround:
+  clearing the stack dropped the shrinkwrap+solidify **offset**, collapsing the
+  icing cap onto the donut body. With the stack LIVE the offset holds the icing
+  above the body, so there is no coincident-shell z-fight to isolate and the
+  torus stays visible.
 
 Inspection lighting is flat neutral world + lights off (ambient-only) so the
 checker's 0.2/1.0 cells read cleanly.
@@ -105,33 +109,40 @@ real menu: **all 864 faces UV'd, all inside [0,1]²**. Smart Project's 6 axis
 buckets handle the un-seamed torus exactly as intended (the robust fallback).
 
 ### 6. F12 path trace: checker vs control — WORKED
-Two 6-spp path traces of the (torus-hidden) icing through the active scene
-camera. Icing-region luminance **variance = 2224 with the checker vs 428 without**
-— a **5.2×** separation (`checkerVar > noneVar * 1.3`). Non-vacuous: with texKind
-'none' both renders are the same scene and the variance would match. The tracer
-reads the packed unwrap's checker directly via barycentric UV interpolation.
-Passes: `06-render-checker.png`, `06-render-none-control.png`.
+Two 6-spp path traces of the full donut (icing's LIVE modifier stack, torus
+visible) through the active scene camera. Icing-region luminance **variance ≈
+1715 with the checker vs ≈ 477 without** — a **3.6×** separation
+(`checkerVar > noneVar * 1.3`). Non-vacuous: with texKind 'none' both renders are
+the same scene and the variance would match. The tracer reads the packed
+unwrap's checker directly via barycentric UV interpolation across the subsurf'd
+shell faces. Passes: `06-render-checker.png`, `06-render-none-control.png`.
 
 ### 7. Save / reload / round-trip — WORKED
-Torus + lights + world restored, then `__app.io.serialize()` →
-`research/donut-uv.vibe.json` (**663 474 bytes**). Reloaded from the file bytes
+Lights + world restored, then `__app.io.serialize()` →
+`research/donut-uv.vibe.json` (**664 529 bytes**). Reloaded from the file bytes
 and re-serialized: **byte-identical**. UVs (1341 face entries across icing +
 torus), seams (17), and the checker texture all survive the round trip.
 
 ---
 
 ## Punch list for a UV fix round (most → least important)
-1. **Modifiers strip UVs (Gap #1).** `mesh.uvs` (and `seams`) are dropped by every
-   modifier (`array`/`mirror`/`solidify`/`subsurf`/`shrinkwrap`/`scatter`), so a
-   modified mesh can never show a texture. Subsurf especially should interpolate
-   corner UVs to its new loops; solidify should copy the shell's UVs; mirror/array
-   should copy+transform. Without this, "unwrap then subsurf" — the standard donut
-   workflow — renders untextured.
-2. **Coincident-shell z-fighting (Gap #2).** Two surfaces at the same depth (icing
-   cap on the donut body once the offset is baked/removed) z-fight and one hides
-   the other. A small depth bias / polygon offset for the rendered + solid passes,
-   or honoring the modifier offset when baking, would prevent the "my texture
-   vanished" trap.
+1. **✅ FIXED (P11-5) — Modifiers strip UVs (Gap #1).** `mesh.uvs` was dropped by
+   every modifier, so a modified mesh could never show a texture. Now
+   `subsurf`/`solidify`/`mirror`/`array`/`scatter`/`shrinkwrap` all carry the
+   source face UVs to their output: subsurf subdivides corner UVs in per-face UV
+   space (no cross-face averaging, keeping islands intact), solidify copies to
+   both shells (rim quads get none), mirror/array/scatter copy verbatim,
+   shrinkwrap preserves via its clone. "Unwrap then subsurf" — the standard donut
+   workflow — now renders textured (checker on the full live stack, 99 124 px
+   changed vs none). Seam propagation through modifiers is still deferred (out of
+   scope for the UV *texture* fix — seams matter for unwrapping the base mesh,
+   which happens pre-modifier).
+2. **✅ RESOLVED (P11-5) — Coincident-shell z-fighting (Gap #2).** This was an
+   artefact of Gap #1's workaround (clearing the stack dropped the
+   shrinkwrap+solidify offset, collapsing the icing onto the body). With the stack
+   live the offset holds and there is no coincident-shell z-fight. A general depth
+   bias / polygon offset for arbitrary coincident shells would still be a nice
+   safety net but is no longer needed for the donut.
 3. **Unwrap island fragmentation on ragged caps.** The centroid-`y` cut that built
    the icing leaves an irregular rim, and the drip triangles are isolated faces;
    together they turn a should-be-2-island band into 6, some tiny. A seam-aware

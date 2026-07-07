@@ -196,3 +196,13 @@ New architecture decisions:
 | P10-3 | Themes: tokenize css, six 90s themes from Ray's reference, picker UI | opus | F10-1 | verified |
 | P10-4 | World: flat/gradient/HDRI environment (tab, rendered background, tracer sky) | opus | F10-1 | verified |
 | P10-2 | Camera Lock-to-View + passepartout | opus | batch 1 | verified |
+
+### Phase 11 — UVs (night build 2026-07-06→07, see tasks/P11-0-DESIGN.md)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F11-1 | UV + seam mesh attributes, material texture fields, GPU/tracer UV plumbing | fable | — | verified |
+| P11-1 | Ctrl+E seams + Unwrap/Smart Project/Project From View | opus | F11-1 | verified |
+| P11-2 | UV Editor workspace pane | opus | F11-1 | verified |
+| P11-3 | Checker/image textures in Rendered mode + tracer, Material tab rows | opus | F11-1 | verified |
+| P11-4 | UV dry run: unwrap + checker the donut icing | opus | P11-1..3 | verified |
+| P11-5 | Modifiers preserve UVs (dry-run gap fix) | opus | P11-4 | verified |

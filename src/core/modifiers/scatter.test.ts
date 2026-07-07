@@ -155,6 +155,26 @@ describe('Scatter modifier — color variation', () => {
   });
 });
 
+describe('Scatter modifier — UVs (P11-5)', () => {
+  it('each instance copies the SOURCE face UVs verbatim', () => {
+    const src = makePlane(2);
+    src.setFaceUVs(0, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    const { srcObj, ctx } = setup(makePlane(6), src);
+    const out = mk({ source: srcObj.id, count: 3, seed: 4 }).apply(makePlane(6), ctx);
+    // Host face 0 has no UVs; the 3 instanced faces (ids 1..3) each copy source.
+    expect(out.uvs.size).toBe(3);
+    for (const us of out.uvs.values()) {
+      expect(us).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+    }
+  });
+
+  it('a UV-less source yields UV-less instances', () => {
+    const { srcObj, ctx } = setup(makePlane(6), makePlane(2));
+    const out = mk({ source: srcObj.id, count: 5, seed: 1 }).apply(makePlane(6), ctx);
+    expect(out.uvs.size).toBe(0);
+  });
+});
+
 describe('Scatter modifier — no-op guards', () => {
   it('no ctx → identity (object modifier must no-op without a scene)', () => {
     const out = mk({ source: 0, count: 50 }).apply(makePlane(4));

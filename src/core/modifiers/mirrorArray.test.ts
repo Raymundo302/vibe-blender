@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import './builtins'; // side-effect: registers 'mirror' + 'array'
 import { createModifier } from './Modifier';
-import { makeCube } from '../mesh/primitives';
+import { makeCube, makePlane } from '../mesh/primitives';
 import { EditableMesh } from '../mesh/EditableMesh';
 import { Vec3 } from '../math/vec3';
 
@@ -99,5 +99,41 @@ describe('Array modifier', () => {
     expect(cube.verts.size).toBe(beforeV);
     expect(cube.faces.size).toBe(beforeF);
     expect(cube.version).toBe(beforeVer);
+  });
+});
+
+describe('Mirror / Array modifiers — UVs (P11-5)', () => {
+  it('Mirror: original keeps UVs; mirrored face copies them (reversed with winding)', () => {
+    const tri = EditableMesh.fromData([[0, 0, 0], [2, 0, 0], [0, 2, 0]], [[0, 1, 2]]);
+    tri.setFaceUVs(0, [[0, 0], [1, 0], [0, 1]]);
+    const out = createModifier('mirror', { axis: 'x' }).apply(tri);
+    // Original face 0 unchanged; mirrored face 1 has reversed verts [2,1,0]→
+    // (mirrored ids [5,4,3]) so its UVs are the source UVs reversed.
+    expect(out.uvs.get(0)).toEqual([[0, 0], [1, 0], [0, 1]]);
+    expect(out.uvs.get(1)).toEqual([[0, 1], [1, 0], [0, 0]]);
+  });
+
+  it('Mirror: a face without UVs yields no UVs on either copy', () => {
+    const out = createModifier('mirror', { axis: 'x' }).apply(makeCube());
+    expect(out.uvs.size).toBe(0);
+  });
+
+  it('Array: every copy carries the source face UVs verbatim', () => {
+    const plane = makePlane(2);
+    plane.setFaceUVs(0, [[0, 0], [1, 0], [1, 1], [0, 1]]);
+    const out = createModifier('array', { count: 3, offsetX: 3 }).apply(plane);
+    // Copy 0 (clone) = face 0, copies 1/2 = faces 1/2, all identical UVs.
+    for (let id = 0; id < 3; id++) {
+      expect(out.uvs.get(id)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+    }
+    expect(out.uvs.size).toBe(3);
+  });
+
+  it('Array: deterministic — apply twice → identical UVs', () => {
+    const plane = makePlane(2);
+    plane.setFaceUVs(0, [[0.1, 0.2], [0.8, 0.1], [0.9, 0.9], [0.2, 0.7]]);
+    const a = createModifier('array', { count: 4 }).apply(plane);
+    const b = createModifier('array', { count: 4 }).apply(plane);
+    expect([...a.uvs.entries()]).toEqual([...b.uvs.entries()]);
   });
 });

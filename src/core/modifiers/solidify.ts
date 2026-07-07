@@ -103,6 +103,17 @@ class SolidifyModifier implements Modifier {
       out.faceTints.set(innerFace.get(fid)!, [t[0], t[1], t[2]]);
     }
 
+    // Face UVs (P11-5) copy to BOTH shells. The outer shell keeps the source
+    // winding so its corner UVs copy verbatim; the inner shell reverses winding,
+    // so its UVs are reversed to stay parallel to face.verts. The new RIM quads
+    // are left WITHOUT UVs (documented) — they are fresh side walls with no
+    // meaningful mapping from the source surface.
+    for (const [fid, uv] of mesh.uvs) {
+      const copy = uv.map(([u, v]) => [u, v] as [number, number]);
+      out.setFaceUVs(outerFace.get(fid)!, copy);
+      out.setFaceUVs(innerFace.get(fid)!, copy.slice().reverse());
+    }
+
     // Preserve input creases on both shells' corresponding edges.
     for (const [key, w] of mesh.creases) {
       const [a, b] = key.split(',').map((s) => parseInt(s, 10));

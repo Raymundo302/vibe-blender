@@ -23,20 +23,20 @@
  *   7. Restore the real unwrap + donut lighting, save research/donut-uv.vibe.json,
  *      reload, re-serialize byte-identical; UVs + texture survive.
  *
- * WORKAROUNDS (documented in research/UV-RUN.md):
+ * WORKAROUND (documented in research/UV-RUN.md):
  *  - Seam EDGE SELECTION is driven through the mesh/edit API (deterministic
  *    meridian rings); the Ctrl+E → Mark Seam MENU is exercised for real. Alt+
  *    click loop-select itself is separately proven by e2e/p9-select.mjs. This
  *    mirrors e2e/p11-unwrap.mjs's own approach.
- *  - The modifier stack does NOT propagate UVs to the evaluated mesh (no
- *    modifier copies mesh.uvs), so a subsurf/solidify icing renders with no
- *    texture. To show the checker on the finished icing we CLEAR the icing's
- *    modifier stack (render the unwrapped base cap directly). Real gap #1.
- *  - Clearing the stack drops the shrinkwrap+solidify OFFSET, so the icing cap
- *    collapses onto the donut body it was cloned from → Z-FIGHTING hides the
- *    checkered icing behind the untextured torus. We HIDE the torus for the
- *    checker inspection (raster + F12) and restore it for the save. Real gap #2.
- *    (The checker + the real unwrap themselves are correct.)
+ *
+ * FIXED (P11-5): the modifiers now propagate UVs to the evaluated mesh
+ * (subsurf subdivides corner UVs in per-face UV space, solidify copies to both
+ * shells, shrinkwrap clones), so the checker shows on the FULL modified icing —
+ * shrinkwrap+solidify+subsurf LIVE. The old gap-#1 (clear the modifier stack)
+ * and gap-#2 (hide the z-fighting torus, an artefact of the dropped offset when
+ * the stack was cleared) workarounds are GONE: the live stack keeps the icing
+ * offset above the donut body, so there is no z-fight to isolate. Only ambient-
+ * only inspection lighting remains, so the 0.2/1.0 checker cells read cleanly.
  *
  * Run with the dev server up (under flock; long — two F12 passes):
  *   flock /tmp/vibe-blender-e2e.lock node e2e/p11-uv-dryrun.mjs
@@ -289,36 +289,29 @@ runE2e(async (t) => {
   // =====================================================================
   // STAGE 4 — Material tab: icing texture → Checker; the RENDERED VIEWPORT
   // shows the checker mapping through the REAL Tutte-unwrap UVs, following the
-  // icing's curvature.
+  // icing's curvature — on the FULL modified icing (shrinkwrap+solidify+subsurf
+  // LIVE, P11-5). The evaluated mesh now carries UVs end-to-end: the base cap's
+  // Tutte unwrap survives shrinkwrap (clone), is copied to both solidify shells,
+  // and is subdivided in per-face UV space by subsurf.
   //
-  // Two findings shape this stage (both ranked in research/UV-RUN.md):
-  //  (a) The modifier stack does NOT propagate UVs to the evaluated mesh (no
-  //      modifier copies mesh.uvs), so we CLEAR the icing stack to render the
-  //      unwrapped base cap.  [gap #1]
-  //  (b) Clearing the stack drops the shrinkwrap+solidify OFFSET, so the icing
-  //      base cap collapses onto the donut body (the icing was cloned from the
-  //      torus top half). The untextured torus then Z-FIGHTS and hides the
-  //      icing, so toggling the icing texture changes nothing on screen. We HIDE
-  //      the torus for the inspection (a normal "isolate to inspect UVs" step)
-  //      and restore it for the save.  [gap #2 — the real cause; the checker and
-  //      the unwrap are both fine.]
+  // No stack-clearing and no torus-hiding: the live shrinkwrap+solidify offset
+  // keeps the icing above the donut body, so there is no z-fight to isolate.
+  // Only ambient-only inspection lighting (flat neutral world, lights off) is
+  // applied so the checker's 0.2/1.0 cells read cleanly. Restored in Stage 7.
   //
-  // With the torus out of the way the REAL unwrap shows a bold checker wrapping
-  // the cap. NON-VACUITY: none-vs-checker per-pixel diff over the whole frame —
-  // none-vs-none is 0 changed pixels (deterministic raster, proven live below),
-  // checker changes tens of thousands. The assert `checkerChanged > 500` is
-  // UNREACHABLE when texKind stays 'none' (both frames identical → 0). Calibrated
-  // once: controlChanged=0, checkerChanged≈89000 (see report + UV-RUN.md).
+  // NON-VACUITY: none-vs-checker per-pixel diff over the whole frame — none-vs-
+  // none is 0 changed pixels (deterministic raster, proven live below), checker
+  // changes tens of thousands. The assert `checkerChanged > 500` is UNREACHABLE
+  // when texKind stays 'none' (both frames identical → 0). Only the icing
+  // material is set to checker, so the (visible) untextured torus is constant
+  // across the none/checker toggle and cannot manufacture the diff.
   // =====================================================================
-  // Modifiers don't carry UVs → render the unwrapped base cap directly.
-  await evalAsync(`(() => { const o = window.__app.scene.get(${icingId}); o.modifiers.length = 0; o.modifiersVersion++; })()`);
-  // Isolate the icing (hide the z-fighting donut body) + ambient-only inspection
-  // lighting (flat neutral world, lights off). Everything restored in Stage 7.
+  // Ambient-only inspection lighting (flat neutral world, lights off). The
+  // icing keeps its LIVE modifier stack — UVs now propagate through it.
   await evalAsync(`(() => {
     const S = window.__app.scene, w = S.world;
     window.__saveWorld = { mode: w.mode, color: [w.color[0], w.color[1], w.color[2]], strength: w.strength };
     window.__hidden = [];
-    const tor = S.get(${torusId}); if (tor && tor.visible) { tor.visible = false; window.__hidden.push(${torusId}); }
     w.mode = 'flat'; w.color = [1, 1, 1]; w.strength = 3;
     for (const o of S.objects) if (o.kind === 'light' && o.visible) { o.visible = false; window.__hidden.push(o.id); }
   })()`);
@@ -403,9 +396,10 @@ runE2e(async (t) => {
 
   // =====================================================================
   // STAGE 6 — F12 path trace: icing checker vs no-checker control.
-  // Light scene (icing modifiers cleared, torus hidden) + ambient-only
-  // inspection lighting + the REAL Tutte-unwrap UVs from Stage 2. The active
-  // scene camera frames the icing tightly, so a center box is icing surface.
+  // Full donut (icing's LIVE modifier stack, torus visible) + ambient-only
+  // inspection lighting + the REAL Tutte-unwrap UVs from Stage 2 propagated
+  // through shrinkwrap+solidify+subsurf. The active scene camera frames the
+  // icing tightly, so a center box is (subsurf'd) icing surface.
   // NON-VACUITY: texKind 'none' and 'checker' are the SAME scene minus the
   // texture, so checkerVar > noneVar holds ONLY because of the checker (with
   // 'none' both renders match and checkerVar ≈ noneVar). Values in the report.
@@ -453,9 +447,10 @@ runE2e(async (t) => {
     checkerVar > noneVar * 1.3, `checkerVar=${checkerVar.toFixed(1)} noneVar=${noneVar.toFixed(1)}`);
 
   // =====================================================================
-  // STAGE 7 — Restore the donut body + lighting/world hidden for inspection;
+  // STAGE 7 — Restore the world + lights hidden for the ambient inspection;
   // save research/donut-uv.vibe.json, reload, assert byte-identical re-serialize.
-  // The icing carries its ACTUAL Tutte unwrap (in [0,1]²) + the checker texture.
+  // The icing carries its ACTUAL Tutte unwrap (in [0,1]²) + the checker texture,
+  // and its full live modifier stack.
   // =====================================================================
   await evalAsync(`(() => {
     const S = window.__app.scene;

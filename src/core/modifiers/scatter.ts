@@ -218,6 +218,11 @@ class ScatterModifier implements Modifier {
           const st = src.faceTints.get(f.id);
           if (st) out.faceTints.set(fid, [st[0], st[1], st[2]]);
         }
+        // Face UVs (P11-5) copy verbatim from the SOURCE object's face — the
+        // instance transform is a rigid placement, so the corner order (and
+        // thus the mapping) is unchanged.
+        const suv = src.uvs.get(f.id);
+        if (suv) out.setFaceUVs(fid, suv.map(([u, v]) => [u, v] as [number, number]));
       }
       // Copy the source's creases, remapped to this instance's verts.
       for (const [key, w] of src.creases) {

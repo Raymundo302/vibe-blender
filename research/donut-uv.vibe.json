@@ -3,11 +3,11 @@
   "version": 3,
   "camera": {
     "target": [
-      -0.080298,
-      0.292978,
-      0.002671
+      -0.077136,
+      0.340145,
+      0.005514
     ],
-    "distance": 3.937324,
+    "distance": 4.232836,
     "yaw": 0.785398,
     "pitch": 0.523599
   },
@@ -35449,7 +35449,53 @@
           ]
         ]
       },
-      "modifiers": []
+      "modifiers": [
+        {
+          "type": "shrinkwrap",
+          "name": "Shrinkwrap",
+          "enabled": true,
+          "params": {
+            "offset": 0.06,
+            "target": 0
+          }
+        },
+        {
+          "type": "solidify",
+          "name": "Solidify",
+          "enabled": true,
+          "params": {
+            "offset": 1,
+            "rimCrease": 1,
+            "thickness": 0.12
+          }
+        },
+        {
+          "type": "subsurf",
+          "name": "Subdivision",
+          "enabled": true,
+          "params": {
+            "levels": 2
+          }
+        },
+        {
+          "type": "scatter",
+          "name": "Scatter",
+          "enabled": true,
+          "params": {
+            "alignNormal": true,
+            "colorVariation": 1,
+            "count": 120,
+            "minDistance": 0.08,
+            "offset": 0,
+            "randomRotation": true,
+            "randomScale": 0.2,
+            "scale": 1,
+            "seed": 1,
+            "source": 4,
+            "upOnly": false
+          }
+        }
+      ]
     },
     {
       "name": "Plate",

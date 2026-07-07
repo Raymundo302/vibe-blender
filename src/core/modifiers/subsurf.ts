@@ -144,10 +144,26 @@ function subdivideOnce(mesh: EditableMesh): EditableMesh {
 
   // Each n-gon → n quads, winding preserving the original orientation. A tinted
   // parent passes its tint to every child quad.
+  //
+  // Corner UVs (P11-5) subdivide EXACTLY like positions but in PER-FACE UV space
+  // — each child quad's corners take (a) the original corner's uv, (b) the
+  // midpoint of the two adjacent corner uvs along that face edge, (c) the
+  // face-average uv. There is NO cross-face UV averaging (unlike positions,
+  // where edge/vert points blend across faces): a UV edge point is just the
+  // parent corners' midpoint within THIS face, so a seam (two faces meeting with
+  // different UVs on the shared edge) keeps its islands intact. Documented
+  // standard simplification. Faces without UVs stay without UVs.
   for (const f of mesh.faces.values()) {
     const vs = f.verts;
     const n = vs.length;
     const tint = mesh.faceTints.get(f.id);
+    const uv = mesh.uvs.get(f.id);
+    let uvAvg: [number, number] | null = null;
+    if (uv) {
+      let su = 0, sv = 0;
+      for (const [u, v] of uv) { su += u; sv += v; }
+      uvAvg = [su / n, sv / n];
+    }
     for (let i = 0; i < n; i++) {
       const vi = vs[i];
       const vNext = vs[(i + 1) % n];
@@ -159,6 +175,17 @@ function subdivideOnce(mesh: EditableMesh): EditableMesh {
         epId.get(EditableMesh.edgeKey(vPrev, vi))!,
       ]);
       if (tint) out.faceTints.set(childId, [tint[0], tint[1], tint[2]]);
+      if (uv) {
+        const cur = uv[i];
+        const nx = uv[(i + 1) % n];
+        const pv = uv[(i - 1 + n) % n];
+        out.setFaceUVs(childId, [
+          [cur[0], cur[1]],
+          [(cur[0] + nx[0]) / 2, (cur[1] + nx[1]) / 2],
+          [uvAvg![0], uvAvg![1]],
+          [(pv[0] + cur[0]) / 2, (pv[1] + cur[1]) / 2],
+        ]);
+      }
     }
   }
 
