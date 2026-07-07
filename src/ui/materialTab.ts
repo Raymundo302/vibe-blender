@@ -87,7 +87,8 @@ export class NewMaterialCommand implements Command {
 
 /** Which scalar/vector field of a Material an edit command targets. */
 export type MaterialFieldKey =
-  | 'name' | 'baseColor' | 'metallic' | 'roughness' | 'emissive' | 'emissiveStrength';
+  | 'name' | 'baseColor' | 'metallic' | 'roughness' | 'emissive' | 'emissiveStrength'
+  | 'subsurfaceWeight' | 'subsurfaceRadius';
 
 type MaterialFieldValue = string | number | [number, number, number];
 
@@ -147,6 +148,9 @@ class MaterialTab {
   private roughnessNum!: HTMLSpanElement;
   private emissiveInput!: HTMLInputElement;
   private emissiveStrengthInput!: HTMLInputElement;
+  private subsurfaceInput!: HTMLInputElement;
+  private subsurfaceNum!: HTMLSpanElement;
+  private subsurfaceRadiusInput!: HTMLInputElement;
 
   /** Value captured when an input gained focus — the undo `before`. */
   private editBefore: MaterialFieldValue | null = null;
@@ -248,6 +252,27 @@ class MaterialTab {
       () => Math.max(0, parseFloat(this.emissiveStrengthInput.value)),
       () => this.material()?.emissiveStrength ?? 0);
     this.fields.append(this.fieldRow('Emit Strength', this.emissiveStrengthInput));
+
+    // Subsurface weight (slider 0..1) + numeric readout — the SSS glow amount.
+    this.subsurfaceNum = document.createElement('span');
+    this.subsurfaceNum.className = 'material-tab-num';
+    this.subsurfaceInput = this.slider('material-tab-subsurface');
+    this.wireField(this.subsurfaceInput, 'subsurfaceWeight',
+      () => parseFloat(this.subsurfaceInput.value),
+      () => this.material()?.subsurfaceWeight ?? 0,
+      () => { this.subsurfaceNum.textContent = Number(this.subsurfaceInput.value).toFixed(2); });
+    this.fields.append(this.fieldRow('Subsurface', this.subsurfaceInput, this.subsurfaceNum));
+
+    // Subsurface radius (number ≥ 0) — mean scatter distance in world units.
+    this.subsurfaceRadiusInput = document.createElement('input');
+    this.subsurfaceRadiusInput.type = 'number';
+    this.subsurfaceRadiusInput.className = 'material-tab-subsurface-radius properties-input';
+    this.subsurfaceRadiusInput.min = '0';
+    this.subsurfaceRadiusInput.step = '0.01';
+    this.wireField(this.subsurfaceRadiusInput, 'subsurfaceRadius',
+      () => Math.max(0, parseFloat(this.subsurfaceRadiusInput.value)),
+      () => this.material()?.subsurfaceRadius ?? 0.05);
+    this.fields.append(this.fieldRow('SSS Radius', this.subsurfaceRadiusInput));
   }
 
   private slider(cls: string): HTMLInputElement {
@@ -399,7 +424,7 @@ class MaterialTab {
       obj!.id,
       obj!.materialId,
       this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
-      mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}` : '-',
+      mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
     ].join('#');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -441,6 +466,9 @@ class MaterialTab {
     this.roughnessNum.textContent = mat.roughness.toFixed(2);
     this.emissiveInput.value = rgbToHex(mat.emissive);
     this.emissiveStrengthInput.value = String(mat.emissiveStrength);
+    this.subsurfaceInput.value = String(mat.subsurfaceWeight);
+    this.subsurfaceNum.textContent = mat.subsurfaceWeight.toFixed(2);
+    this.subsurfaceRadiusInput.value = String(mat.subsurfaceRadius);
   }
 }
 

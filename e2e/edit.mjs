@@ -753,8 +753,7 @@ runE2e(async (t) => {
 
   // --- P7-2: separate selection (P) ---
   // Reload for a pristine single-cube scene (earlier checks left the mesh moved).
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(200);
 
   await t.key('Tab', 'Tab');           // enter edit mode on the cube
@@ -786,8 +785,7 @@ runE2e(async (t) => {
 
   // --- P7-3: edge slide (GG) ---
   // Pristine single-cube scene.
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(200);
 
   await t.key('Tab', 'Tab');   // enter edit mode on the cube
@@ -839,8 +837,7 @@ runE2e(async (t) => {
 
   // --- P7-5: duplicate in edit mode (Shift+D) ---
   // Pristine single-cube scene.
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(200);
 
   await t.key('Tab', 'Tab');   // enter edit mode on the cube

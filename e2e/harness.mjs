@@ -9,6 +9,7 @@
  *   });
  */
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 
 const PORT = 9222;
 
@@ -25,10 +26,12 @@ async function main(testFn, url) {
     `--remote-debugging-port=${PORT}`, '--window-size=1280,800',
     `--user-data-dir=/tmp/vibe-blender-e2e-profile-${process.pid}`, 'about:blank',
   ], { stdio: 'ignore' });
+  // MUST be synchronous: async work scheduled inside 'exit' never runs, which
+  // used to leak one ~100MB chrome profile per run until /tmp (tmpfs) filled.
   const cleanup = () => {
-  try { chrome.kill(); } catch { /* already dead */ }
-  import('node:fs').then((fs) => fs.rmSync(`/tmp/vibe-blender-e2e-profile-${process.pid}`, { recursive: true, force: true })).catch(() => {});
-};
+    try { chrome.kill(); } catch { /* already dead */ }
+    try { rmSync(`/tmp/vibe-blender-e2e-profile-${process.pid}`, { recursive: true, force: true }); } catch { /* best effort */ }
+  };
   process.on('exit', cleanup);
 
   for (let i = 0; i < 50; i++) {
@@ -109,6 +112,28 @@ async function main(testFn, url) {
     check(label, ok, detail = '') {
       console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? `  (${detail})` : ''}`);
       if (!ok) failures++;
+    },
+
+    /**
+     * Reload the page SAFELY: waits for the new document's load event before
+     * polling for __app, so until() can never sample the stale pre-reload
+     * context (it stays alive for a beat after Page.reload acks — sampling it
+     * returns a false "ready" and later evaluates hit a destroyed context).
+     */
+    async reload() {
+      const loaded = new Promise((resolve) => {
+        const onMsg = (ev) => {
+          if (JSON.parse(ev.data).method === 'Page.loadEventFired') {
+            ws.removeEventListener('message', onMsg);
+            resolve();
+          }
+        };
+        ws.addEventListener('message', onMsg);
+      });
+      await send('Page.reload', {});
+      await loaded;
+      await t.until('!!window.__app');
+      await t.sleep(100); // frame loop + panels settle
     },
 
     /** Wait until an evaluated expression is truthy (app boot, async UI).

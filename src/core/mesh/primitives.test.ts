@@ -2,11 +2,13 @@ import { describe, it, expect } from 'vitest';
 import { Vec3 } from '../math/vec3';
 import { EditableMesh } from './EditableMesh';
 import {
+  makeCube,
   makePlane,
   makeUvSphere,
   makeCylinder,
   makeTorus,
   makeIcoSphere,
+  makeCircle,
   PRIMITIVES,
 } from './primitives';
 
@@ -153,10 +155,42 @@ describe('makeIcoSphere', () => {
   });
 });
 
+describe('makeCircle', () => {
+  it('with fill: 1 n-gon face and `vertices` verts', () => {
+    const c = makeCircle(1, 24, true);
+    expect(c.verts.size).toBe(24);
+    expect(c.faces.size).toBe(1);
+    expect([...c.faces.values()][0].verts.length).toBe(24);
+  });
+
+  it('vertex count follows the `vertices` param', () => {
+    expect(makeCircle(1, 8).verts.size).toBe(8);
+    expect(makeCircle(1, 64).verts.size).toBe(64);
+  });
+
+  it('radius param scales the bounding radius', () => {
+    for (const v of makeCircle(2.5, 16).verts.values()) {
+      expect(Math.abs(v.co.length() - 2.5)).toBeLessThan(1e-6);
+    }
+  });
+
+  it('face normal is +Y (matches the plane)', () => {
+    const c = makeCircle();
+    const f = [...c.faces.keys()][0];
+    expect(c.faceNormal(f).equalsApprox(Vec3.Y)).toBe(true);
+  });
+
+  it('without fill: `vertices` verts and NO face', () => {
+    const c = makeCircle(1, 20, false);
+    expect(c.verts.size).toBe(20);
+    expect(c.faces.size).toBe(0);
+  });
+});
+
 describe('PRIMITIVES registry', () => {
-  it('has 6 entries in Blender Add > Mesh order', () => {
+  it('has 7 entries in Blender Add > Mesh order (Circle after Cube)', () => {
     expect(PRIMITIVES.map((p) => p.name)).toEqual([
-      'Plane', 'Cube', 'UV Sphere', 'Ico Sphere', 'Cylinder', 'Torus',
+      'Plane', 'Cube', 'Circle', 'UV Sphere', 'Ico Sphere', 'Cylinder', 'Torus',
     ]);
   });
 
@@ -168,5 +202,62 @@ describe('PRIMITIVES registry', () => {
       expect(a.verts.size).toBeGreaterThan(0);
       expect(a.faces.size).toBeGreaterThan(0);
     }
+  });
+
+  it('every param declares a key, label and kind', () => {
+    for (const def of PRIMITIVES) {
+      expect(def.params.length).toBeGreaterThan(0);
+      for (const p of def.params) {
+        expect(typeof p.key).toBe('string');
+        expect(typeof p.label).toBe('string');
+        expect(['number', 'int', 'bool']).toContain(p.kind);
+      }
+    }
+  });
+
+  // Snapshot of the historical default vert counts: make() with no values must
+  // reproduce these exactly so existing scenes / fresh adds are unchanged.
+  it('default make() reproduces the historical geometry', () => {
+    const byName = Object.fromEntries(PRIMITIVES.map((d) => [d.name, d]));
+    expect(byName['Plane'].make().verts.size).toBe(4);
+    expect(byName['Cube'].make().verts.size).toBe(8);
+    expect(byName['UV Sphere'].make().verts.size).toBe(32 * (16 - 1) + 2);
+    expect(byName['Ico Sphere'].make().verts.size).toBe(162);
+    expect(byName['Cylinder'].make().verts.size).toBe(2 * 32);
+    expect(byName['Torus'].make().verts.size).toBe(48 * 12);
+    // Byte-identical to the direct maker defaults (no divergence).
+    expect(byName['Cube'].make().verts.size).toBe(makeCube().verts.size);
+    expect(byName['Torus'].make().verts.size).toBe(makeTorus().verts.size);
+  });
+
+  it('make(values) respects segment/subdivision params', () => {
+    const byName = Object.fromEntries(PRIMITIVES.map((d) => [d.name, d]));
+    // Torus vert count = majorSegments * minorSegments.
+    expect(byName['Torus'].make({ majorSegments: 12, minorSegments: 8 }).verts.size).toBe(96);
+    // UV Sphere = segments*(rings-1)+2.
+    expect(byName['UV Sphere'].make({ segments: 8, rings: 4 }).verts.size).toBe(8 * 3 + 2);
+    // Cylinder = 2*vertices.
+    expect(byName['Cylinder'].make({ vertices: 6 }).verts.size).toBe(12);
+    // Ico Sphere subdivisions: verts = 10*4^n + 2.
+    expect(byName['Ico Sphere'].make({ subdivisions: 1 }).verts.size).toBe(42);
+  });
+
+  it('make(values) respects radius/size (bounding radius grows)', () => {
+    const byName = Object.fromEntries(PRIMITIVES.map((d) => [d.name, d]));
+    const bigSphere = byName['UV Sphere'].make({ radius: 3 });
+    for (const v of bigSphere.verts.values()) {
+      expect(Math.abs(v.co.length() - 3)).toBeLessThan(1e-6);
+    }
+    // Cube size 4 → half-extent 2 → corner at |(2,2,2)| = 2√3.
+    const bigCube = byName['Cube'].make({ size: 4 });
+    for (const v of bigCube.verts.values()) {
+      expect(Math.abs(Math.abs(v.co.x) - 2)).toBeLessThan(1e-6);
+    }
+  });
+
+  it('make(values) coerces int params (rounds fractional input)', () => {
+    const byName = Object.fromEntries(PRIMITIVES.map((d) => [d.name, d]));
+    // 12.7 → 13 major segments; keep default minor (12) → 13*12 = 156.
+    expect(byName['Torus'].make({ majorSegments: 12.7 }).verts.size).toBe(13 * 12);
   });
 });

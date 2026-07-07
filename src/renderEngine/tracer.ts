@@ -338,11 +338,40 @@ export function occluded(
 // Shading.
 // ---------------------------------------------------------------------------
 
+/** Build an orthonormal basis (t1, t2) around a unit vector n (Duff et al.). */
+function onbBasis(
+  nx: number, ny: number, nz: number,
+  t1: [number, number, number],
+  t2: [number, number, number],
+): void {
+  const sign = nz >= 0 ? 1 : -1;
+  const aa = -1 / (sign + nz);
+  const bb = nx * ny * aa;
+  t1[0] = 1 + sign * nx * nx * aa; t1[1] = sign * bb; t1[2] = -sign * nx;
+  t2[0] = bb; t2[1] = sign + ny * ny * aa; t2[2] = -ny;
+}
+
+const _b1: [number, number, number] = [0, 0, 0];
+const _b2: [number, number, number] = [0, 0, 0];
+
 /**
  * Direct lighting at a surface point with normal N and diffuse albedo. Mirrors
  * renderedPass: point/spot radiance = energy/d² (× spot cone), sun radiance =
- * energy; diffuse BRDF = albedo/π; shadow rays gate every light. Exported for
- * the unit tests (point-light falloff, sun direction, occlusion → black).
+ * energy; diffuse BRDF = albedo/π; shadow rays gate every light.
+ *
+ * Soft shadows (P9-4): when `rng` is supplied AND a light has radius > 0, the
+ * shadow ray targets a random point on the emitter instead of its center —
+ * point/spot sample a sphere of that radius, the sun jitters its direction
+ * within a cone of that angular radius. With radius 0 (or no rng) NO random
+ * numbers are drawn and the center is used, so the result is byte-identical to
+ * the hard-shadow path.
+ *
+ * `wrap` (0..1) softens the NdotL term toward (NdotL+1)/2 — the cheap wrapped-
+ * diffuse used for the subsurface approximation. It is energy-normalized:
+ * nl = max(0, (NdotL + wrap) / (1 + wrap)).
+ *
+ * Exported for the unit tests (point-light falloff, sun direction, occlusion →
+ * black, penumbra).
  */
 export function directLighting(
   root: BVHNode | null,
@@ -352,9 +381,13 @@ export function directLighting(
   albedo: readonly [number, number, number],
   lights: SnapLight[],
   out: [number, number, number] = [0, 0, 0],
+  rng?: Rng,
+  wrap = 0,
 ): [number, number, number] {
   out[0] = 0; out[1] = 0; out[2] = 0;
   for (const l of lights) {
+    const radius = l.radius ?? 0;
+    const soft = rng !== undefined && radius > 0;
     let lx: number, ly: number, lz: number, dist: number;
     let rr: number, rg: number, rb: number;
     if (l.type === 1) {
@@ -362,10 +395,32 @@ export function directLighting(
       lx = -l.direction[0]; ly = -l.direction[1]; lz = -l.direction[2];
       const inv = 1 / Math.hypot(lx, ly, lz);
       lx *= inv; ly *= inv; lz *= inv;
+      if (soft) {
+        // Jitter within a cone of angular radius `radius` about L.
+        const cosMax = Math.cos(radius);
+        const cosT = 1 - rng!() * (1 - cosMax);
+        const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
+        const phi = 2 * Math.PI * rng!();
+        onbBasis(lx, ly, lz, _b1, _b2);
+        const cx = Math.cos(phi) * sinT, cy = Math.sin(phi) * sinT;
+        lx = cx * _b1[0] + cy * _b2[0] + cosT * lx;
+        ly = cx * _b1[1] + cy * _b2[1] + cosT * ly;
+        lz = cx * _b1[2] + cy * _b2[2] + cosT * lz;
+      }
       dist = Infinity;
       rr = l.energy[0]; rg = l.energy[1]; rb = l.energy[2];
     } else {
-      lx = l.position[0] - px; ly = l.position[1] - py; lz = l.position[2] - pz;
+      // Emitter point: center, or a random point on its sphere when soft.
+      let ex = l.position[0], ey = l.position[1], ez = l.position[2];
+      if (soft) {
+        const z = 2 * rng!() - 1;
+        const rp = Math.sqrt(Math.max(0, 1 - z * z));
+        const phi = 2 * Math.PI * rng!();
+        ex += radius * rp * Math.cos(phi);
+        ey += radius * rp * Math.sin(phi);
+        ez += radius * z;
+      }
+      lx = ex - px; ly = ey - py; lz = ez - pz;
       const d2 = lx * lx + ly * ly + lz * lz;
       dist = Math.sqrt(d2);
       const inv = 1 / dist;
@@ -380,12 +435,13 @@ export function directLighting(
       }
     }
     const ndotl = nx * lx + ny * ly + nz * lz;
-    if (ndotl <= 0) continue;
-    // Shadow ray from just above the surface toward the light.
+    const nl = wrap > 0 ? Math.max(0, (ndotl + wrap) / (1 + wrap)) : ndotl;
+    if (nl <= 0) continue;
+    // Shadow ray from just above the surface toward the sampled emitter point.
     if (root && occluded(root, tris, px + nx * EPS, py + ny * EPS, pz + nz * EPS, lx, ly, lz, dist)) {
       continue;
     }
-    const k = ndotl / Math.PI;
+    const k = nl / Math.PI;
     out[0] += albedo[0] * rr * k;
     out[1] += albedo[1] * rg * k;
     out[2] += albedo[2] * rb * k;
@@ -489,13 +545,31 @@ export function traceRay(
       rg += tg * mat.emissive[1] * es;
       rb += tb * mat.emissive[2] * es;
     }
+    // Front face = the ray is entering the surface from outside (geometric
+    // normal opposes the ray). Subsurface scattering only happens on entry;
+    // interior/exit hits bounce diffusely so the ray leaves the medium instead
+    // of ping-ponging and re-collecting direct light (which would gain energy).
+    const frontFace = hit.nx * dx + hit.ny * dy + hit.nz * dz < 0;
     // Shading normal faces the incoming ray.
     let nx = hit.nx, ny = hit.ny, nz = hit.nz;
-    if (nx * dx + ny * dy + nz * dz > 0) { nx = -nx; ny = -ny; nz = -nz; }
+    if (!frontFace) { nx = -nx; ny = -ny; nz = -nz; }
     const hx = ox + dx * hit.t, hy = oy + dy * hit.t, hz = oz + dz * hit.t;
 
-    // Direct lighting.
-    directLighting(scene.bvh, scene.tris, hx, hy, hz, nx, ny, nz, mat.baseColor, scene.lights, direct);
+    // Subsurface decision (P9-4): honest cheap approximation. On a front-face
+    // hit, with probability = subsurfaceWeight this bounce is treated as SSS —
+    // the direct light gets a wrapped NdotL (light bleeds around the terminator,
+    // tinted by baseColor) and the continuation dips below the surface and
+    // re-emerges diffusely, a single-scatter dipole-ish. rng is only drawn when
+    // the weight is > 0, so a weight-0 material is byte-identical to the plain
+    // diffuse path.
+    const ssw = mat.subsurfaceWeight ?? 0;
+    const isSSS = frontFace && ssw > 0 && rng() < ssw;
+
+    // Direct lighting (soft shadows via rng; wrapped diffuse when SSS).
+    directLighting(
+      scene.bvh, scene.tris, hx, hy, hz, nx, ny, nz,
+      mat.baseColor, scene.lights, direct, rng, isSSS ? 1 : 0,
+    );
     rr += tr * direct[0]; rg += tg * direct[1]; rb += tb * direct[2];
 
     // Russian roulette after a couple of bounces.
@@ -505,7 +579,7 @@ export function traceRay(
       tr /= p; tg /= p; tb /= p;
     }
 
-    // Bounce: glossy (metal) with probability = metallic, else diffuse.
+    // Bounce: glossy (metal) with probability = metallic, else diffuse / SSS.
     if (rng() < mat.metallic) {
       // Roughness-jittered mirror reflection (documented GGX-ish approximation).
       const dot = dx * nx + dy * ny + dz * nz;
@@ -519,13 +593,27 @@ export function traceRay(
       // Keep the reflection in the upper hemisphere.
       if (dx * nx + dy * ny + dz * nz < 0) { dx = -dx; dy = -dy; dz = -dz; }
       tr *= mat.baseColor[0]; tg *= mat.baseColor[1]; tb *= mat.baseColor[2];
+      ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
+    } else if (isSSS) {
+      // Dip the continuation origin below the surface by a random distance ~
+      // subsurfaceRadius, then re-emerge with a cosine-weighted direction.
+      // Tint (clamped ≤ 1) so throughput never grows → energy conserved.
+      const dScatter = (mat.subsurfaceRadius ?? 0) * rng();
+      cosineHemisphere(nx, ny, nz, rng, bounceDir);
+      dx = bounceDir[0]; dy = bounceDir[1]; dz = bounceDir[2];
+      tr *= Math.min(1, mat.baseColor[0]);
+      tg *= Math.min(1, mat.baseColor[1]);
+      tb *= Math.min(1, mat.baseColor[2]);
+      ox = hx - nx * dScatter + dx * EPS;
+      oy = hy - ny * dScatter + dy * EPS;
+      oz = hz - nz * dScatter + dz * EPS;
     } else {
       cosineHemisphere(nx, ny, nz, rng, bounceDir);
       dx = bounceDir[0]; dy = bounceDir[1]; dz = bounceDir[2];
       // Cosine-weighted pdf cancels the cosine term → throughput *= albedo.
       tr *= mat.baseColor[0]; tg *= mat.baseColor[1]; tb *= mat.baseColor[2];
+      ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
     }
-    ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
   }
   out[0] = rr; out[1] = rg; out[2] = rb;
 }
@@ -550,6 +638,10 @@ export function renderSample(
   const [rx, ry, rz] = cam.right;
   const [ux, uy, uz] = cam.up;
   const [ex, ey, ez] = cam.position;
+  // Thin-lens depth of field. aperture 0 = pinhole: no lens RNG is drawn, so the
+  // RNG stream (and therefore the image) is byte-identical to the old tracer.
+  const aperture = cam.aperture ?? 0;
+  const focus = cam.focusDistance ?? 5;
   const out: [number, number, number] = [0, 0, 0];
   let i = 0;
   for (let py = 0; py < h; py++) {
@@ -565,7 +657,25 @@ export function renderSample(
       let dz = fz + rz * ndcx + uz * ndcy;
       const inv = 1 / Math.hypot(dx, dy, dz);
       dx *= inv; dy *= inv; dz *= inv;
-      traceRay(scene, ex, ey, ez, dx, dy, dz, rng, out);
+      if (aperture > 0) {
+        // Focal point = where this pinhole ray crosses the focus plane.
+        const cosF = dx * fx + dy * fy + dz * fz;
+        const ft = focus / Math.max(1e-4, cosF);
+        const fpx = ex + dx * ft, fpy = ey + dy * ft, fpz = ez + dz * ft;
+        // Jitter the origin on the lens disk (right/up plane).
+        const lr = aperture * Math.sqrt(rng());
+        const la = 2 * Math.PI * rng();
+        const lu = lr * Math.cos(la), lv = lr * Math.sin(la);
+        const oxL = ex + rx * lu + ux * lv;
+        const oyL = ey + ry * lu + uy * lv;
+        const ozL = ez + rz * lu + uz * lv;
+        let ndx = fpx - oxL, ndy = fpy - oyL, ndz = fpz - ozL;
+        const ninv = 1 / Math.hypot(ndx, ndy, ndz);
+        ndx *= ninv; ndy *= ninv; ndz *= ninv;
+        traceRay(scene, oxL, oyL, ozL, ndx, ndy, ndz, rng, out);
+      } else {
+        traceRay(scene, ex, ey, ez, dx, dy, dz, rng, out);
+      }
       accum[i] += out[0];
       accum[i + 1] += out[1];
       accum[i + 2] += out[2];

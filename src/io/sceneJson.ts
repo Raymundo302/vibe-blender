@@ -79,6 +79,7 @@ function serializeLight(l: LightData): Record<string, unknown> {
     power: num(l.power),
     spotAngle: num(l.spotAngle),
     spotBlend: num(l.spotBlend),
+    radius: num(l.radius ?? (l.type === 'sun' ? 0 : 0.1)),
   };
 }
 
@@ -349,6 +350,11 @@ function parseLight(v: unknown, i: number): LightData {
     power,
     spotAngle: numField(l.spotAngle, `objects[${i}].light.spotAngle`),
     spotBlend: numField(l.spotBlend, `objects[${i}].light.spotBlend`),
+    // Optional on load (mirrors spotAngle handling); default a small physical
+    // size for point/spot, hard (0) for sun so old scenes keep sharp sun shadows.
+    radius: l.radius === undefined
+      ? (l.type === 'sun' ? 0 : 0.1)
+      : Math.max(0, numField(l.radius, `objects[${i}].light.radius`)),
   };
 }
 

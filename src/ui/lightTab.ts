@@ -95,6 +95,8 @@ class LightTab {
   private readonly typeSelect: HTMLSelectElement;
   private readonly colorInput: HTMLInputElement;
   private readonly powerInput: HTMLInputElement;
+  private readonly radiusRow: HTMLElement;
+  private readonly radiusInput: HTMLInputElement;
   private readonly spotBlock: HTMLDivElement;
   private readonly angleInput: HTMLInputElement;
   private readonly blendInput: HTMLInputElement;
@@ -153,6 +155,22 @@ class LightTab {
       this.commit('Set Light Power', (l) => { l.power = power; });
     });
     this.body.append(this.labelledRow('Power', this.powerInput));
+
+    // Radius (soft-shadow source size; point/spot only) ---------------------
+    this.radiusInput = document.createElement('input');
+    this.radiusInput.type = 'number';
+    this.radiusInput.className = 'light-tab-input';
+    this.radiusInput.dataset.field = 'radius';
+    this.radiusInput.min = '0';
+    this.radiusInput.step = '0.05';
+    this.radiusInput.addEventListener('change', () => {
+      const raw = parseFloat(this.radiusInput.value);
+      if (!Number.isFinite(raw)) return this.refresh();
+      const radius = Math.max(0, raw);
+      this.commit('Set Light Radius', (l) => { l.radius = radius; });
+    });
+    this.radiusRow = this.labelledRow('Radius', this.radiusInput);
+    this.body.append(this.radiusRow);
 
     // Spot-only: angle (degrees in UI, radians in data) + blend -------------
     this.spotBlock = document.createElement('div');
@@ -223,8 +241,10 @@ class LightTab {
 
     // Never overwrite a field the user is mid-edit in (matches the Object tab).
     if (this.isPanelFocused()) {
-      // Spot visibility can still follow the committed type without stealing focus.
+      // Type-driven visibility can still follow the committed type without
+      // stealing focus from whatever field the user is mid-edit in.
       this.spotBlock.hidden = obj.light.type !== 'spot';
+      this.radiusRow.hidden = obj.light.type === 'sun';
       return;
     }
     this.writeFields(obj.light);
@@ -236,6 +256,11 @@ class LightTab {
     if (this.colorInput.value !== hex) this.colorInput.value = hex;
     const power = String(round(l.power));
     if (this.powerInput.value !== power) this.powerInput.value = power;
+
+    // Radius: shown for point/spot (world-unit sphere), hidden for sun.
+    this.radiusRow.hidden = l.type === 'sun';
+    const radius = String(round(l.radius ?? 0.1));
+    if (this.radiusInput.value !== radius) this.radiusInput.value = radius;
 
     this.spotBlock.hidden = l.type !== 'spot';
     const deg = String(round(l.spotAngle * DEG_PER_RAD));

@@ -125,3 +125,79 @@ describe('Subdivision Surface modifier — boundary (plane)', () => {
     expect(boundary).toBe(8); // the outer ring of the subdivided plane
   });
 });
+
+/** Does the mesh have any vert at (approximately) `target`? */
+function hasVertAt(mesh: EditableMesh, target: Vec3): boolean {
+  for (const v of mesh.verts.values()) if (v.co.equalsApprox(target)) return true;
+  return false;
+}
+
+describe('Subdivision Surface modifier — edge creases', () => {
+  // Cube edge 0↔1 spans (-1,-1,-1)→(1,-1,-1). Its LINEAR midpoint is (0,-1,-1);
+  // its uncreased SMOOTH edge point (verified) is (0,-0.75,-0.75).
+  const linearMid = new Vec3(0, -1, -1);
+  const smoothPt = new Vec3(0, -0.75, -0.75);
+
+  it('an uncreased edge’s point is the smoothed (not linear) midpoint', () => {
+    const out = createModifier('subsurf', { levels: 1 }).apply(makeCube());
+    expect(hasVertAt(out, smoothPt)).toBe(true);
+    expect(hasVertAt(out, linearMid)).toBe(false);
+  });
+
+  it('crease 1.0 → the edge point equals the linear midpoint (stays sharp)', () => {
+    const cube = makeCube();
+    cube.setCrease(0, 1, 1);
+    const out = createModifier('subsurf', { levels: 1 }).apply(cube);
+    expect(hasVertAt(out, linearMid)).toBe(true);
+    expect(hasVertAt(out, smoothPt)).toBe(false);
+  });
+
+  it('crease 0.5 lands strictly between the w=0 and w=1 positions', () => {
+    const cube = makeCube();
+    cube.setCrease(0, 1, 0.5);
+    const out = createModifier('subsurf', { levels: 1 }).apply(cube);
+    const mid = smoothPt.lerp(linearMid, 0.5); // (0, -0.875, -0.875)
+    expect(hasVertAt(out, mid)).toBe(true);
+    // strictly between: y is below the smooth y and above the sharp y
+    expect(mid.y).toBeLessThan(smoothPt.y);
+    expect(mid.y).toBeGreaterThan(linearMid.y);
+  });
+
+  it('child edges inherit the parent crease so it survives further subdivision', () => {
+    const cube = makeCube();
+    cube.setCrease(0, 1, 1);
+    const out = createModifier('subsurf', { levels: 1 }).apply(cube);
+    // The creased parent split into two fully-creased child edges.
+    let full = 0;
+    for (const w of out.creases.values()) if (w === 1) full++;
+    expect(full).toBe(2);
+    // The crease keeps propagating: level 2 still carries full-weight creases.
+    const out2 = createModifier('subsurf', { levels: 2 }).apply(cube);
+    let full2 = 0;
+    for (const w of out2.creases.values()) if (w === 1) full2++;
+    expect(full2).toBe(4); // each of the 2 child edges split again
+
+    // …and near the creased edge the surface stays sharper (closer to the
+    // original corner y=-1) than the uncreased cube at the same level.
+    const plain2 = createModifier('subsurf', { levels: 2 }).apply(makeCube());
+    const minYNearEdge = (m: EditableMesh): number => {
+      let y = Infinity;
+      for (const v of m.verts.values()) {
+        if (Math.abs(v.co.x) < 1e-6 && Math.abs(v.co.z + 1) < 0.3) y = Math.min(y, v.co.y);
+      }
+      return y;
+    };
+    expect(minYNearEdge(out2)).toBeLessThan(minYNearEdge(plain2));
+  });
+
+  it('tint carries to every child face', () => {
+    const cube = makeCube();
+    cube.faceTints.set(0, [0.2, 0.4, 0.6]);
+    const out = createModifier('subsurf', { levels: 1 }).apply(cube);
+    // Face 0 (a quad) subdivides into the first 4 output faces, all tinted.
+    expect(out.faceTints.size).toBe(4);
+    for (let id = 0; id < 4; id++) {
+      expect(out.faceTints.get(id)).toEqual([0.2, 0.4, 0.6]);
+    }
+  });
+});

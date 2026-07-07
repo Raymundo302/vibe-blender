@@ -3,6 +3,7 @@ import type { EditableMesh } from '../core/mesh/EditableMesh';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { dissolveEdges } from '../core/mesh/ops/dissolve';
+import { mergeByDistance } from '../core/mesh/ops/mergeByDistance';
 
 /**
  * Delete a subset of the current edit-mode selection, wrapped in one snapshot
@@ -66,6 +67,33 @@ export function mergeAtCenter(
   sel.prune(mesh);
   sel.touch();
   setStatus('Merged at center');
+}
+
+/**
+ * Blender's "Merge → By Distance" on the verts implied by the selection (needs
+ * ≥ 2). Collapses any doubled/near-coincident verts within the default
+ * threshold, reports "Removed N vertices" (Blender's wording), and leaves
+ * nothing selected — matching Merge at Center / delete behaviour.
+ */
+export function mergeByDistanceSelection(
+  sel: EditModeState,
+  mesh: EditableMesh,
+  undo: UndoStack,
+  setStatus: (text: string) => void,
+): void {
+  const ids = [...sel.selectedVertIds(mesh)];
+  if (ids.length < 2) {
+    setStatus('Merge by Distance needs 2 or more verts');
+    return;
+  }
+  let removed = 0;
+  undo.push(MeshEditCommand.capture('Merge by Distance', mesh, () => {
+    removed = mergeByDistance(mesh, ids);
+  }));
+  sel.clearSelection(); // also touches
+  sel.prune(mesh);
+  sel.touch();
+  setStatus(`Removed ${removed} vertices`);
 }
 
 /**
@@ -141,6 +169,8 @@ export class DeleteMenu {
       () => dissolveEdgeSelection(sel, mesh, opts.undo, opts.setStatus));
     this.addItem('Merge at Center', vertCount >= 2,
       () => mergeAtCenter(sel, mesh, opts.undo, opts.setStatus));
+    this.addItem('Merge by Distance', vertCount >= 2,
+      () => mergeByDistanceSelection(sel, mesh, opts.undo, opts.setStatus));
 
     // Position at the pointer, then clamp so the menu stays inside the host.
     this.root.style.left = `${opts.x}px`;

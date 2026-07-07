@@ -20,6 +20,10 @@ export interface SnapMaterial {
   /** Linear RGB emission (pre-strength). */
   emissive: [number, number, number];
   emissiveStrength: number;
+  /** 0..1 probability a diffuse bounce is treated as subsurface. Default 0. */
+  subsurfaceWeight?: number;
+  /** Mean subsurface scatter distance, world units. Default 0.05. */
+  subsurfaceRadius?: number;
 }
 
 /** 0 = point, 1 = sun, 2 = spot (matches renderedPass type codes). */
@@ -36,6 +40,13 @@ export interface SnapLight {
   /** Spot cone: cos(inner), cos(outer). */
   cosInner: number;
   cosOuter: number;
+  /**
+   * Soft-shadow source size. Point/spot: emitter sphere radius (world units) —
+   * a shadow ray samples a random point on that sphere. Sun: angular radius in
+   * radians — the sun direction is jittered within that cone. 0/undefined =
+   * hard shadow (samples the center → byte-identical to the center-only path).
+   */
+  radius?: number;
 }
 
 export interface SnapCamera {
@@ -46,6 +57,17 @@ export interface SnapCamera {
   up: [number, number, number];
   /** Vertical field of view, radians. */
   fovY: number;
+  /**
+   * Thin-lens aperture radius in world units (depth of field). 0/undefined =
+   * pinhole (byte-identical to the current behavior — no lens RNG is drawn).
+   */
+  aperture?: number;
+  /**
+   * Distance from the eye to the in-focus plane along the forward axis. Used
+   * only when aperture > 0. buildSnapshot seeds it to the scene bounding-box
+   * center distance; the render window UI can override it.
+   */
+  focusDistance?: number;
 }
 
 export interface Snapshot {
@@ -65,6 +87,8 @@ function toMat(m: {
   roughness: number;
   emissive: readonly [number, number, number];
   emissiveStrength: number;
+  subsurfaceWeight?: number;
+  subsurfaceRadius?: number;
 }): SnapMaterial {
   return {
     baseColor: [m.baseColor[0], m.baseColor[1], m.baseColor[2]],
@@ -72,6 +96,8 @@ function toMat(m: {
     roughness: m.roughness,
     emissive: [m.emissive[0], m.emissive[1], m.emissive[2]],
     emissiveStrength: m.emissiveStrength,
+    subsurfaceWeight: m.subsurfaceWeight ?? 0,
+    subsurfaceRadius: m.subsurfaceRadius ?? 0.05,
   };
 }
 
@@ -137,16 +163,47 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
       energy: [l.color[0] * l.power * scale, l.color[1] * l.power * scale, l.color[2] * l.power * scale],
       cosInner: Math.cos(inner),
       cosOuter: Math.cos(outer),
+      radius: l.radius ?? (l.type === 'sun' ? 0 : 0.1),
     });
   }
 
+  const tris = new Float32Array(triPos);
+  const camera = buildCamera(scene, orbit);
+  // Seed the depth-of-field focus plane to the scene bounding-box center so an
+  // opened aperture focuses on the subject by default (aperture stays 0/pinhole
+  // until the user opens it in the render window).
+  camera.focusDistance = focusDistanceForBounds(tris, camera);
+
   return {
-    tris: new Float32Array(triPos),
+    tris,
     triMat: Int32Array.from(triMatArr),
     materials,
     lights,
-    camera: buildCamera(scene, orbit),
+    camera,
   };
+}
+
+/**
+ * Distance from the camera eye to the geometry bounding-box center, projected
+ * onto the forward axis. Falls back to the raw center distance (and to 5 for an
+ * empty scene) so an opened aperture always has a sane focal plane.
+ */
+function focusDistanceForBounds(tris: Float32Array, cam: SnapCamera): number {
+  if (tris.length < 9) return 5;
+  let minx = Infinity, miny = Infinity, minz = Infinity;
+  let maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
+  for (let i = 0; i < tris.length; i += 3) {
+    const x = tris[i], y = tris[i + 1], z = tris[i + 2];
+    if (x < minx) minx = x; if (x > maxx) maxx = x;
+    if (y < miny) miny = y; if (y > maxy) maxy = y;
+    if (z < minz) minz = z; if (z > maxz) maxz = z;
+  }
+  const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2, cz = (minz + maxz) / 2;
+  const vx = cx - cam.position[0], vy = cy - cam.position[1], vz = cz - cam.position[2];
+  const along = vx * cam.forward[0] + vy * cam.forward[1] + vz * cam.forward[2];
+  if (along > 1e-3) return along;
+  const d = Math.hypot(vx, vy, vz);
+  return d > 1e-3 ? d : 5;
 }
 
 function buildCamera(scene: Scene, orbit: OrbitCamera): SnapCamera {

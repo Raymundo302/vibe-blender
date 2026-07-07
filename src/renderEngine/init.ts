@@ -41,6 +41,11 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
   const startRender = (): void => {
     stopWorker();
     const snapshot = buildSnapshot(ctx.scene, ctx.camera);
+    // Depth of field: aperture from the render window, focus distance from the
+    // window if the user set one, else the snapshot's auto (bounding-box) value.
+    snapshot.camera.aperture = win.aperture;
+    win.showAutoFocus(snapshot.camera.focusDistance ?? 5);
+    if (win.focusDistance !== null) snapshot.camera.focusDistance = win.focusDistance;
     win.open();
     win.reset();
     startTime = performance.now();
@@ -70,6 +75,8 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
   };
 
   win.onClose = close;
+  // Changing aperture / focus distance re-renders from scratch (worker restart).
+  win.onParamsChange = () => { if (win.isOpen) startRender(); };
 
   window.addEventListener('keydown', (e) => {
     if (e.key === 'F12') {
@@ -92,6 +99,10 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     canvas: () => win.canvas,
     start: startRender,
     close,
+    /** Set aperture radius (0 = pinhole) and re-render if open. */
+    setAperture: (v: number) => { win.setAperture(v); if (win.isOpen) startRender(); },
+    /** Set focus distance (null = auto) and re-render if open. */
+    setFocusDistance: (v: number | null) => { win.setFocusDistance(v); if (win.isOpen) startRender(); },
   };
 
   return { toggle: () => (win.isOpen ? close() : startRender()) };

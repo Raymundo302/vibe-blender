@@ -45,9 +45,9 @@ describe('LightCommand undo/redo', () => {
       l.spotBlend = 0.4;
     });
 
-    // Mutation applied by capture().
+    // Mutation applied by capture() (radius carried from defaultLight('point')).
     expect(obj.light).toEqual({
-      type: 'spot', color: [0.1, 0.2, 0.3], power: 12, spotAngle: 0.75, spotBlend: 0.4,
+      type: 'spot', color: [0.1, 0.2, 0.3], power: 12, spotAngle: 0.75, spotBlend: 0.4, radius: 0.1,
     });
 
     cmd.undo();
@@ -55,7 +55,7 @@ describe('LightCommand undo/redo', () => {
 
     cmd.redo();
     expect(obj.light).toEqual({
-      type: 'spot', color: [0.1, 0.2, 0.3], power: 12, spotAngle: 0.75, spotBlend: 0.4,
+      type: 'spot', color: [0.1, 0.2, 0.3], power: 12, spotAngle: 0.75, spotBlend: 0.4, radius: 0.1,
     });
   });
 

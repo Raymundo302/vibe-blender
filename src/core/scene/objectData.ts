@@ -24,6 +24,12 @@ export interface LightData {
   spotAngle: number;
   /** 0..1 edge softness fraction of the cone (spot only). */
   spotBlend: number;
+  /**
+   * Soft-shadow source size (path tracer only; raster shading stays hard).
+   * Point/spot: emitter sphere radius in world units. Sun: angular radius in
+   * radians. 0 = hard shadow. Optional so pre-radius scenes/tests still parse.
+   */
+  radius?: number;
 }
 
 export function defaultLight(type: LightType): LightData {
@@ -33,6 +39,9 @@ export function defaultLight(type: LightType): LightData {
     power: type === 'sun' ? 3 : 100,
     spotAngle: (45 * Math.PI) / 180,
     spotBlend: 0.15,
+    // Sun defaults to a hard shadow (angular radius 0); point/spot get a small
+    // physical size so soft shadows are visible out of the box.
+    radius: type === 'sun' ? 0 : 0.1,
   };
 }
 

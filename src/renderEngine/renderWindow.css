@@ -48,6 +48,27 @@
   font-size: 14px;
 }
 
+.render-win-dof {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.render-win-dof-label {
+  color: var(--vb-muted, #8a8a8a);
+  font-variant-numeric: tabular-nums;
+}
+.render-win-aperture,
+.render-win-focus {
+  width: 52px;
+  background: var(--vb-inset, #1f1f1f);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  color: var(--vb-text, #d0d0d0);
+  font: inherit;
+  padding: 1px 4px;
+}
+
 .render-win-canvas {
   display: block;
   background: #000;

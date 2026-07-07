@@ -3,6 +3,13 @@ import type { UndoStack } from '../core/undo/UndoStack';
 import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
 import type { LightType } from '../core/scene/objectData';
+import { OpPanel } from './opPanel';
+
+/**
+ * The redo panel for the LATEST add, if any. Module-level so a new add (or a
+ * non-mesh add) dismisses the previous panel — only one is ever on screen.
+ */
+let activeOpPanel: OpPanel | null = null;
 
 const LIGHTS: { name: string; type: LightType }[] = [
   { name: 'Point', type: 'point' },
@@ -82,12 +89,23 @@ export class AddMenu {
   }
 
   private addPrimitive(def: PrimitiveDef): void {
-    this.commitAdd(def.name, this.opts.scene.add(def.name, def.make()));
+    const obj = this.opts.scene.add(def.name, def.make());
+    this.commitAdd(def.name, obj);
+    // Mount the "Adjust Last Operation" redo panel for this add (parametric
+    // primitives only). It regenerates obj's mesh in place — no extra undo step.
+    activeOpPanel = new OpPanel({
+      parent: this.opts.parent,
+      def,
+      obj,
+      onClose: () => { activeOpPanel = null; },
+    });
   }
 
   /** Select the freshly added object, push ONE undo entry, close. */
   private commitAdd(name: string, obj: SceneObject): void {
     const { scene, undo, setStatus } = this.opts;
+    // Any add supersedes the previous redo panel — only the latest add shows one.
+    activeOpPanel?.close();
     scene.selectOnly(obj.id);
     // Construct AFTER scene.add so the command captures the real list index.
     undo.push(new AddObjectsCommand('Add ' + name, scene, [obj]));

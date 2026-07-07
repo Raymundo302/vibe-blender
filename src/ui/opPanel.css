@@ -1,0 +1,72 @@
+/* Post-Add "adjust last operation" redo panel — floats at the viewport's
+ * bottom-left (Blender's spot). Scoped class names so it never collides with
+ * the shared theme.css. */
+.op-panel {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 40;
+  min-width: 180px;
+  max-width: 240px;
+  font: 11px/1.4 system-ui, sans-serif;
+  color: #e6e6e6;
+  background: #2b2b2bee;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  box-shadow: 0 4px 14px #0006;
+  user-select: none;
+}
+
+.op-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-weight: 600;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.op-panel-caret {
+  display: inline-block;
+  width: 9px;
+  color: #9a9a9a;
+  transition: transform 0.1s;
+}
+
+.op-panel.collapsed .op-panel-caret { transform: rotate(-90deg); }
+.op-panel.collapsed .op-panel-body { display: none; }
+.op-panel.collapsed .op-panel-header { border-bottom: none; }
+
+.op-panel-body {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.op-panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.op-panel-row label {
+  color: #b9b9b9;
+  white-space: nowrap;
+}
+
+.op-panel-row input[type='number'] {
+  width: 76px;
+  padding: 2px 4px;
+  font: inherit;
+  color: #e6e6e6;
+  background: #1e1e1e;
+  border: 1px solid #111;
+  border-radius: 3px;
+}
+
+.op-panel-row input[type='checkbox'] {
+  margin: 0;
+}

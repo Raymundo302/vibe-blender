@@ -229,8 +229,7 @@ runE2e(async (t) => {
   // Force a clean first-visit state, then reload so the splash renders fresh.
   // (The shared e2e profile persists localStorage, so we clear it explicitly.)
   await t.evaluate(`localStorage.removeItem('vibe-blender-splash-seen')`);
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   // Poll for the splash instead of a fixed sleep — under load (chained e2e
   // suites) the first paint can land later than any hardcoded delay.
   t.check('splash visible on fresh load',
@@ -248,8 +247,7 @@ runE2e(async (t) => {
     (await t.evaluate(`localStorage.getItem('vibe-blender-splash-seen')`)) === '1');
 
   // Reload — the remembered flag keeps the splash from reappearing.
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(150);
   t.check('splash stays dismissed after reload',
     await t.evaluate(`!document.querySelector('.splash')`));
@@ -748,8 +746,7 @@ runE2e(async (t) => {
     typeof stored === 'string' && JSON.parse(stored).format === 'vibe-blender-autosave' &&
     typeof JSON.parse(stored).savedAt === 'number' && typeof JSON.parse(stored).scene === 'string');
 
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(200);
   // Fresh boot shows the default cube...
   t.check('boot starts from the default single-Cube scene',
@@ -782,8 +779,7 @@ runE2e(async (t) => {
     cube.transform = cube.transform.withPosition(new cube.transform.position.constructor(9, 0, 0));
     window.__app.autosave.saveNow();
   })()`);
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(200);
   t.check('restore toast appears again for FLOW 2',
     await t.until(`!!document.querySelector('.restore-toast')`, 5000));
@@ -802,8 +798,7 @@ runE2e(async (t) => {
 
   // No autosave → no toast on the next boot.
   await t.evaluate(`window.__app.autosave.clear()`);
-  await t.send('Page.reload', {});
-  await t.until('!!window.__app');
+  await t.reload();
   await t.sleep(200);
   t.check('no autosave → no restore toast on boot',
     await t.evaluate(`!document.querySelector('.restore-toast')`));

@@ -16,11 +16,22 @@ export class RenderWindow {
   private readonly readout: HTMLDivElement;
   private readonly imageData: ImageData;
   private readonly host: HTMLElement;
+  private readonly apertureInput: HTMLInputElement;
+  private readonly focusInput: HTMLInputElement;
 
   isOpen = false;
   sample = 0;
+  /**
+   * Thin-lens depth of field. aperture 0 = pinhole (default). focusDistance
+   * null = auto (use the snapshot's bounding-box focus). init.ts reads these
+   * into the snapshot camera before each render.
+   */
+  aperture = 0;
+  focusDistance: number | null = null;
   /** Fired when the user clicks × (init.ts wires this to close+terminate). */
   onClose: () => void = () => {};
+  /** Fired when aperture / focus distance change (init.ts re-renders). */
+  onParamsChange: () => void = () => {};
 
   constructor(host: HTMLElement, width = 960, height = 540) {
     this.host = host;
@@ -52,7 +63,47 @@ export class RenderWindow {
     closeBtn.title = 'Close (Esc)';
     closeBtn.addEventListener('click', () => this.onClose());
 
-    header.append(title, this.readout, saveBtn, closeBtn);
+    // Depth-of-field controls: aperture radius + focus distance.
+    const dof = document.createElement('div');
+    dof.className = 'render-win-dof';
+
+    this.apertureInput = document.createElement('input');
+    this.apertureInput.type = 'number';
+    this.apertureInput.className = 'render-win-aperture';
+    this.apertureInput.min = '0';
+    this.apertureInput.step = '0.02';
+    this.apertureInput.value = '0';
+    this.apertureInput.title = 'Aperture radius (0 = pinhole)';
+    this.apertureInput.addEventListener('change', () => {
+      const v = parseFloat(this.apertureInput.value);
+      this.aperture = Number.isFinite(v) && v > 0 ? v : 0;
+      this.apertureInput.value = String(this.aperture);
+      this.onParamsChange();
+    });
+
+    this.focusInput = document.createElement('input');
+    this.focusInput.type = 'number';
+    this.focusInput.className = 'render-win-focus';
+    this.focusInput.min = '0';
+    this.focusInput.step = '0.1';
+    this.focusInput.title = 'Focus distance (blank = auto)';
+    this.focusInput.addEventListener('change', () => {
+      const v = parseFloat(this.focusInput.value);
+      this.focusDistance = Number.isFinite(v) && v > 0 ? v : null;
+      this.onParamsChange();
+    });
+
+    const apLabel = document.createElement('span');
+    apLabel.className = 'render-win-dof-label';
+    apLabel.textContent = 'f';
+    apLabel.title = 'Aperture radius (0 = pinhole)';
+    const fLabel = document.createElement('span');
+    fLabel.className = 'render-win-dof-label';
+    fLabel.textContent = '⟟';
+    fLabel.title = 'Focus distance (blank = auto)';
+    dof.append(apLabel, this.apertureInput, fLabel, this.focusInput);
+
+    header.append(title, this.readout, dof, saveBtn, closeBtn);
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'render-win-canvas';
@@ -80,6 +131,24 @@ export class RenderWindow {
     this.isOpen = false;
     this.root.classList.remove('render-win-open');
     this.root.remove();
+  }
+
+  /** Set the aperture radius and reflect it in the input (0 = pinhole). */
+  setAperture(v: number): void {
+    this.aperture = Number.isFinite(v) && v > 0 ? v : 0;
+    this.apertureInput.value = String(this.aperture);
+  }
+
+  /** Set focus distance; null/≤0 = auto (blank field). */
+  setFocusDistance(v: number | null): void {
+    this.focusDistance = v !== null && Number.isFinite(v) && v > 0 ? v : null;
+    this.focusInput.value = this.focusDistance === null ? '' : String(this.focusDistance);
+  }
+
+  /** Show the effective (auto) focus distance in the field without overriding
+   * an explicit user value — a placeholder-style readout for pinhole default. */
+  showAutoFocus(distance: number): void {
+    if (this.focusDistance === null) this.focusInput.placeholder = distance.toFixed(2);
   }
 
   /** Clear the canvas + counters for a fresh render. */

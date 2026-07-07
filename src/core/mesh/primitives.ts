@@ -222,18 +222,144 @@ export function makeIcoSphere(radius = 1, subdivisions = 2): EditableMesh {
   return EditableMesh.fromData(positions, faces.map((f) => [...f]));
 }
 
-/** A named primitive factory for the Add menu (consumed by P1-6). */
-export interface PrimitiveDef {
-  name: string;
-  make: () => EditableMesh;
+/**
+ * A flat circle in the XZ plane (normal +Y, matching makePlane), centered at
+ * origin. `vertices` verts sit on the ring. When `fillNgon` is true the ring is
+ * capped by a single n-gon face; when false the mesh is just the ring of verts
+ * with NO face — and, because edges in EditableMesh derive from faces, no edges
+ * either (a fill-less circle is invisible in wireframe / has nothing for edit
+ * tools to grab). Fill stays on by default.
+ */
+export function makeCircle(radius = 1, vertices = 32, fillNgon = true): EditableMesh {
+  const n = Math.max(3, Math.floor(vertices));
+  const positions: [number, number, number][] = [];
+  for (let j = 0; j < n; j++) {
+    const theta = (2 * Math.PI * j) / n;
+    positions.push([radius * Math.cos(theta), 0, radius * Math.sin(theta)]);
+  }
+  // Reversed winding so Newell's normal comes out +Y (as makePlane does).
+  const faces: number[][] = fillNgon
+    ? [Array.from({ length: n }, (_, j) => n - 1 - j)]
+    : [];
+  return EditableMesh.fromData(positions, faces);
 }
 
-/** Registry the Add menu consumes, in Blender's Add > Mesh order. */
+/** One adjustable field of a primitive (rendered as a row in the redo panel). */
+export interface PrimParam {
+  key: string;
+  label: string;
+  /** Default value. */
+  value: number | boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  kind: 'number' | 'int' | 'bool';
+}
+
+/** A named primitive factory for the Add menu, now parametric (P9-3). */
+export interface PrimitiveDef {
+  name: string;
+  params: PrimParam[];
+  /** Build the mesh from `values` (missing keys fall back to param defaults). */
+  make: (values?: Record<string, number | boolean>) => EditableMesh;
+}
+
+/** Coerce a raw values bag to concrete typed values against a param schema. */
+function resolveParams(
+  params: PrimParam[],
+  values?: Record<string, number | boolean>,
+): Record<string, number | boolean> {
+  const out: Record<string, number | boolean> = {};
+  for (const p of params) {
+    const raw = values?.[p.key];
+    const v = raw === undefined ? p.value : raw;
+    if (p.kind === 'bool') out[p.key] = Boolean(v);
+    else if (p.kind === 'int') out[p.key] = Math.round(Number(v));
+    else out[p.key] = Number(v);
+  }
+  return out;
+}
+
+const num = (v: Record<string, number | boolean>, k: string): number => v[k] as number;
+const bool = (v: Record<string, number | boolean>, k: string): boolean => v[k] as boolean;
+
+/**
+ * Registry the Add menu consumes, in Blender's Add > Mesh order. Every def's
+ * default `make()` (no values) reproduces the historical geometry byte-for-byte,
+ * so existing scenes and fresh adds look identical.
+ */
 export const PRIMITIVES: PrimitiveDef[] = [
-  { name: 'Plane', make: () => makePlane() },
-  { name: 'Cube', make: () => makeCube() },
-  { name: 'UV Sphere', make: () => makeUvSphere() },
-  { name: 'Ico Sphere', make: () => makeIcoSphere() },
-  { name: 'Cylinder', make: () => makeCylinder() },
-  { name: 'Torus', make: () => makeTorus() },
+  {
+    name: 'Plane',
+    params: [{ key: 'size', label: 'Size', value: 2, min: 0.001, max: 100, step: 0.1, kind: 'number' }],
+    make: (values) => { const v = resolveParams(PRIMITIVES[0].params, values); return makePlane(num(v, 'size')); },
+  },
+  {
+    name: 'Cube',
+    params: [{ key: 'size', label: 'Size', value: 2, min: 0.001, max: 100, step: 0.1, kind: 'number' }],
+    make: (values) => { const v = resolveParams(PRIMITIVES[1].params, values); return makeCube(num(v, 'size') / 2); },
+  },
+  {
+    name: 'Circle',
+    params: [
+      { key: 'radius', label: 'Radius', value: 1, min: 0.001, max: 100, step: 0.1, kind: 'number' },
+      { key: 'vertices', label: 'Vertices', value: 32, min: 3, max: 128, step: 1, kind: 'int' },
+      { key: 'fillNgon', label: 'Fill', value: true, kind: 'bool' },
+    ],
+    make: (values) => {
+      const v = resolveParams(PRIMITIVES[2].params, values);
+      return makeCircle(num(v, 'radius'), num(v, 'vertices'), bool(v, 'fillNgon'));
+    },
+  },
+  {
+    name: 'UV Sphere',
+    params: [
+      { key: 'radius', label: 'Radius', value: 1, min: 0.001, max: 100, step: 0.1, kind: 'number' },
+      { key: 'segments', label: 'Segments', value: 32, min: 3, max: 128, step: 1, kind: 'int' },
+      { key: 'rings', label: 'Rings', value: 16, min: 2, max: 64, step: 1, kind: 'int' },
+    ],
+    make: (values) => {
+      const v = resolveParams(PRIMITIVES[3].params, values);
+      return makeUvSphere(num(v, 'radius'), num(v, 'segments'), num(v, 'rings'));
+    },
+  },
+  {
+    name: 'Ico Sphere',
+    params: [
+      { key: 'radius', label: 'Radius', value: 1, min: 0.001, max: 100, step: 0.1, kind: 'number' },
+      { key: 'subdivisions', label: 'Subdivisions', value: 2, min: 0, max: 4, step: 1, kind: 'int' },
+    ],
+    make: (values) => {
+      const v = resolveParams(PRIMITIVES[4].params, values);
+      return makeIcoSphere(num(v, 'radius'), num(v, 'subdivisions'));
+    },
+  },
+  {
+    name: 'Cylinder',
+    params: [
+      { key: 'radius', label: 'Radius', value: 1, min: 0.001, max: 100, step: 0.1, kind: 'number' },
+      { key: 'depth', label: 'Depth', value: 2, min: 0.001, max: 100, step: 0.1, kind: 'number' },
+      { key: 'vertices', label: 'Vertices', value: 32, min: 3, max: 128, step: 1, kind: 'int' },
+    ],
+    make: (values) => {
+      const v = resolveParams(PRIMITIVES[5].params, values);
+      return makeCylinder(num(v, 'radius'), num(v, 'depth'), num(v, 'vertices'));
+    },
+  },
+  {
+    name: 'Torus',
+    params: [
+      { key: 'majorRadius', label: 'Major Radius', value: 1, min: 0.001, max: 100, step: 0.05, kind: 'number' },
+      { key: 'minorRadius', label: 'Minor Radius', value: 0.25, min: 0.001, max: 100, step: 0.05, kind: 'number' },
+      { key: 'majorSegments', label: 'Major Segments', value: 48, min: 3, max: 128, step: 1, kind: 'int' },
+      { key: 'minorSegments', label: 'Minor Segments', value: 12, min: 3, max: 64, step: 1, kind: 'int' },
+    ],
+    make: (values) => {
+      const v = resolveParams(PRIMITIVES[6].params, values);
+      return makeTorus(
+        num(v, 'majorRadius'), num(v, 'minorRadius'),
+        num(v, 'majorSegments'), num(v, 'minorSegments'),
+      );
+    },
+  },
 ];
