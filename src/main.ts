@@ -12,6 +12,7 @@ import './ui/modifierTab'; // side-effect: registers the Modifiers properties ta
 import './ui/materialTab'; // side-effect: registers the Material properties tab (P8-3)
 import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
 import './ui/cameraTab'; // side-effect: registers the Camera data tab (P8-2)
+import './ui/worldTab'; // side-effect: registers the World tab (P10-4)
 import { initRenderEngine } from './renderEngine/init'; // F12 render engine (P8-4)
 import './core/modifiers/builtins'; // side-effect: registers Mirror + Array modifiers
 import { Topbar } from './ui/topbar';

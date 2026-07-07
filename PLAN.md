@@ -187,3 +187,12 @@ New architecture decisions:
 | P9-6 | Loop select (Alt+click), X-ray select-through, Shift+N recalc normals, Shift+E crease, camera lock-to-view | opus | batch A | verified |
 | P9-7 | Sculpt-lite: Inflate + Grab brushes | opus | P9-6 | verified |
 | P9-8 | The donut dry run: scripted e2e builds the full donut, stage screenshots, final F12 render | opus | all | verified |
+
+### Phase 10 — Collections, camera comfort, themes, world (2026-07-06)
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F10-1 | Theme system core (ThemeSpec registry, viewport palette plumbing, claude + default themes) + collections model (effectiveVisible everywhere, index serialization) | fable | — | verified |
+| P10-1 | Collections UI: outliner groups, M move-to-collection, undo commands | opus | F10-1 | spec-ready |
+| P10-3 | Themes: tokenize css, six 90s themes from Ray's reference, picker UI | opus | F10-1 | spec-ready |
+| P10-4 | World: flat/gradient/HDRI environment (tab, rendered background, tracer sky) | opus | F10-1 | spec-ready |
+| P10-2 | Camera Lock-to-View + passepartout | opus | batch 1 | spec-ready |
