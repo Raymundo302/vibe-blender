@@ -12,27 +12,6 @@
     "pitch": 0.523599
   },
   "activeCamera": 5,
-  "world": {
-    "mode": "gradient",
-    "color": [
-      0.05,
-      0.05,
-      0.05
-    ],
-    "horizon": [
-      0.05,
-      0.05,
-      0.05
-    ],
-    "zenith": [
-      0.11,
-      0.13,
-      0.16
-    ],
-    "strength": 1,
-    "hdri": null
-  },
-  "collections": [],
   "materials": [
     {
       "id": 0,
@@ -51,9 +30,7 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0.4,
-      "subsurfaceRadius": 0.05,
-      "texKind": "none",
-      "texDataUrl": null
+      "subsurfaceRadius": 0.05
     },
     {
       "id": 1,
@@ -72,9 +49,7 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0.6,
-      "subsurfaceRadius": 0.1,
-      "texKind": "none",
-      "texDataUrl": null
+      "subsurfaceRadius": 0.1
     },
     {
       "id": 2,
@@ -93,9 +68,7 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0,
-      "subsurfaceRadius": 0.05,
-      "texKind": "none",
-      "texDataUrl": null
+      "subsurfaceRadius": 0.05
     },
     {
       "id": 3,
@@ -114,9 +87,7 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0,
-      "subsurfaceRadius": 0.05,
-      "texKind": "none",
-      "texDataUrl": null
+      "subsurfaceRadius": 0.05
     }
   ],
   "objects": [
@@ -131,7 +102,6 @@
         0.69
       ],
       "materialId": 1,
-      "collection": null,
       "transform": {
         "position": [
           0,
@@ -13129,7 +13099,6 @@
         0.69
       ],
       "materialId": 0,
-      "collection": null,
       "transform": {
         "position": [
           0,
@@ -20693,7 +20662,6 @@
         0.69
       ],
       "materialId": 2,
-      "collection": null,
       "transform": {
         "position": [
           0,
@@ -21845,7 +21813,6 @@
         0.69
       ],
       "materialId": 3,
-      "collection": null,
       "transform": {
         "position": [
           0,
@@ -21916,7 +21883,6 @@
         0.69
       ],
       "materialId": null,
-      "collection": null,
       "transform": {
         "position": [
           6,
@@ -22102,7 +22068,6 @@
         0.69
       ],
       "materialId": null,
-      "collection": null,
       "transform": {
         "position": [
           2.300337,
@@ -22129,8 +22094,7 @@
       "camera": {
         "focalLength": 50,
         "near": 0.1,
-        "far": 500,
-        "lockToView": false
+        "far": 500
       }
     },
     {
@@ -22144,7 +22108,6 @@
         0.69
       ],
       "materialId": null,
-      "collection": null,
       "transform": {
         "position": [
           4,
@@ -22192,7 +22155,6 @@
         0.69
       ],
       "materialId": null,
-      "collection": null,
       "transform": {
         "position": [
           -4,
@@ -22240,7 +22202,6 @@
         0.69
       ],
       "materialId": null,
-      "collection": null,
       "transform": {
         "position": [
           0,

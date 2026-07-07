@@ -1,8 +1,44 @@
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack, Command } from '../core/undo/UndoStack';
 import type { Material } from '../core/scene/objectData';
+import { srgbToLinear } from '../core/scene/worldData';
 import { registerPropertiesTab } from './propertiesEditor';
 import './materialTab.css';
+
+/** Decoded base-color image cache: linear RGB, row 0 = top. */
+type TexImage = { width: number; height: number; pixels: Float32Array };
+
+/**
+ * Decode a packed image data URL into linear-light pixels for the path tracer
+ * (browser only, worldData HDRI style). Row 0 = top, sRGB→linear. The Rendered
+ * viewport uploads the SAME data URL straight to a GL texture (Renderer), so the
+ * two paths agree without sharing this decode.
+ */
+export function decodeTextureDataUrl(dataUrl: string): Promise<TexImage> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('2d context unavailable')); return; }
+        ctx.drawImage(img, 0, 0);
+        const rgba = ctx.getImageData(0, 0, w, h).data;
+        const pixels = new Float32Array(w * h * 3);
+        for (let p = 0, q = 0; p < rgba.length; p += 4, q += 3) {
+          pixels[q] = srgbToLinear(rgba[p] / 255);
+          pixels[q + 1] = srgbToLinear(rgba[p + 1] / 255);
+          pixels[q + 2] = srgbToLinear(rgba[p + 2] / 255);
+        }
+        resolve({ width: w, height: h, pixels });
+      } catch (e) { reject(e as Error); }
+    };
+    img.onerror = () => reject(new Error('failed to decode texture image'));
+    img.src = dataUrl;
+  });
+}
 
 /**
  * Material properties tab (P8-3) — Blender's material sphere. Manages the scene
@@ -118,6 +154,38 @@ export class MaterialEditCommand implements Command {
   redo(): void { this.write(this.after); }
 }
 
+/** Snapshot of a material's texture state for undo/redo. */
+interface TexState {
+  texKind: Material['texKind'];
+  texDataUrl: string | null;
+  texImage: TexImage | undefined;
+}
+
+/**
+ * Edit a material's texture (kind and/or packed image) in one undo step —
+ * covers both a kind-select change (None/Checker/Image) and an image load
+ * (worldTab HDRI style: one command with old/new url + decoded pixels, so undo
+ * restores the tracer cache too).
+ */
+export class TextureEditCommand implements Command {
+  readonly name = 'Edit Texture';
+
+  constructor(
+    private readonly material: Material,
+    private readonly before: TexState,
+    private readonly after: TexState,
+  ) {}
+
+  private write(s: TexState): void {
+    this.material.texKind = s.texKind;
+    this.material.texDataUrl = s.texDataUrl;
+    this.material.texImage = s.texImage;
+  }
+
+  undo(): void { this.write(this.before); }
+  redo(): void { this.write(this.after); }
+}
+
 // ------------------------------------------------------------- color helpers --
 
 /** 0..1 RGB floats → lowercase "#rrggbb". */
@@ -151,6 +219,10 @@ class MaterialTab {
   private subsurfaceInput!: HTMLInputElement;
   private subsurfaceNum!: HTMLSpanElement;
   private subsurfaceRadiusInput!: HTMLInputElement;
+  private texKindSelect!: HTMLSelectElement;
+  private texImageRow!: HTMLElement;
+  private texFileInput!: HTMLInputElement;
+  private texThumb!: HTMLImageElement;
 
   /** Value captured when an input gained focus — the undo `before`. */
   private editBefore: MaterialFieldValue | null = null;
@@ -191,6 +263,14 @@ class MaterialTab {
     this.body.append(this.fields);
 
     container.append(this.empty, this.body);
+
+    // Debug handle for e2e (mirrors __world). Lets a suite drive an image-texture
+    // load with a generated data URL instead of a real file dialog.
+    (window as unknown as Record<string, unknown>).__materialTab = {
+      material: () => this.material(),
+      loadTexture: (dataUrl: string) => this.loadTextureFromDataUrl(dataUrl),
+    };
+
     this.update();
   }
 
@@ -273,6 +353,31 @@ class MaterialTab {
       () => Math.max(0, parseFloat(this.subsurfaceRadiusInput.value)),
       () => this.material()?.subsurfaceRadius ?? 0.05);
     this.fields.append(this.fieldRow('SSS Radius', this.subsurfaceRadiusInput));
+
+    // Texture kind (None / Checker / Image) — the base-color texture through UVs.
+    this.texKindSelect = document.createElement('select');
+    this.texKindSelect.className = 'material-tab-texkind';
+    for (const [value, label] of [['none', 'None'], ['checker', 'Checker'], ['image', 'Image']] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.texKindSelect.append(opt);
+    }
+    this.texKindSelect.addEventListener('change', () => this.onTexKindChange());
+    this.fields.append(this.fieldRow('Texture', this.texKindSelect));
+
+    // Image row: file picker + thumbnail <img> (NOT a canvas). Shown only when
+    // texKind === 'image'.
+    this.texFileInput = document.createElement('input');
+    this.texFileInput.type = 'file';
+    this.texFileInput.accept = 'image/*';
+    this.texFileInput.className = 'material-tab-texfile';
+    this.texFileInput.addEventListener('change', () => this.onTexFile());
+    this.texThumb = document.createElement('img');
+    this.texThumb.className = 'material-tab-texthumb';
+    this.texThumb.alt = 'texture';
+    this.texImageRow = this.fieldRow('Image', this.texFileInput, this.texThumb);
+    this.fields.append(this.texImageRow);
   }
 
   private slider(cls: string): HTMLInputElement {
@@ -404,6 +509,49 @@ class MaterialTab {
     this.lastSig = null;
   }
 
+  /** Current texture state of a material as a fresh snapshot. */
+  private texState(mat: Material): TexState {
+    return { texKind: mat.texKind, texDataUrl: mat.texDataUrl, texImage: mat.texImage };
+  }
+
+  /** Kind select changed: swap texKind, keeping any packed url so switching back
+   * to Image restores it. One undo command. */
+  private onTexKindChange(): void {
+    const mat = this.material();
+    if (!mat) return;
+    const kind = this.texKindSelect.value as Material['texKind'];
+    if (kind === mat.texKind) return;
+    const before = this.texState(mat);
+    mat.texKind = kind;
+    this.undo.push(new TextureEditCommand(mat, before, this.texState(mat)));
+    this.lastSig = null;
+  }
+
+  private onTexFile(): void {
+    const file = this.texFileInput.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { void this.loadTextureFromDataUrl(String(reader.result)); };
+    reader.readAsDataURL(file);
+  }
+
+  /**
+   * Decode a packed image data URL, set it as the active material's base-color
+   * texture (kind → 'image'), and push ONE undo command with the old/new state.
+   * Exposed via __materialTab for e2e. Returns silently if no material is active.
+   */
+  async loadTextureFromDataUrl(dataUrl: string): Promise<void> {
+    const mat = this.material();
+    if (!mat) return;
+    const image = await decodeTextureDataUrl(dataUrl);
+    const before = this.texState(mat);
+    mat.texKind = 'image';
+    mat.texDataUrl = dataUrl;
+    mat.texImage = image;
+    this.undo.push(new TextureEditCommand(mat, before, this.texState(mat)));
+    this.lastSig = null;
+  }
+
   update(): void {
     const obj = this.scene.activeObject;
     const isMesh = !!obj && obj.kind === 'mesh';
@@ -425,6 +573,7 @@ class MaterialTab {
       obj!.materialId,
       this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
       mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
+      mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}` : '-',
     ].join('#');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -469,6 +618,17 @@ class MaterialTab {
     this.subsurfaceInput.value = String(mat.subsurfaceWeight);
     this.subsurfaceNum.textContent = mat.subsurfaceWeight.toFixed(2);
     this.subsurfaceRadiusInput.value = String(mat.subsurfaceRadius);
+
+    // Texture: kind select + image row (file + thumbnail) visible only for Image.
+    this.texKindSelect.value = mat.texKind;
+    this.texImageRow.style.display = mat.texKind === 'image' ? '' : 'none';
+    if (mat.texKind === 'image' && mat.texDataUrl) {
+      this.texThumb.src = mat.texDataUrl;
+      this.texThumb.style.display = '';
+    } else {
+      this.texThumb.removeAttribute('src');
+      this.texThumb.style.display = 'none';
+    }
   }
 }
 

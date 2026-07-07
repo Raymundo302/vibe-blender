@@ -70,6 +70,7 @@ const VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
 layout(location = 2) in vec3 a_color; // per-face tint (white when unset)
+layout(location = 3) in vec2 a_uv;    // per-corner UV ((0,0) when un-uvd)
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
@@ -77,11 +78,13 @@ uniform mat3 u_normalMat; // WORLD-space normal matrix (model only)
 out vec3 v_worldPos;
 out vec3 v_normal;
 out vec3 v_tint;
+out vec2 v_uv;
 void main() {
   vec4 world = u_model * vec4(a_position, 1.0);
   v_worldPos = world.xyz;
   v_normal = u_normalMat * a_normal;
   v_tint = a_color;
+  v_uv = a_uv;
   gl_Position = u_proj * u_view * world;
 }`;
 
@@ -90,6 +93,11 @@ precision highp float;
 in vec3 v_worldPos;
 in vec3 v_normal;
 in vec3 v_tint;
+in vec2 v_uv;
+
+uniform int u_texKind;      // 0 none, 1 checker, 2 image
+uniform int u_hasTex;       // 1 when an image texture is bound
+uniform sampler2D u_tex;    // base-color image (sRGB-encoded → sampled linear)
 
 uniform vec3 u_eye;
 uniform int u_lightCount;
@@ -130,6 +138,14 @@ void main() {
   vec3 V = normalize(u_eye - v_worldPos);
   float rough = clamp(u_roughness, 0.04, 1.0);
   vec3 baseColor = u_baseColor * v_tint;
+  // Base-color texture through the UVs (matches the tracer's sampleMaterialTexture):
+  // checker = 8×8 parity (even → 0.2 dark, odd → 1.0 light), image = bilinear.
+  if (u_texKind == 1) {
+    float parity = mod(floor(v_uv.x * 8.0) + floor(v_uv.y * 8.0), 2.0);
+    baseColor *= mix(vec3(0.2), vec3(1.0), parity);
+  } else if (u_texKind == 2 && u_hasTex == 1) {
+    baseColor *= texture(u_tex, v_uv).rgb;
+  }
   vec3 F0 = mix(vec3(0.04), baseColor, u_metallic);
 
   // Flat ambient from the world (honest approximation of image-based lighting:
@@ -174,9 +190,18 @@ void main() {
 /** Forward PBR solid pass driven by the scene's light objects + materials. */
 export class RenderedPass {
   readonly shader: Shader;
+  /** 1×1 opaque white — bound to the sampler when no image texture is present,
+   * so the sampler unit is never left pointing at nothing. */
+  private readonly white: WebGLTexture;
 
-  constructor(gl: WebGL2RenderingContext) {
+  constructor(private readonly gl: WebGL2RenderingContext) {
     this.shader = new Shader(gl, VERT, FRAG, 'mesh-rendered');
+    this.white = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.white);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([255, 255, 255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
 
   /** Bind per-frame state: camera + the frame's light set + world ambient. */
@@ -213,6 +238,20 @@ export class RenderedPass {
         mat.emissive[2] * mat.emissiveStrength,
       ),
     );
+    s.setInt('u_texKind', mat.texKind === 'checker' ? 1 : mat.texKind === 'image' ? 2 : 0);
+  }
+
+  /**
+   * Bind the base-color image for the next draw on texture unit 0 (the Renderer
+   * owns the per-material upload cache). Pass null for checker / none — the 1×1
+   * white fallback binds so the sampler unit is always valid.
+   */
+  bindTexture(tex: WebGLTexture | null): void {
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex ?? this.white);
+    this.shader.setInt('u_hasTex', tex ? 1 : 0);
+    this.shader.setInt('u_tex', 0);
   }
 }
 

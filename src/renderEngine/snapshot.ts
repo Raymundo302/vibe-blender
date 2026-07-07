@@ -25,6 +25,15 @@ export interface SnapMaterial {
   subsurfaceWeight?: number;
   /** Mean subsurface scatter distance, world units. Default 0.05. */
   subsurfaceRadius?: number;
+  /** Base-color texture kind (P11), sampled through per-corner UVs. Default 'none'. */
+  texKind?: 'none' | 'checker' | 'image';
+  /**
+   * Decoded image pixels when texKind === 'image' (runtime cache, worldData-
+   * style): length = width*height*3, linear RGB, row 0 = top. null/absent → the
+   * image sample falls back to white (no tint), so a snapshot without decoded
+   * pixels renders like an untextured material.
+   */
+  texImage?: { width: number; height: number; pixels: Float32Array } | null;
 }
 
 /** 0 = point, 1 = sun, 2 = spot (matches renderedPass type codes). */
@@ -126,7 +135,10 @@ function toMat(m: {
   emissiveStrength: number;
   subsurfaceWeight?: number;
   subsurfaceRadius?: number;
+  texKind?: 'none' | 'checker' | 'image';
+  texImage?: { width: number; height: number; pixels: Float32Array };
 }): SnapMaterial {
+  const texKind = m.texKind ?? 'none';
   return {
     baseColor: [m.baseColor[0], m.baseColor[1], m.baseColor[2]],
     metallic: m.metallic,
@@ -135,6 +147,10 @@ function toMat(m: {
     emissiveStrength: m.emissiveStrength,
     subsurfaceWeight: m.subsurfaceWeight ?? 0,
     subsurfaceRadius: m.subsurfaceRadius ?? 0.05,
+    texKind,
+    // Only carry the decoded pixels for image materials; share the Float32Array
+    // (it is immutable per data URL) so the snapshot stays cheap.
+    texImage: texKind === 'image' && m.texImage ? m.texImage : null,
   };
 }
 

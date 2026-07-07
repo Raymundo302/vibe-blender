@@ -50,6 +50,10 @@ export class EditOverlayPass {
   private edgeVa: VertexArray | null = null;
   private vertVa: VertexArray | null = null;
   private fillVa: VertexArray | null = null;
+  // UV seam edges, drawn Blender-red over the cage (P11-1). #d94a4a ≈ (0.851,
+  // 0.290, 0.290). Rebuilt alongside the cage; null when the mesh has no seams.
+  private seamVa: VertexArray | null = null;
+  private seamCount = 0;
 
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.wireShader = new Shader(gl, WIRE_VERT, WIRE_FRAG, 'edit-wire');
@@ -63,6 +67,7 @@ export class EditOverlayPass {
     this.edgeVa?.dispose();
     this.vertVa?.dispose();
     this.fillVa?.dispose();
+    this.seamVa?.dispose();
 
     const data = editOverlayData(mesh, sel);
     this.edgeVa = new VertexArray(this.gl, [
@@ -77,6 +82,29 @@ export class EditOverlayPass {
       data.selFaceVertexCount > 0
         ? new VertexArray(this.gl, [{ location: 0, size: 3, data: data.selFacePositions }])
         : null;
+
+    // Seam overlay: one red line segment per seam edge whose verts still exist.
+    const SEAM = [0.851, 0.290, 0.290] as const; // #d94a4a-ish (Blender seam red)
+    const segs: number[] = [];
+    for (const key2 of mesh.seams) {
+      const [a, b] = key2.split(',').map(Number);
+      const va = mesh.verts.get(a);
+      const vb = mesh.verts.get(b);
+      if (!va || !vb) continue;
+      segs.push(va.co.x, va.co.y, va.co.z, vb.co.x, vb.co.y, vb.co.z);
+    }
+    this.seamCount = segs.length / 3;
+    if (this.seamCount > 0) {
+      const positions = new Float32Array(segs);
+      const colors = new Float32Array(this.seamCount * 3);
+      for (let i = 0; i < colors.length; i += 3) colors.set(SEAM, i);
+      this.seamVa = new VertexArray(this.gl, [
+        { location: 0, size: 3, data: positions },
+        { location: 1, size: 3, data: colors },
+      ]);
+    } else {
+      this.seamVa = null;
+    }
   }
 
   /**
@@ -130,6 +158,13 @@ export class EditOverlayPass {
     this.wireShader.setFloat('u_depthBias', 0.001);
     this.wireShader.setFloat('u_pointSize', 1.0);
     this.edgeVa!.draw(gl.LINES);
+
+    // Seam edges drawn red on top of the cage (slightly larger bias so they win
+    // over the default edges they overlap).
+    if (this.seamVa) {
+      this.wireShader.setFloat('u_depthBias', 0.0013);
+      this.seamVa.draw(gl.LINES);
+    }
 
     // Vert dots only in vert mode, like Blender
     if (sel.elementMode === 'vert') {

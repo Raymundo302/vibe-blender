@@ -504,12 +504,62 @@ export function worldSky(
 }
 
 // ---------------------------------------------------------------------------
+// Base-color textures (P11) — sampled through per-corner UVs, multiplied into
+// the material's albedo. Deterministic, no RNG. Mirrors the renderedPass GLSL:
+// checker = 8×8 parity (even → 0.2 dark, odd → 1.0 light); image = bilinear.
+// ---------------------------------------------------------------------------
+
+/** Bilinear, clamp-to-edge sample of a decoded image into `out` (linear RGB). */
+export function sampleImageBilinear(
+  img: { width: number; height: number; pixels: Float32Array },
+  u: number, v: number,
+  out: [number, number, number],
+): void {
+  const { width: w, height: h, pixels } = img;
+  const fx = u * w - 0.5, fy = v * h - 0.5;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const tx = fx - x0, ty = fy - y0;
+  const cx = (x: number) => (x < 0 ? 0 : x > w - 1 ? w - 1 : x);
+  const cy = (y: number) => (y < 0 ? 0 : y > h - 1 ? h - 1 : y);
+  const at = (x: number, y: number, k: number) => pixels[(cy(y) * w + cx(x)) * 3 + k];
+  for (let k = 0; k < 3; k++) {
+    const a = at(x0, y0, k) * (1 - tx) + at(x0 + 1, y0, k) * tx;
+    const b = at(x0, y0 + 1, k) * (1 - tx) + at(x0 + 1, y0 + 1, k) * tx;
+    out[k] = a * (1 - ty) + b * ty;
+  }
+}
+
+/**
+ * Texture multiplier for a material at UV (u,v): [1,1,1] for 'none' (or an image
+ * material with no decoded pixels). Exported for the unit tests.
+ */
+export function sampleMaterialTexture(
+  mat: SnapMaterial,
+  u: number, v: number,
+  out: [number, number, number] = [0, 0, 0],
+): [number, number, number] {
+  if (mat.texKind === 'checker') {
+    const sum = Math.floor(u * 8) + Math.floor(v * 8);
+    const s = ((sum % 2) + 2) % 2 === 0 ? 0.2 : 1.0;
+    out[0] = s; out[1] = s; out[2] = s;
+  } else if (mat.texKind === 'image' && mat.texImage) {
+    sampleImageBilinear(mat.texImage, u, v, out);
+  } else {
+    out[0] = 1; out[1] = 1; out[2] = 1;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Prepared scene + full path trace.
 // ---------------------------------------------------------------------------
 
 export interface TraceScene {
   tris: Float32Array;
   triMat: Int32Array;
+  /** Per-corner UVs (2 floats × 3 corners per tri), parallel to tris. null when
+   * the snapshot carried none — every hit then samples UV (0,0). */
+  triUV: Float32Array | null;
   materials: SnapMaterial[];
   lights: SnapLight[];
   camera: SnapCamera;
@@ -522,6 +572,7 @@ export function prepareScene(snap: Snapshot): TraceScene {
   return {
     tris: snap.tris,
     triMat: snap.triMat,
+    triUV: snap.triUV ?? null,
     materials: snap.materials,
     lights: snap.lights,
     camera: snap.camera,
@@ -571,6 +622,8 @@ export function traceRay(
   const direct: [number, number, number] = [0, 0, 0];
   const bounceDir: [number, number, number] = [0, 0, 0];
   const skyC: [number, number, number] = [0, 0, 0];
+  const texC: [number, number, number] = [1, 1, 1];
+  const alb: [number, number, number] = [0, 0, 0];
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const hit = scene.bvh
@@ -582,6 +635,19 @@ export function traceRay(
       break;
     }
     const mat = scene.materials[scene.triMat[hit.tri]] ?? scene.materials[0];
+    // Effective albedo = baseColor × texture, sampled through the interpolated
+    // per-corner UV (barycentric: A weight = 1-u-v, B = u, C = v — the corner
+    // order tris/triUV were pushed in). 'none' materials multiply by [1,1,1], so
+    // an untextured hit is byte-identical to the pre-P11 path.
+    alb[0] = mat.baseColor[0]; alb[1] = mat.baseColor[1]; alb[2] = mat.baseColor[2];
+    if (mat.texKind && mat.texKind !== 'none' && scene.triUV) {
+      const o = hit.tri * 6;
+      const w0 = 1 - hit.u - hit.v;
+      const uu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
+      const vv = scene.triUV[o + 1] * w0 + scene.triUV[o + 3] * hit.u + scene.triUV[o + 5] * hit.v;
+      sampleMaterialTexture(mat, uu, vv, texC);
+      alb[0] *= texC[0]; alb[1] *= texC[1]; alb[2] *= texC[2];
+    }
     // Emission.
     const es = mat.emissiveStrength;
     if (es > 0) {
@@ -612,7 +678,7 @@ export function traceRay(
     // Direct lighting (soft shadows via rng; wrapped diffuse when SSS).
     directLighting(
       scene.bvh, scene.tris, hx, hy, hz, nx, ny, nz,
-      mat.baseColor, scene.lights, direct, rng, isSSS ? 1 : 0,
+      alb, scene.lights, direct, rng, isSSS ? 1 : 0,
     );
     rr += tr * direct[0]; rg += tg * direct[1]; rb += tb * direct[2];
 
@@ -636,7 +702,7 @@ export function traceRay(
       dx = bx * inv; dy = by * inv; dz = bz * inv;
       // Keep the reflection in the upper hemisphere.
       if (dx * nx + dy * ny + dz * nz < 0) { dx = -dx; dy = -dy; dz = -dz; }
-      tr *= mat.baseColor[0]; tg *= mat.baseColor[1]; tb *= mat.baseColor[2];
+      tr *= alb[0]; tg *= alb[1]; tb *= alb[2];
       ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
     } else if (isSSS) {
       // Dip the continuation origin below the surface by a random distance ~
@@ -645,9 +711,9 @@ export function traceRay(
       const dScatter = (mat.subsurfaceRadius ?? 0) * rng();
       cosineHemisphere(nx, ny, nz, rng, bounceDir);
       dx = bounceDir[0]; dy = bounceDir[1]; dz = bounceDir[2];
-      tr *= Math.min(1, mat.baseColor[0]);
-      tg *= Math.min(1, mat.baseColor[1]);
-      tb *= Math.min(1, mat.baseColor[2]);
+      tr *= Math.min(1, alb[0]);
+      tg *= Math.min(1, alb[1]);
+      tb *= Math.min(1, alb[2]);
       ox = hx - nx * dScatter + dx * EPS;
       oy = hy - ny * dScatter + dy * EPS;
       oz = hz - nz * dScatter + dz * EPS;
@@ -655,7 +721,7 @@ export function traceRay(
       cosineHemisphere(nx, ny, nz, rng, bounceDir);
       dx = bounceDir[0]; dy = bounceDir[1]; dz = bounceDir[2];
       // Cosine-weighted pdf cancels the cosine term → throughput *= albedo.
-      tr *= mat.baseColor[0]; tg *= mat.baseColor[1]; tb *= mat.baseColor[2];
+      tr *= alb[0]; tg *= alb[1]; tb *= alb[2];
       ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
     }
   }

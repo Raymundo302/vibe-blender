@@ -12,7 +12,6 @@ import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { LoopCutOperator } from '../tools/loopCut';
 import { BevelOperator } from '../tools/bevel';
 import { CreaseOperator } from '../tools/creaseOp';
-import { bridgeLoops } from '../core/mesh/ops/bridge';
 import { fillVerts, fillEdges } from '../core/mesh/ops/fill';
 import { subdivideFaces } from '../core/mesh/ops/subdivide';
 import { duplicateFaces } from '../core/mesh/ops/duplicateFaces';
@@ -41,6 +40,8 @@ import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
 import { CollectionMenu } from '../ui/collectionMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
+import { EdgeMenu } from '../ui/edgeMenu';
+import { UvMenu } from '../ui/uvMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 import { TransformCommand } from '../core/undo/commands';
 import { snapState } from '../core/snap';
@@ -327,6 +328,8 @@ export class InputManager {
   private addMenu: AddMenu | null = null;
   private collectionMenu: CollectionMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
+  private edgeMenu: EdgeMenu | null = null;
+  private uvMenu: UvMenu | null = null;
 
   /** Lock-Camera-to-View session (P10-2). While in camera view with the viewed
    *  camera's lockToView on, MMB/wheel drive this rig instead of the main
@@ -1128,28 +1131,45 @@ export class InputManager {
       this.startOperator(new CreaseOperator());
       return;
     }
-    // Ctrl+E: bridge two selected edge loops into a ring of quads. Edge mode
-    // only; the op reports its own error (mismatched/too-many loops) with no
-    // mutation. Placed before plain-E extrude (which guards !e.ctrlKey).
+    // Ctrl+E: open the Edge menu at the pointer (Mark Seam / Clear Seam / Bridge
+    // Edge Loops) — Blender's Ctrl+E menu (P11-1). Replaces the old direct
+    // Ctrl+E→bridge binding; bridge is now a menu item (see edgeMenu.ts). Placed
+    // before plain-E extrude (which guards !e.ctrlKey).
     if (key === 'e' && e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
-      if (edit.elementMode !== 'edge') {
-        this.ctx.setStatus('Bridge Edge Loops: edge mode only');
-        return;
-      }
-      const edgeKeys = new Set(edit.edges);
-      let result!: { newFaceIds: number[] } | { error: string };
-      const cmd = MeshEditCommand.capture('Bridge Edge Loops', mesh, () => {
-        result = bridgeLoops(mesh, edgeKeys);
+      if (this.edgeMenu) { this.edgeMenu.close(); return; }
+      this.edgeMenu = new EdgeMenu({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        sel: edit,
+        mesh,
+        undo: this.ctx.undo,
+        setStatus: (t) => this.ctx.setStatus(t),
+        onClose: () => { this.edgeMenu = null; },
       });
-      if ('error' in result) {
-        this.ctx.setStatus(`Bridge: ${result.error}`);
-        return; // nothing mutated — drop the no-op command
-      }
-      this.ctx.undo.push(cmd);
-      edit.prune(mesh);
-      edit.touch();
-      this.ctx.setStatus(`Bridged loops — ${result.newFaceIds.length} faces`);
+      return;
+    }
+    // U: open the UV Mapping menu (Unwrap / Smart UV Project / Project From
+    // View) at the pointer (P11-1). Each op runs on the selected faces, or all
+    // faces when none are selected (documented in uvMenu.ts).
+    if (key === 'u' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      e.preventDefault();
+      if (this.uvMenu) { this.uvMenu.close(); return; }
+      const obj = scene.editObject;
+      if (!obj) return;
+      this.uvMenu = new UvMenu({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        obj,
+        sel: edit,
+        undo: this.ctx.undo,
+        camera: this.ctx.camera,
+        viewportSize: () => this.ctx.viewportSize(),
+        setStatus: (t) => this.ctx.setStatus(t),
+        onClose: () => { this.uvMenu = null; },
+      });
       return;
     }
     // E: extrude. Face mode rides the region along its average normal; vert/edge

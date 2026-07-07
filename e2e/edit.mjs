@@ -512,19 +512,31 @@ runE2e(async (t) => {
   const bFaces = () => t.evaluate('window.__app.scene.editObject.mesh.faces.size');
   const facesBeforeBridge = await bFaces();
 
-  // Ctrl+E in vert mode: status message, no mutation.
+  // Ctrl+E now opens the Edge menu (P11-1); Bridge Edge Loops is an item in it.
+  // Click that item to drive bridge from the menu.
+  const clickBridge = () => t.evaluate(`(() => {
+    const btn = [...document.querySelectorAll('.add-menu-item')].find((b) => b.textContent === 'Bridge Edge Loops');
+    if (btn) { btn.click(); return true; }
+    return false;
+  })()`);
+
+  // Ctrl+E in vert mode → menu → Bridge item: status message, no mutation.
   await t.key('1', 'Digit1');
   await t.key('a', 'KeyA'); // select all verts
-  await t.key('e', 'KeyE', 2); // ctrl+e
-  t.check('Ctrl+E in vert mode shows edge-mode-only status',
+  await t.key('e', 'KeyE', 2); // ctrl+e → Edge menu
+  t.check('Ctrl+E opens the Edge menu', await clickBridge());
+  await t.sleep(80);
+  t.check('Bridge in vert mode shows edge-mode-only status',
     (await t.evaluate(`document.getElementById('status').textContent`)).includes('edge mode only'));
-  t.check('Ctrl+E in vert mode mutates nothing', (await bFaces()) === facesBeforeBridge);
+  t.check('Bridge in vert mode mutates nothing', (await bFaces()) === facesBeforeBridge);
 
-  // Edge mode, select all → Ctrl+E bridges the two loops (+4 faces).
+  // Edge mode, select all → Ctrl+E menu → Bridge bridges the two loops (+4 faces).
   await t.key('2', 'Digit2');
   await t.key('a', 'KeyA'); // select all 8 edges
   t.check('all 8 edges selected for bridge', (await editSel('e.edges.size')) === 8);
-  await t.key('e', 'KeyE', 2); // ctrl+e
+  await t.key('e', 'KeyE', 2); // ctrl+e → Edge menu
+  await clickBridge();
+  await t.sleep(80);
   t.check('bridge added 4 faces', (await bFaces()) === facesBeforeBridge + 4,
     `${facesBeforeBridge} → ${await bFaces()}`);
   t.check('bridge status reported', (await t.evaluate(`document.getElementById('status').textContent`)).startsWith('Bridged'));

@@ -8,6 +8,7 @@ import { InputManager } from './input/InputManager';
 import { WorkspaceManager, type EditorFactory, type WorkspaceConfig } from './ui/workspace';
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesEditor } from './ui/propertiesEditor';
+import { UVEditor } from './ui/uvEditor';
 import './ui/modifierTab'; // side-effect: registers the Modifiers properties tab
 import './ui/materialTab'; // side-effect: registers the Material properties tab (P8-3)
 import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
@@ -263,6 +264,11 @@ const editorFactories: EditorFactory[] = [
       return wrapPanel('Properties', editor);
     },
   },
+  {
+    type: 'uv',
+    title: 'UV Editor',
+    create: () => new UVEditor({ scene, undo }),
+  },
 ];
 
 /** Adapt a Panel (element + update) into an editor instance with a title bar. */
@@ -291,6 +297,9 @@ const DEFAULT_WORKSPACES: WorkspaceConfig[] = [
       { size: 0.16, areas: [{ editor: 'properties', size: 1 }] },
     ],
   },
+  // NOTE: a dedicated 'UV Editing' workspace is intentionally NOT added — the
+  // frozen workspace e2e asserts exactly two tabs. The 'UV Editor' is reachable
+  // from any area's editor dropdown instead (like switching any editor type).
 ];
 
 const workspaceRoot = document.getElementById('workspace-root') as HTMLElement;

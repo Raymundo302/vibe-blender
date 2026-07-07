@@ -53,3 +53,22 @@
   flex: none;
   text-align: right;
 }
+
+.material-tab-texkind {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-texfile {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-texthumb {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  image-rendering: pixelated;
+}

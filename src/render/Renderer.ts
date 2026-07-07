@@ -19,7 +19,7 @@ import { RenderedPass, WorldBackgroundPass, collectLights } from './passes/rende
 import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
-import { cameraFovY } from '../core/scene/objectData';
+import { cameraFovY, type Material } from '../core/scene/objectData';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
@@ -92,6 +92,12 @@ export class Renderer {
   private hdriTexture: WebGLTexture | null = null;
   /** The `world.hdri` data URL currently uploaded (null tracks "none"). */
   private hdriUrl: string | null = null;
+  /**
+   * Lazy per-material base-color texture cache (P11), keyed by material id. `url`
+   * tracks which data URL is uploaded so a texDataUrl change re-uploads; `tex`
+   * stays null while the async image decodes (falls back to white until ready).
+   */
+  private readonly matTextures = new Map<number, { url: string; tex: WebGLTexture | null }>();
 
   /**
    * Whether the translate gizmo may draw / be picked. InputManager clears this
@@ -206,6 +212,39 @@ export class Renderer {
   }
 
   /**
+   * Base-color image texture for an image material, uploaded lazily and cached by
+   * material id (mirrors the HDRI upload). Returns null while the async decode is
+   * in flight or for non-image materials — the RenderedPass then binds white.
+   * A changed texDataUrl triggers a fresh upload; the old GL texture is deleted.
+   */
+  private materialTexture(mat: Material): WebGLTexture | null {
+    if (mat.texKind !== 'image' || !mat.texDataUrl) return null;
+    const url = mat.texDataUrl;
+    const cached = this.matTextures.get(mat.id);
+    if (cached && cached.url === url) return cached.tex;
+    if (cached?.tex) this.ctx.gl.deleteTexture(cached.tex);
+    const holder = { url, tex: null as WebGLTexture | null };
+    this.matTextures.set(mat.id, holder);
+    const gl = this.ctx.gl;
+    const img = new Image();
+    img.onload = () => {
+      if (holder.url !== mat.texDataUrl) return; // stale (url changed again)
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      holder.tex = tex;
+    };
+    img.onerror = () => { /* leave white fallback */ };
+    img.src = url;
+    return null;
+  }
+
+  /**
    * Advance the shading mode one step (matcap → wireframe → studio → matcap)
    * and return the new mode. Called by the Z keybind and the topbar chip.
    */
@@ -290,7 +329,9 @@ export class Renderer {
         new Vec3(amb[0] * k, amb[1] * k, amb[2] * k));
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
-        this.renderedPass.setObject(obj.transform.matrix(), scene.materialOf(obj));
+        const mat = scene.materialOf(obj);
+        this.renderedPass.setObject(obj.transform.matrix(), mat);
+        this.renderedPass.bindTexture(this.materialTexture(mat));
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else {
