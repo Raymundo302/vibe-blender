@@ -44,6 +44,14 @@ export class EditableMesh {
    * per-instance colors. Faces without an entry render untinted (white).
    */
   readonly faceTints = new Map<number, [number, number, number]>();
+  /**
+   * Per-face-corner UV coordinates (P11): faceId → [u,v] per corner, parallel
+   * to face.verts. Corner storage (Blender's loops) lets seams give the same
+   * vert different UVs per island. Faces without an entry sample (0,0).
+   */
+  readonly uvs = new Map<number, [number, number][]>();
+  /** UV seam edges (P11), keyed by edgeKey — consumed by the unwrapper. */
+  readonly seams = new Set<string>();
   version = 0;
 
   private nextVertId = 0;
@@ -98,6 +106,36 @@ export class EditableMesh {
   /** Crease weight of the edge between two verts (0 when unset). */
   crease(a: number, b: number): number {
     return this.creases.get(EditableMesh.edgeKey(a, b)) ?? 0;
+  }
+
+  /**
+   * Set a face's per-corner UVs. Length must match the face's corner count.
+   * Pass null to clear. Bumps version (GPU re-upload) but keeps topology.
+   */
+  setFaceUVs(faceId: number, uvs: [number, number][] | null): void {
+    const face = this.faces.get(faceId);
+    if (!face) throw new Error(`No face ${faceId}`);
+    if (uvs === null) {
+      this.uvs.delete(faceId);
+    } else {
+      if (uvs.length !== face.verts.length) {
+        throw new Error(`Face ${faceId} has ${face.verts.length} corners, got ${uvs.length} UVs`);
+      }
+      this.uvs.set(faceId, uvs.map(([u, v]) => [u, v] as [number, number]));
+    }
+    this.version++;
+  }
+
+  /** Mark or clear a UV seam on the edge between two verts. Bumps version. */
+  setSeam(a: number, b: number, on: boolean): void {
+    const key = EditableMesh.edgeKey(a, b);
+    if (on) this.seams.add(key);
+    else this.seams.delete(key);
+    this.version++;
+  }
+
+  isSeam(a: number, b: number): boolean {
+    return this.seams.has(EditableMesh.edgeKey(a, b));
   }
 
   edges(): Map<string, Edge> {
@@ -211,6 +249,8 @@ export class EditableMesh {
     for (const f of this.faces.values()) copy.faces.set(f.id, { id: f.id, verts: [...f.verts] });
     for (const [k, w] of this.creases) copy.creases.set(k, w);
     for (const [f, t] of this.faceTints) copy.faceTints.set(f, [t[0], t[1], t[2]]);
+    for (const [f, us] of this.uvs) copy.uvs.set(f, us.map(([u, v]) => [u, v] as [number, number]));
+    for (const s of this.seams) copy.seams.add(s);
     copy.nextVertId = this.nextVertId;
     copy.nextFaceId = this.nextFaceId;
     copy.version = this.version;
@@ -224,10 +264,14 @@ export class EditableMesh {
     this.faces.clear();
     this.creases.clear();
     this.faceTints.clear();
+    this.uvs.clear();
+    this.seams.clear();
     for (const v of other.verts.values()) this.verts.set(v.id, { id: v.id, co: v.co });
     for (const f of other.faces.values()) this.faces.set(f.id, { id: f.id, verts: [...f.verts] });
     for (const [k, w] of other.creases) this.creases.set(k, w);
     for (const [f, t] of other.faceTints) this.faceTints.set(f, [t[0], t[1], t[2]]);
+    for (const [f, us] of other.uvs) this.uvs.set(f, us.map(([u, v]) => [u, v] as [number, number]));
+    for (const s of other.seams) this.seams.add(s);
     this.nextVertId = (other as EditableMesh)['nextVertId'];
     this.nextFaceId = (other as EditableMesh)['nextFaceId'];
     this.touch();

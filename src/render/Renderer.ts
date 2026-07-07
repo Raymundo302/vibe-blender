@@ -163,6 +163,7 @@ export class Renderer {
         { location: 0, size: 3, data: data.trianglePositions },
         { location: 1, size: 3, data: data.triangleNormals },
         { location: 2, size: 3, data: data.triangleColors },
+        { location: 3, size: 2, data: data.triangleUVs },
       ]),
       edges: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.edgePositions },

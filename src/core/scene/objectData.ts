@@ -95,6 +95,12 @@ export interface Material {
   subsurfaceWeight: number;
   /** Mean scatter distance in world units (Blender's Scale, roughly). */
   subsurfaceRadius: number;
+  /** Base-color texture (P11): none, procedural checker, or a packed image. */
+  texKind: 'none' | 'checker' | 'image';
+  /** Packed image as a data URL when texKind === 'image' (worldData-style). */
+  texDataUrl: string | null;
+  /** Runtime decoded pixels cache — NOT serialized (rebuilt on load/select). */
+  texImage?: { width: number; height: number; pixels: Float32Array };
 }
 
 /** What objects without an assigned material render as (Blender's grey). */
@@ -108,6 +114,8 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   emissiveStrength: 0,
   subsurfaceWeight: 0,
   subsurfaceRadius: 0.05,
+  texKind: 'none' as const,
+  texDataUrl: null,
 });
 
 /** Fresh mutable material with default params (scene assigns the id). */
@@ -122,5 +130,7 @@ export function makeMaterial(id: number, name: string): Material {
     emissiveStrength: 0,
     subsurfaceWeight: 0,
     subsurfaceRadius: 0.05,
+    texKind: 'none',
+    texDataUrl: null,
   };
 }

@@ -162,6 +162,14 @@ function meshAttrs(mesh: EditableMesh): Record<string, unknown> {
     .filter(([f]) => mesh.faces.has(f))
     .map(([f, c]) => [f, num(c[0]), num(c[1]), num(c[2])]);
   if (tints.length > 0) out.tints = tints;
+  const uvs = [...mesh.uvs.entries()]
+    .filter(([f]) => mesh.faces.has(f))
+    .map(([f, us]) => [f, ...us.flatMap(([u, v]) => [num(u), num(v)])]);
+  if (uvs.length > 0) out.uvs = uvs;
+  const seams = [...mesh.seams]
+    .map((key) => key.split(',').map(Number))
+    .filter(([a, b]) => mesh.verts.has(a) && mesh.verts.has(b));
+  if (seams.length > 0) out.seams = seams;
   return out;
 }
 
@@ -209,6 +217,8 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       emissiveStrength: num(m.emissiveStrength),
       subsurfaceWeight: num(m.subsurfaceWeight),
       subsurfaceRadius: num(m.subsurfaceRadius),
+      texKind: m.texKind,
+      texDataUrl: m.texDataUrl,
     })),
     objects: scene.objects.map((o) => serializeObject(o, scene)),
   };
@@ -224,6 +234,10 @@ interface MeshData {
   creases: [number, number, number][];
   /** [faceId, r, g, b] tint entries (v3 optional). */
   tints: [number, number, number, number][];
+  /** [faceId, u0, v0, u1, v1, ...] per-corner UV entries (P11 optional). */
+  uvs: number[][];
+  /** [vertA, vertB] seam edges (P11 optional). */
+  seams: [number, number][];
 }
 interface ModifierData {
   type: string;
@@ -241,6 +255,8 @@ interface MaterialData {
   emissiveStrength: number;
   subsurfaceWeight: number;
   subsurfaceRadius: number;
+  texKind: 'none' | 'checker' | 'image';
+  texDataUrl: string | null;
 }
 interface CollectionData {
   name: string;
@@ -412,6 +428,18 @@ function parseMaterials(v: unknown): MaterialData[] {
       emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
       subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
       subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
+      texKind: (() => {
+        if (mat.texKind === undefined) return 'none' as const;
+        if (mat.texKind !== 'none' && mat.texKind !== 'checker' && mat.texKind !== 'image') {
+          fail(`materials[${mi}].texKind must be none|checker|image`);
+        }
+        return mat.texKind;
+      })(),
+      texDataUrl: (() => {
+        if (mat.texDataUrl === undefined || mat.texDataUrl === null) return null;
+        if (typeof mat.texDataUrl !== 'string') fail(`materials[${mi}].texDataUrl must be a string or null`);
+        return mat.texDataUrl;
+      })(),
     };
   });
 }
@@ -508,6 +536,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     return [f[0] as number, ids] as [number, number[]];
   });
   const faceIds = new Set(faces.map((f) => f[0]));
+  const faceCorners = new Map(faces.map((f) => [f[0], f[1].length]));
 
   const creases: [number, number, number][] = [];
   if (m.creases !== undefined) {
@@ -528,6 +557,31 @@ function parseObject(o: unknown, i: number): ObjectData {
       tints.push(a as [number, number, number, number]);
     }
   }
+  const uvs: number[][] = [];
+  if (m.uvs !== undefined) {
+    if (!Array.isArray(m.uvs)) fail(`objects[${i}].mesh.uvs must be an array`);
+    for (const [ui, entry] of (m.uvs as unknown[]).entries()) {
+      if (!Array.isArray(entry) || entry.length < 3 || entry.some((n) => typeof n !== 'number' || !Number.isFinite(n))) {
+        fail(`objects[${i}].mesh.uvs[${ui}] must be [faceId, u0, v0, ...]`);
+      }
+      const e = entry as number[];
+      const corners = faceCorners.get(e[0]);
+      if (corners === undefined) fail(`objects[${i}].mesh.uvs[${ui}] references a missing face`);
+      if (e.length !== 1 + corners * 2) {
+        fail(`objects[${i}].mesh.uvs[${ui}] needs ${corners} uv pairs for face ${e[0]}`);
+      }
+      uvs.push(e);
+    }
+  }
+  const seams: [number, number][] = [];
+  if (m.seams !== undefined) {
+    if (!Array.isArray(m.seams)) fail(`objects[${i}].mesh.seams must be an array`);
+    for (const [si, s] of (m.seams as unknown[]).entries()) {
+      const a = numArray(s, 2, `objects[${i}].mesh.seams[${si}]`);
+      if (!vertIds.has(a[0]) || !vertIds.has(a[1])) fail(`objects[${i}].mesh.seams[${si}] references a missing vert`);
+      seams.push(a as [number, number]);
+    }
+  }
 
   const data: ObjectData = {
     kind,
@@ -540,7 +594,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
-    mesh: { verts, faces, creases, tints },
+    mesh: { verts, faces, creases, tints, uvs, seams },
     modifiers: parseModifiers(obj.modifiers, i),
   };
 
@@ -603,6 +657,12 @@ function buildMesh(data: MeshData): EditableMesh {
   }
   for (const [a, b, w] of data.creases) mesh.creases.set(EditableMesh.edgeKey(a, b), w);
   for (const [f, r, g, bl] of data.tints) mesh.faceTints.set(f, [r, g, bl]);
+  for (const entry of data.uvs) {
+    const pairs: [number, number][] = [];
+    for (let k = 1; k < entry.length; k += 2) pairs.push([entry[k], entry[k + 1]]);
+    mesh.uvs.set(entry[0], pairs);
+  }
+  for (const [a, b] of data.seams) mesh.seams.add(EditableMesh.edgeKey(a, b));
   const priv = mesh as unknown as { nextVertId: number; nextFaceId: number; version: number };
   priv.nextVertId = maxVert + 1;
   priv.nextFaceId = maxFace + 1;
@@ -665,6 +725,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       emissiveStrength: md.emissiveStrength,
       subsurfaceWeight: md.subsurfaceWeight,
       subsurfaceRadius: md.subsurfaceRadius,
+      texKind: md.texKind,
+      texDataUrl: md.texDataUrl,
     };
     scene.materials.push(mat);
     if (md.id > maxMaterialId) maxMaterialId = md.id;

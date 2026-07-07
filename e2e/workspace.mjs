@@ -24,7 +24,7 @@ runE2e(async (t) => {
   })()`);
   await t.sleep(150);
   t.check('viewport swapped into the outliner area (still exactly one canvas)',
-    (await t.evaluate(`document.querySelectorAll('canvas').length`)) === 1);
+    (await t.evaluate(`document.querySelectorAll('#viewport').length`)) === 1);
   t.check('displaced area took the outliner',
     (await t.evaluate(`[...document.querySelectorAll('.wsp-area-select')].filter((s) => s.value === 'outliner').length`)) === 1);
   const smallCanvas = await t.evaluate(`document.querySelector('canvas').getBoundingClientRect().width`);
@@ -69,7 +69,7 @@ runE2e(async (t) => {
   t.check('Modeling tab activates', await q('.wsp-tab-active', `el.dataset.workspace === 'Modeling'`));
   t.check('Modeling has two areas', (await t.evaluate(`document.querySelectorAll('.wsp-area').length`)) === 2);
   t.check('canvas survived the workspace switch',
-    (await t.evaluate(`document.querySelectorAll('canvas').length`)) === 1);
+    (await t.evaluate(`document.querySelectorAll('#viewport').length`)) === 1);
 
   // Layout choices persist to localStorage.
   t.check('layout persisted', await t.evaluate(

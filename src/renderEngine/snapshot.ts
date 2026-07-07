@@ -107,6 +107,9 @@ export interface Snapshot {
   tris: Float32Array;
   /** Material index (into `materials`) per triangle. 0 = the default material. */
   triMat: Int32Array;
+  /** Per-corner UV (2 floats × 3 corners per tri), parallel to tris (P11).
+   * Optional so hand-built test snapshots stay valid; absent → all (0,0). */
+  triUV?: Float32Array;
   /** Material library; index 0 is always the default grey material. */
   materials: SnapMaterial[];
   lights: SnapLight[];
@@ -154,6 +157,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   // --- geometry ---
   const triPos: number[] = [];
   const triMatArr: number[] = [];
+  const triUVArr: number[] = [];
   /** Derived tinted materials, keyed by base index + tint (see face loop). */
   const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
@@ -172,6 +176,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
       const vs = face.verts;
       const a = world.get(vs[0]);
       if (!a) continue;
+      const faceUVs = mesh.uvs.get(face.id);
       // Per-face tints (Scatter's per-instance colors) become DERIVED materials
       // (baseColor × tint), deduped — the tracer itself stays tint-unaware.
       // Scatter draws from a small hue set, so this adds at most a dozen entries.
@@ -197,6 +202,10 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
         const c = world.get(vs[i + 1]);
         if (!b || !c) continue;
         triPos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+        for (const corner of [0, i, i + 1]) {
+          const uv = faceUVs?.[corner];
+          triUVArr.push(uv?.[0] ?? 0, uv?.[1] ?? 0);
+        }
         triMatArr.push(faceMi);
       }
     }
@@ -243,6 +252,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   return {
     tris,
     triMat: Int32Array.from(triMatArr),
+    triUV: new Float32Array(triUVArr),
     materials,
     lights,
     camera,
