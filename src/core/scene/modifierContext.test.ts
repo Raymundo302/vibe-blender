@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { Scene } from './Scene';
 import { makeCube } from '../mesh/primitives';
 import { EditableMesh } from '../mesh/EditableMesh';
@@ -90,5 +90,53 @@ describe('crease + tint attributes (P9 core)', () => {
     expect(data.triangleColors[1]).toBe(0);
     expect(data.triangleColors[data.triangleColors.length - 1]).toBe(1);
     expect(mesh.clone().faceTints.get(faceId)).toEqual([1, 0, 0]);
+  });
+});
+
+describe('ApplyModifierCommand with object-referencing modifiers (fix-round regression)', () => {
+  // ApplyModifierCommand snapshots stacks via cloneModifier → the registry,
+  // so the fake type must be registered (duplicate registrations are ignored).
+  beforeAll(async () => {
+    const { registerModifier } = await import('../modifiers/Modifier');
+    registerModifier('test-copier', 'Test Copier', (params) =>
+      targetCopier(typeof params?.target === 'number' ? params.target : -1));
+  });
+
+  it('copyFrom(self) is a safe no-op', async () => {
+    const { makeCube } = await import('../mesh/primitives');
+    const mesh = makeCube();
+    mesh.copyFrom(mesh);
+    expect(mesh.verts.size).toBe(8);
+    expect(mesh.faces.size).toBe(6);
+  });
+
+  it('baking a target modifier through ApplyModifierCommand threads the ctx', async () => {
+    const { ApplyModifierCommand } = await import('../undo/modifierCommands');
+    const { makeCube } = await import('../mesh/primitives');
+    const scene = new Scene();
+    const host = scene.add('Host', makeCube());
+    const target = scene.add('Target', makeCube());
+    target.mesh.addVert(new Vec3(5, 5, 5)); // distinguishable: 9 verts
+    host.modifiers.push(targetCopier(target.id));
+    host.modifiersVersion++;
+
+    const cmd = new ApplyModifierCommand(host, host.modifiers[0], scene.modifierContext(host));
+    expect(host.mesh.verts.size).toBe(9); // baked = target's evaluated mesh
+    expect(host.modifiers.length).toBe(0);
+    cmd.undo();
+    expect(host.mesh.verts.size).toBe(8);
+    expect(host.modifiers.length).toBe(1);
+  });
+
+  it('baking WITHOUT ctx no longer corrupts the mesh (identity bake)', async () => {
+    const { ApplyModifierCommand } = await import('../undo/modifierCommands');
+    const { makeCube } = await import('../mesh/primitives');
+    const scene = new Scene();
+    const host = scene.add('Host', makeCube());
+    const target = scene.add('Target', makeCube());
+    host.modifiers.push(targetCopier(target.id));
+    host.modifiersVersion++;
+    new ApplyModifierCommand(host, host.modifiers[0]); // no ctx: identity apply
+    expect(host.mesh.verts.size).toBe(8); // was 0 before the fix
   });
 });

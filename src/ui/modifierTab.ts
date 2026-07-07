@@ -183,7 +183,7 @@ class ModifierTab {
       });
     });
     const apply = this.iconBtn('Apply', 'Apply modifier to base mesh', index !== 0, () => {
-      this.undo.push(new ApplyModifierCommand(obj, mod));
+      this.undo.push(new ApplyModifierCommand(obj, mod, this.scene.modifierContext(obj)));
     });
     apply.classList.add('modifier-apply');
     apply.style.width = 'auto';

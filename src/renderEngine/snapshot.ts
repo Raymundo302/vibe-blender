@@ -120,6 +120,8 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   // --- geometry ---
   const triPos: number[] = [];
   const triMatArr: number[] = [];
+  /** Derived tinted materials, keyed by base index + tint (see face loop). */
+  const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
     if (obj.kind !== 'mesh' || !obj.visible) continue;
     const mesh = obj.evaluatedMesh(scene.modifierContext(obj));
@@ -136,12 +138,32 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
       const vs = face.verts;
       const a = world.get(vs[0]);
       if (!a) continue;
+      // Per-face tints (Scatter's per-instance colors) become DERIVED materials
+      // (baseColor × tint), deduped — the tracer itself stays tint-unaware.
+      // Scatter draws from a small hue set, so this adds at most a dozen entries.
+      let faceMi = mi;
+      const tint = mesh.faceTints.get(face.id);
+      if (tint) {
+        const key = `${mi}:${tint[0].toFixed(4)},${tint[1].toFixed(4)},${tint[2].toFixed(4)}`;
+        let ti = tintedIndex.get(key);
+        if (ti === undefined) {
+          const base = materials[mi];
+          ti = materials.length;
+          materials.push({
+            ...base,
+            baseColor: [base.baseColor[0] * tint[0], base.baseColor[1] * tint[1], base.baseColor[2] * tint[2]],
+            emissive: [...base.emissive] as [number, number, number],
+          });
+          tintedIndex.set(key, ti);
+        }
+        faceMi = ti;
+      }
       for (let i = 1; i + 1 < vs.length; i++) {
         const b = world.get(vs[i]);
         const c = world.get(vs[i + 1]);
         if (!b || !c) continue;
         triPos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-        triMatArr.push(mi);
+        triMatArr.push(faceMi);
       }
     }
   }

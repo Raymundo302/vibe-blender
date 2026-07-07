@@ -58,6 +58,18 @@ Save PNG.
 - **GPU rendering, denoising, light probes, compositing**: the tracer just
   takes more samples.
 
+## STATUS 2026-07-06 (Phase 9 COMPLETE)
+Every must-have below shipped and was adversarially verified (see PLAN.md
+Phase 9). The dry run exists: `e2e/donut.mjs` builds the complete donut —
+op-panel torus → icing (shrinkwrap+solidify+creased-subsurf) → drips →
+sculpt → plate → materials with SSS → scattered pastel sprinkles → three-lamp
+rig → path-traced hero render with DoF. Findings + punch list:
+`research/DONUT-RUN.md`; committable scene: `research/donut.vibe.json`.
+Fix round closed the two real bugs the run found (ApplyModifierCommand ctx
+threading + copyFrom(self) guard; tracer honors faceTints via derived
+materials). Remaining polish (non-blocking): lock-to-view framing distance,
+proportional default radius.
+
 ## Suggested build order (P9)
 1. D5 Solidify + D7 crease + D8 merge-by-distance (mesh/modifier core, one batch)
 2. D3 loop select + D4 x-ray select + D15 normals (selection/robustness batch)

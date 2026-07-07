@@ -1,6 +1,6 @@
 import type { Command } from './UndoStack';
 import type { SceneObject } from '../scene/Scene';
-import { cloneModifier, type Modifier } from '../modifiers/Modifier';
+import { cloneModifier, type Modifier, type ModifierContext } from '../modifiers/Modifier';
 
 function snapshotStack(obj: SceneObject): Modifier[] {
   return obj.modifiers.map(cloneModifier);
@@ -48,14 +48,19 @@ export class ApplyModifierCommand implements Command {
   private afterMesh;
   private afterStack: Modifier[];
 
-  constructor(private readonly obj: SceneObject, modifier: Modifier) {
+  /**
+   * ctx (Scene.modifierContext(obj)) is REQUIRED for object-referencing
+   * modifiers (Shrinkwrap/Scatter): without it their apply() is an identity
+   * pass-through and there is nothing to bake.
+   */
+  constructor(private readonly obj: SceneObject, modifier: Modifier, ctx?: ModifierContext) {
     const index = obj.modifiers.indexOf(modifier);
     if (index !== 0) throw new Error('Only the first modifier in the stack can be applied');
     this.name = `Apply ${modifier.name}`;
     this.beforeMesh = obj.mesh.clone();
     this.beforeStack = snapshotStack(obj);
 
-    obj.mesh.copyFrom(modifier.apply(obj.mesh));
+    obj.mesh.copyFrom(modifier.apply(obj.mesh, ctx));
     obj.modifiers.splice(index, 1);
     obj.modifiersVersion++;
 

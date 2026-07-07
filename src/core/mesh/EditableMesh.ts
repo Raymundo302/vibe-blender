@@ -219,6 +219,7 @@ export class EditableMesh {
 
   /** Replace contents with another mesh's (undo restore). */
   copyFrom(other: EditableMesh): void {
+    if (other === this) return; // self-assignment would clear-then-copy-nothing
     this.verts.clear();
     this.faces.clear();
     this.creases.clear();
