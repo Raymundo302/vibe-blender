@@ -15,6 +15,8 @@ export interface MeshRenderData {
   trianglePositions: Float32Array;
   /** Face normal per corner, parallel to trianglePositions. */
   triangleNormals: Float32Array;
+  /** Per-corner RGB tint (faceTints or white), parallel to trianglePositions. */
+  triangleColors: Float32Array;
   triangleCount: number;
   /** xyz pairs, one segment per unique edge (wireframe / overlays). */
   edgePositions: Float32Array;
@@ -50,17 +52,22 @@ export function meshToRenderData(mesh: EditableMesh, smooth = false): MeshRender
 
   const positions = new Float32Array(triCount * 9);
   const normals = new Float32Array(triCount * 9);
+  const colors = new Float32Array(triCount * 9);
   let p = 0;
 
   for (const face of mesh.faces.values()) {
     const faceN = mesh.faceNormal(face.id);
+    const tint = mesh.faceTints.get(face.id);
     const vs = face.verts;
     for (let i = 1; i < vs.length - 1; i++) {
       for (const vid of [vs[0], vs[i], vs[i + 1]]) {
         const co = mesh.verts.get(vid)!.co;
         const n = smoothNormals?.get(vid) ?? faceN;
+        colors[p] = tint?.[0] ?? 1;
         positions[p] = co.x; normals[p++] = n.x;
+        colors[p] = tint?.[1] ?? 1;
         positions[p] = co.y; normals[p++] = n.y;
+        colors[p] = tint?.[2] ?? 1;
         positions[p] = co.z; normals[p++] = n.z;
       }
     }
@@ -79,6 +86,7 @@ export function meshToRenderData(mesh: EditableMesh, smooth = false): MeshRender
   return {
     trianglePositions: positions,
     triangleNormals: normals,
+    triangleColors: colors,
     triangleCount: triCount,
     edgePositions,
     edgeCount: edges.size,

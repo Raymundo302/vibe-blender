@@ -1,7 +1,7 @@
 import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
 import { EditModeState } from './EditMode';
-import type { Modifier } from '../modifiers/Modifier';
+import type { Modifier, ModifierContext } from '../modifiers/Modifier';
 import {
   DEFAULT_MATERIAL,
   defaultCamera,
@@ -47,16 +47,21 @@ export class SceneObject {
 
   /**
    * The mesh the viewport shows in object mode: base mesh run through every
-   * enabled modifier. Cached until the base mesh or the stack changes.
+   * enabled modifier. Cached until the base mesh or the stack changes — or,
+   * for object-referencing modifiers (Shrinkwrap/Scatter), until a dependency
+   * reported through depVersion(ctx) changes. Pass the ctx from
+   * Scene.modifierContext(obj) so those modifiers can resolve their targets;
+   * without it they no-op.
    * With an empty/disabled stack this is the base mesh itself (no copy).
    */
-  evaluatedMesh(): EditableMesh {
+  evaluatedMesh(ctx?: ModifierContext): EditableMesh {
     const active = this.modifiers.filter((m) => m.enabled);
     if (active.length === 0) return this.mesh;
-    const key = `${this.mesh.version}:${this.modifiersVersion}`;
+    const deps = active.map((m) => m.depVersion?.(ctx) ?? '').join('|');
+    const key = `${this.mesh.version}:${this.modifiersVersion}:${deps}`;
     if (this.evalCache?.key === key) return this.evalCache.mesh;
     let result = this.mesh;
-    for (const mod of active) result = mod.apply(result);
+    for (const mod of active) result = mod.apply(result, ctx);
     this.evalCache = { key, mesh: result };
     return result;
   }
@@ -157,6 +162,30 @@ export class Scene {
   /** The material an object renders with (assigned, or the shared default). */
   materialOf(obj: SceneObject): Material {
     return (obj.materialId !== null && this.getMaterial(obj.materialId)) || DEFAULT_MATERIAL;
+  }
+
+  /**
+   * Scene access for an object's modifier stack ('object'-param modifiers).
+   * Targets resolve to their EVALUATED mesh; `visited` breaks reference
+   * cycles (A shrinkwraps to B shrinkwraps to A → the inner lookup gets null).
+   */
+  modifierContext(host: SceneObject, visited: Set<number> = new Set()): ModifierContext {
+    visited.add(host.id);
+    return {
+      hostMatrix: host.transform.matrix(),
+      target: (objectId: number) => {
+        if (visited.has(objectId)) return null;
+        const obj = this.get(objectId);
+        if (!obj || obj.kind !== 'mesh') return null;
+        const childCtx = this.modifierContext(obj, new Set(visited));
+        const mesh = obj.evaluatedMesh(childCtx);
+        return {
+          mesh,
+          matrix: obj.transform.matrix(),
+          version: `${objectId}:${mesh.version}:${obj.modifiersVersion}`,
+        };
+      },
+    };
   }
 
   get(id: number): SceneObject | undefined {

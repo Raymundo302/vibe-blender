@@ -244,6 +244,28 @@ class ModifierTab {
       input.checked = current === true;
       input.addEventListener('change', () => commit('Edit Modifier', input.checked));
       row.append(input);
+    } else if (field.kind === 'object') {
+      // Dropdown of the scene's OTHER mesh objects; value is the object id,
+      // -1 = none. Options rebuild on every tab refresh (buildField is called
+      // from the signature-diffed update path, so scene changes reach it).
+      const select = document.createElement('select');
+      select.className = 'modifier-param';
+      select.dataset.key = field.key;
+      const none = document.createElement('option');
+      none.value = '-1';
+      none.textContent = '(None)';
+      select.append(none);
+      for (const other of this.scene.objects) {
+        if (other.id === obj.id || other.kind !== 'mesh') continue;
+        const opt = document.createElement('option');
+        opt.value = String(other.id);
+        opt.textContent = other.name;
+        select.append(opt);
+      }
+      select.value = String(typeof current === 'number' ? current : -1);
+      if (select.selectedIndex < 0) select.value = '-1'; // target was deleted
+      select.addEventListener('change', () => commit('Edit Modifier', parseInt(select.value, 10)));
+      row.append(select);
     } else if (field.kind === 'axis') {
       const select = document.createElement('select');
       select.className = 'modifier-param';

@@ -1,4 +1,5 @@
 import type { EditableMesh } from '../mesh/EditableMesh';
+import type { Mat4 } from '../math/mat4';
 
 /**
  * Non-destructive modifier stack (Phase 4). Each modifier derives a NEW mesh
@@ -10,7 +11,7 @@ import type { EditableMesh } from '../mesh/EditableMesh';
  * renders every modifier type without knowing any of them.
  */
 
-export type ModifierFieldKind = 'number' | 'int' | 'bool' | 'axis';
+export type ModifierFieldKind = 'number' | 'int' | 'bool' | 'axis' | 'object';
 
 export interface ModifierField {
   key: string;
@@ -23,6 +24,29 @@ export interface ModifierField {
 
 export type ModifierParams = Record<string, number | boolean | string>;
 
+/** Another scene object, as seen by a modifier (Shrinkwrap target, Scatter source). */
+export interface ModifierTarget {
+  /** The target's EVALUATED mesh (its own modifier stack applied). */
+  mesh: EditableMesh;
+  /** The target's world matrix. */
+  matrix: Mat4;
+  /** Cache-key contribution: bumps when the target's evaluated mesh changes. */
+  version: string;
+}
+
+/**
+ * Scene access for modifiers that reference other objects ('object' params).
+ * Provided by Scene.modifierContext(host); absent (undefined) in contexts with
+ * no scene (unit tests on bare meshes) — such modifiers must then no-op by
+ * returning the input mesh unchanged.
+ */
+export interface ModifierContext {
+  /** World matrix of the object that owns the modifier stack. */
+  hostMatrix: Mat4;
+  /** Resolve an object id, or null (missing / cycle / non-mesh). */
+  target(objectId: number): ModifierTarget | null;
+}
+
 export interface Modifier {
   /** Registry key, e.g. 'mirror'. */
   readonly type: string;
@@ -31,7 +55,7 @@ export interface Modifier {
   enabled: boolean;
 
   /** PURE: derive a new mesh. Must not mutate the input. */
-  apply(mesh: EditableMesh): EditableMesh;
+  apply(mesh: EditableMesh, ctx?: ModifierContext): EditableMesh;
 
   /** Current param values (plain data — serialized into scene files). */
   params(): ModifierParams;
@@ -39,6 +63,13 @@ export interface Modifier {
   setParam(key: string, value: number | boolean | string): void;
   /** UI schema for the params. */
   fields(): ModifierField[];
+
+  /**
+   * Extra cache-key material for modifiers whose output depends on things
+   * OUTSIDE the host mesh + params (target meshes, host/target transforms).
+   * Omit (or return '') for self-contained modifiers.
+   */
+  depVersion?(ctx?: ModifierContext): string;
 }
 
 type ModifierCtor = (params?: ModifierParams) => Modifier;

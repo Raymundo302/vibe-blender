@@ -87,8 +87,24 @@ function serializeCamera(c: CameraData): Record<string, unknown> {
   return { focalLength: num(c.focalLength), near: num(c.near), far: num(c.far) };
 }
 
+/**
+ * Serialize one modifier's params. 'object'-kind fields store the referenced
+ * object's INDEX in scene.objects (or -1) — ids never hit the file (see
+ * activeCamera note) — and are remapped back to fresh ids on load.
+ */
+function serializeModParams(m: { params(): ModifierParams; fields(): { key: string; kind: string }[] }, scene: Scene): Record<string, number | boolean | string> {
+  const out = serializeParams(m.params());
+  for (const f of m.fields()) {
+    if (f.kind !== 'object') continue;
+    const id = out[f.key];
+    const idx = typeof id === 'number' ? scene.objects.findIndex((o) => o.id === id) : -1;
+    out[f.key] = idx;
+  }
+  return out;
+}
+
 /** One scene object, in stable key order (light/camera keys only when present). */
-function serializeObject(obj: SceneObject): Record<string, unknown> {
+function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown> {
   const out: Record<string, unknown> = {
     name: obj.name,
     kind: obj.kind,
@@ -106,17 +122,36 @@ function serializeObject(obj: SceneObject): Record<string, unknown> {
       // objects carry an empty mesh → empty arrays.
       verts: [...obj.mesh.verts.values()].map((v) => [v.id, num(v.co.x), num(v.co.y), num(v.co.z)]),
       faces: [...obj.mesh.faces.values()].map((f) => [f.id, [...f.verts]]),
+      // Optional attributes (P9): pruned to live verts/faces, omitted when empty.
+      ...meshAttrs(obj.mesh),
     },
     // Stack order = evaluation order; serialized top-to-bottom as shown.
     modifiers: obj.modifiers.map((m) => ({
       type: m.type,
       name: m.name,
       enabled: m.enabled,
-      params: serializeParams(m.params()),
+      params: serializeModParams(m, scene),
     })),
   };
   if (obj.light) out.light = serializeLight(obj.light);
   if (obj.camera) out.camera = serializeCamera(obj.camera);
+  return out;
+}
+
+/** Crease/tint attribute blocks for a mesh, pruned + omitted when empty. */
+function meshAttrs(mesh: EditableMesh): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const creases = [...mesh.creases.entries()]
+    .map(([key, w]) => {
+      const [a, b] = key.split(',').map(Number);
+      return mesh.verts.has(a) && mesh.verts.has(b) ? [a, b, num(w)] : null;
+    })
+    .filter((e): e is number[] => e !== null);
+  if (creases.length > 0) out.creases = creases;
+  const tints = [...mesh.faceTints.entries()]
+    .filter(([f]) => mesh.faces.has(f))
+    .map(([f, c]) => [f, num(c[0]), num(c[1]), num(c[2])]);
+  if (tints.length > 0) out.tints = tints;
   return out;
 }
 
@@ -149,8 +184,10 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       roughness: num(m.roughness),
       emissive: rgb(m.emissive),
       emissiveStrength: num(m.emissiveStrength),
+      subsurfaceWeight: num(m.subsurfaceWeight),
+      subsurfaceRadius: num(m.subsurfaceRadius),
     })),
-    objects: scene.objects.map(serializeObject),
+    objects: scene.objects.map((o) => serializeObject(o, scene)),
   };
   return JSON.stringify(data, null, 2);
 }
@@ -160,6 +197,10 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
 interface MeshData {
   verts: [number, number, number, number][];
   faces: [number, number[]][];
+  /** [vertA, vertB, weight] crease entries (v3 optional). */
+  creases: [number, number, number][];
+  /** [faceId, r, g, b] tint entries (v3 optional). */
+  tints: [number, number, number, number][];
 }
 interface ModifierData {
   type: string;
@@ -175,6 +216,8 @@ interface MaterialData {
   roughness: number;
   emissive: [number, number, number];
   emissiveStrength: number;
+  subsurfaceWeight: number;
+  subsurfaceRadius: number;
 }
 interface ObjectData {
   kind: ObjectKind;
@@ -284,6 +327,8 @@ function parseMaterials(v: unknown): MaterialData[] {
       roughness: numField(mat.roughness, `materials[${mi}].roughness`),
       emissive: numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
       emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
+      subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
+      subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
     };
   });
 }
@@ -363,6 +408,27 @@ function parseObject(o: unknown, i: number): ObjectData {
     if (ids.length < 3) fail(`objects[${i}].mesh.faces[${fi}] needs at least 3 verts`);
     return [f[0] as number, ids] as [number, number[]];
   });
+  const faceIds = new Set(faces.map((f) => f[0]));
+
+  const creases: [number, number, number][] = [];
+  if (m.creases !== undefined) {
+    if (!Array.isArray(m.creases)) fail(`objects[${i}].mesh.creases must be an array`);
+    for (const [ci, c] of (m.creases as unknown[]).entries()) {
+      const a = numArray(c, 3, `objects[${i}].mesh.creases[${ci}]`);
+      if (!vertIds.has(a[0]) || !vertIds.has(a[1])) fail(`objects[${i}].mesh.creases[${ci}] references a missing vert`);
+      if (a[2] < 0 || a[2] > 1) fail(`objects[${i}].mesh.creases[${ci}] weight must be 0..1`);
+      creases.push(a as [number, number, number]);
+    }
+  }
+  const tints: [number, number, number, number][] = [];
+  if (m.tints !== undefined) {
+    if (!Array.isArray(m.tints)) fail(`objects[${i}].mesh.tints must be an array`);
+    for (const [ti, c] of (m.tints as unknown[]).entries()) {
+      const a = numArray(c, 4, `objects[${i}].mesh.tints[${ti}]`);
+      if (!faceIds.has(a[0])) fail(`objects[${i}].mesh.tints[${ti}] references a missing face`);
+      tints.push(a as [number, number, number, number]);
+    }
+  }
 
   const data: ObjectData = {
     kind,
@@ -374,7 +440,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
-    mesh: { verts, faces },
+    mesh: { verts, faces, creases, tints },
     modifiers: parseModifiers(obj.modifiers, i),
   };
 
@@ -435,6 +501,8 @@ function buildMesh(data: MeshData): EditableMesh {
     mesh.faces.set(id, { id, verts: [...verts] });
     if (id > maxFace) maxFace = id;
   }
+  for (const [a, b, w] of data.creases) mesh.creases.set(EditableMesh.edgeKey(a, b), w);
+  for (const [f, r, g, bl] of data.tints) mesh.faceTints.set(f, [r, g, bl]);
   const priv = mesh as unknown as { nextVertId: number; nextFaceId: number; version: number };
   priv.nextVertId = maxVert + 1;
   priv.nextFaceId = maxFace + 1;
@@ -494,6 +562,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       roughness: md.roughness,
       emissive: [...md.emissive],
       emissiveStrength: md.emissiveStrength,
+      subsurfaceWeight: md.subsurfaceWeight,
+      subsurfaceRadius: md.subsurfaceRadius,
     };
     scene.materials.push(mat);
     if (md.id > maxMaterialId) maxMaterialId = md.id;
@@ -530,6 +600,19 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   // addCamera auto-activates the first camera; override with the saved choice
   // (an objects index — already validated to point at a camera).
   scene.activeCameraId = data.activeCamera === null ? null : rebuilt[data.activeCamera].id;
+
+  // 'object'-kind modifier params were saved as objects INDICES — remap them
+  // onto the rebuilt objects' fresh ids (-1 stays "none", as does out-of-range).
+  for (const obj of rebuilt) {
+    for (const mod of obj.modifiers) {
+      for (const field of mod.fields()) {
+        if (field.kind !== 'object') continue;
+        const idx = mod.params()[field.key];
+        const id = typeof idx === 'number' && idx >= 0 && idx < rebuilt.length ? rebuilt[idx].id : -1;
+        mod.setParam(field.key, id);
+      }
+    }
+  }
 
   if (scene.objects.length > 0) scene.selectOnly(scene.objects[0].id);
 

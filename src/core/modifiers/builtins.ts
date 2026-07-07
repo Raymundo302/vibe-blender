@@ -6,3 +6,7 @@
 import './mirror';
 import './array';
 import './subsurf';
+import './solidify'; // P9-1
+import './shrinkwrap'; // P9-2
+import './scatter'; // P9-5
+

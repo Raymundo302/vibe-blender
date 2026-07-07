@@ -142,7 +142,7 @@ export class Renderer {
    */
   private gpuMesh(obj: SceneObject, scene: Scene): GpuMesh {
     const editing = scene.editMode?.objectId === obj.id;
-    const mesh = editing ? obj.mesh : obj.evaluatedMesh();
+    const mesh = editing ? obj.mesh : obj.evaluatedMesh(scene.modifierContext(obj));
     const version = `${editing ? 'edit' : 'obj'}:${mesh.version}:${obj.modifiersVersion}:${obj.shadeSmooth ? 's' : 'f'}`;
     const cached = this.gpuMeshes.get(obj.id);
     if (cached && cached.version === version) return cached;
@@ -154,6 +154,7 @@ export class Renderer {
       triangles: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.trianglePositions },
         { location: 1, size: 3, data: data.triangleNormals },
+        { location: 2, size: 3, data: data.triangleColors },
       ]),
       edges: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.edgePositions },

@@ -33,6 +33,17 @@ export interface Edge {
 export class EditableMesh {
   readonly verts = new Map<number, Vert>();
   readonly faces = new Map<number, Face>();
+  /**
+   * Per-edge crease weights (0..1), keyed by edgeKey. 1 = fully sharp under
+   * Subdivision Surface. Entries whose verts vanish are ignored by consumers
+   * and pruned at serialization time.
+   */
+  readonly creases = new Map<string, number>();
+  /**
+   * Per-face display tints (linear RGB multiplier), e.g. Scatter's random
+   * per-instance colors. Faces without an entry render untinted (white).
+   */
+  readonly faceTints = new Map<number, [number, number, number]>();
   version = 0;
 
   private nextVertId = 0;
@@ -73,6 +84,20 @@ export class EditableMesh {
 
   static edgeKey(a: number, b: number): string {
     return a < b ? `${a},${b}` : `${b},${a}`;
+  }
+
+  /** Set the crease weight (clamped 0..1) of the edge between two verts. 0 clears it. */
+  setCrease(a: number, b: number, weight: number): void {
+    const key = EditableMesh.edgeKey(a, b);
+    const w = Math.max(0, Math.min(1, weight));
+    if (w === 0) this.creases.delete(key);
+    else this.creases.set(key, w);
+    this.version++;
+  }
+
+  /** Crease weight of the edge between two verts (0 when unset). */
+  crease(a: number, b: number): number {
+    return this.creases.get(EditableMesh.edgeKey(a, b)) ?? 0;
   }
 
   edges(): Map<string, Edge> {
@@ -184,6 +209,8 @@ export class EditableMesh {
     const copy = new EditableMesh();
     for (const v of this.verts.values()) copy.verts.set(v.id, { id: v.id, co: v.co });
     for (const f of this.faces.values()) copy.faces.set(f.id, { id: f.id, verts: [...f.verts] });
+    for (const [k, w] of this.creases) copy.creases.set(k, w);
+    for (const [f, t] of this.faceTints) copy.faceTints.set(f, [t[0], t[1], t[2]]);
     copy.nextVertId = this.nextVertId;
     copy.nextFaceId = this.nextFaceId;
     copy.version = this.version;
@@ -194,8 +221,12 @@ export class EditableMesh {
   copyFrom(other: EditableMesh): void {
     this.verts.clear();
     this.faces.clear();
+    this.creases.clear();
+    this.faceTints.clear();
     for (const v of other.verts.values()) this.verts.set(v.id, { id: v.id, co: v.co });
     for (const f of other.faces.values()) this.faces.set(f.id, { id: f.id, verts: [...f.verts] });
+    for (const [k, w] of other.creases) this.creases.set(k, w);
+    for (const [f, t] of other.faceTints) this.faceTints.set(f, [t[0], t[1], t[2]]);
     this.nextVertId = (other as EditableMesh)['nextVertId'];
     this.nextFaceId = (other as EditableMesh)['nextFaceId'];
     this.touch();

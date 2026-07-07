@@ -60,7 +60,7 @@ function gatherWorldPoints(scene: OperatorContext['scene']): Vec3[] {
     : scene.activeObject ? [scene.activeObject] : [];
   for (const obj of objs) {
     const m = obj.transform.matrix();
-    for (const v of obj.evaluatedMesh().verts.values()) out.push(m.transformPoint(v.co));
+    for (const v of obj.evaluatedMesh().verts.values()) out.push(m.transformPoint(v.co)); // ctx-less: framing tolerates a stale/no-op scatter
   }
   return out;
 }

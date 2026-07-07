@@ -67,16 +67,19 @@ export function collectLights(scene: Scene): LightSet {
 const VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec3 a_color; // per-face tint (white when unset)
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform mat3 u_normalMat; // WORLD-space normal matrix (model only)
 out vec3 v_worldPos;
 out vec3 v_normal;
+out vec3 v_tint;
 void main() {
   vec4 world = u_model * vec4(a_position, 1.0);
   v_worldPos = world.xyz;
   v_normal = u_normalMat * a_normal;
+  v_tint = a_color;
   gl_Position = u_proj * u_view * world;
 }`;
 
@@ -84,6 +87,7 @@ const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_worldPos;
 in vec3 v_normal;
+in vec3 v_tint;
 
 uniform vec3 u_eye;
 uniform int u_lightCount;
@@ -122,9 +126,10 @@ void main() {
   vec3 N = normalize(v_normal);
   vec3 V = normalize(u_eye - v_worldPos);
   float rough = clamp(u_roughness, 0.04, 1.0);
-  vec3 F0 = mix(vec3(0.04), u_baseColor, u_metallic);
+  vec3 baseColor = u_baseColor * v_tint;
+  vec3 F0 = mix(vec3(0.04), baseColor, u_metallic);
 
-  vec3 color = vec3(0.03) * u_baseColor; // whisper of ambient so shapes read
+  vec3 color = vec3(0.03) * baseColor; // whisper of ambient so shapes read
   for (int i = 0; i < ${MAX_LIGHTS}; i++) {
     if (i >= u_lightCount) break;
     vec3 L;
@@ -152,7 +157,7 @@ void main() {
     vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
     vec3 specular = (D * G * F) / (4.0 * NdotV * NdotL + 1e-4);
     vec3 kd = (1.0 - F) * (1.0 - u_metallic);
-    color += (kd * u_baseColor / PI + specular) * radiance * NdotL;
+    color += (kd * baseColor / PI + specular) * radiance * NdotL;
   }
   color += u_emissive;
 

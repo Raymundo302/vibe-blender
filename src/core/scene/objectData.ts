@@ -76,6 +76,10 @@ export interface Material {
   /** Linear RGB emission color. */
   emissive: [number, number, number];
   emissiveStrength: number;
+  /** 0 = opaque surface, 1 = full subsurface scattering (donut flesh). */
+  subsurfaceWeight: number;
+  /** Mean scatter distance in world units (Blender's Scale, roughly). */
+  subsurfaceRadius: number;
 }
 
 /** What objects without an assigned material render as (Blender's grey). */
@@ -87,6 +91,8 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   roughness: 0.5,
   emissive: [0, 0, 0] as [number, number, number],
   emissiveStrength: 0,
+  subsurfaceWeight: 0,
+  subsurfaceRadius: 0.05,
 });
 
 /** Fresh mutable material with default params (scene assigns the id). */
@@ -99,5 +105,7 @@ export function makeMaterial(id: number, name: string): Material {
     roughness: 0.5,
     emissive: [0, 0, 0],
     emissiveStrength: 0,
+    subsurfaceWeight: 0,
+    subsurfaceRadius: 0.05,
   };
 }

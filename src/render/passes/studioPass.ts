@@ -5,13 +5,16 @@ import type { Mat4 } from '../../core/math/mat4';
 const VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec3 a_color; // per-face tint (white when unset)
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform mat3 u_normalMat; // view-space normal matrix
 out vec3 v_viewNormal;
+out vec3 v_tint;
 void main() {
   v_viewNormal = u_normalMat * a_normal;
+  v_tint = a_color;
   gl_Position = u_proj * u_view * u_model * vec4(a_position, 1.0);
 }`;
 
@@ -21,6 +24,7 @@ void main() {
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_viewNormal;
+in vec3 v_tint;
 uniform vec3 u_color; // per-object base albedo (0..1)
 out vec4 outColor;
 void main() {
@@ -33,7 +37,7 @@ void main() {
   float k = max(dot(n, keyDir), 0.0);
   float f = max(dot(n, fillDir), 0.0);
   vec3 lit = vec3(0.12) + keyCol * k + fillCol * f;
-  vec3 base = u_color;
+  vec3 base = u_color * v_tint;
   outColor = vec4(base * lit, 1.0);
 }`;
 

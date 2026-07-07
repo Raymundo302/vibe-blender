@@ -96,7 +96,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   const triMatArr: number[] = [];
   for (const obj of scene.objects) {
     if (obj.kind !== 'mesh' || !obj.visible) continue;
-    const mesh = obj.evaluatedMesh();
+    const mesh = obj.evaluatedMesh(scene.modifierContext(obj));
     if (mesh.faces.size === 0) continue;
     const model = obj.transform.matrix();
     const mi =
