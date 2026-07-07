@@ -14,6 +14,14 @@ import {
   type ObjectKind,
 } from './objectData';
 
+/** An outliner group (Phase 10). Objects reference one by collectionId. */
+export interface SceneCollection {
+  readonly id: number;
+  name: string;
+  /** Unchecking hides every member (obj.visible stays untouched). */
+  visible: boolean;
+}
+
 export class SceneObject {
   transform = new Transform();
   visible = true;
@@ -34,6 +42,8 @@ export class SceneObject {
   camera?: CameraData;
   /** Assigned material id (scene.materials), or null → DEFAULT_MATERIAL. */
   materialId: number | null = null;
+  /** Owning collection id (scene.collections), or null → scene root. */
+  collectionId: number | null = null;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -80,10 +90,13 @@ export class Scene {
   editMode: EditModeState | null = null;
   /** Scene material library; objects reference entries by id. */
   readonly materials: Material[] = [];
+  /** Outliner collections; objects reference entries by collectionId. */
+  readonly collections: SceneCollection[] = [];
   /** The camera F12 renders from / Numpad-0 looks through, or null. */
   activeCameraId: number | null = null;
   private nextId = 0;
   private nextMaterialId = 0;
+  private nextCollectionId = 0;
 
   get mode(): 'object' | 'edit' {
     return this.editMode ? 'edit' : 'object';
@@ -137,6 +150,40 @@ export class Scene {
   get activeCamera(): SceneObject | null {
     const obj = this.activeCameraId === null ? null : this.get(this.activeCameraId);
     return obj?.kind === 'camera' ? obj : null;
+  }
+
+  /** Create a collection (name defaults to Collection.NNN). */
+  addCollection(name?: string): SceneCollection {
+    const id = this.nextCollectionId++;
+    const col: SceneCollection = {
+      id,
+      name: name ?? `Collection.${String(id + 1).padStart(3, '0')}`,
+      visible: true,
+    };
+    this.collections.push(col);
+    return col;
+  }
+
+  getCollection(id: number): SceneCollection | undefined {
+    return this.collections.find((c) => c.id === id);
+  }
+
+  /** Remove a collection; members drop back to the scene root. */
+  removeCollection(id: number): void {
+    const i = this.collections.findIndex((c) => c.id === id);
+    if (i < 0) return;
+    this.collections.splice(i, 1);
+    for (const obj of this.objects) if (obj.collectionId === id) obj.collectionId = null;
+  }
+
+  /**
+   * What the viewport/pick/export/render actually honor: the object's own
+   * visibility AND its collection's (root objects only have their own).
+   */
+  effectiveVisible(obj: SceneObject): boolean {
+    if (!obj.visible) return false;
+    if (obj.collectionId === null) return true;
+    return this.getCollection(obj.collectionId)?.visible !== false;
   }
 
   /** Create a material in the scene library (name defaults to Material.NNN). */
@@ -207,6 +254,7 @@ export class Scene {
     obj.shadeSmooth = src.shadeSmooth;
     obj.color = [...src.color];
     obj.materialId = src.materialId;
+    obj.collectionId = src.collectionId;
     this.objects.push(obj);
     return obj;
   }

@@ -123,7 +123,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   /** Derived tinted materials, keyed by base index + tint (see face loop). */
   const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
-    if (obj.kind !== 'mesh' || !obj.visible) continue;
+    if (obj.kind !== 'mesh' || !scene.effectiveVisible(obj)) continue;
     const mesh = obj.evaluatedMesh(scene.modifierContext(obj));
     if (mesh.faces.size === 0) continue;
     const model = obj.transform.matrix();
@@ -171,7 +171,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   // --- lights (same premultiply as collectLights) ---
   const lights: SnapLight[] = [];
   for (const obj of scene.objects) {
-    if (obj.kind !== 'light' || !obj.visible || !obj.light) continue;
+    if (obj.kind !== 'light' || !scene.effectiveVisible(obj) || !obj.light) continue;
     const l = obj.light;
     const p = obj.transform.position;
     const d = objectForward(obj.transform);

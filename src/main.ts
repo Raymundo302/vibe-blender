@@ -26,6 +26,11 @@ import { EditableMesh } from './core/mesh/EditableMesh';
 import { AddObjectsCommand } from './core/undo/objectCommands';
 import type { OperatorContext } from './core/operator/Operator';
 import './ui/theme.css';
+import { applyStoredTheme } from './ui/themes';
+import './ui/themes90s'; // side-effect: registers the six 90s themes (P10-3)
+
+// Apply the persisted theme before any UI builds (CSS vars land on :root).
+applyStoredTheme();
 
 const canvas = document.getElementById('viewport') as HTMLCanvasElement;
 const viewportWrap = canvas.parentElement as HTMLElement;

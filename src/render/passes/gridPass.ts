@@ -1,7 +1,8 @@
 import { Shader } from '../gl/Shader';
+import { themeViewport } from '../../ui/themes';
 import { VertexArray } from '../gl/VertexArray';
 import type { Mat4 } from '../../core/math/mat4';
-import type { Vec3 } from '../../core/math/vec3';
+import { Vec3 } from '../../core/math/vec3';
 
 const EXTENT = 500;
 
@@ -21,6 +22,9 @@ const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_worldPos;
 uniform vec3 u_eye;
+uniform vec3 u_gridColor;
+uniform vec3 u_axisXColor;
+uniform vec3 u_axisZColor;
 out vec4 outColor;
 
 float gridLine(vec2 coord) {
@@ -33,17 +37,17 @@ void main() {
   float minor = gridLine(coord);
   float major = gridLine(coord / 10.0);
 
-  vec3 color = vec3(0.32);
+  vec3 color = u_gridColor;
   float alpha = minor * 0.35 + major * 0.45;
 
   // Axis lines through the origin
   vec2 axisDist = abs(coord) / fwidth(coord);
   if (axisDist.y < 1.0) { // along X (z ≈ 0)
-    color = vec3(0.65, 0.28, 0.32);
+    color = u_axisXColor;
     alpha = max(alpha, 1.0 - axisDist.y);
   }
   if (axisDist.x < 1.0) { // along Z (x ≈ 0)
-    color = vec3(0.35, 0.55, 0.28);
+    color = u_axisZColor;
     alpha = max(alpha, 1.0 - axisDist.x);
   }
 
@@ -79,6 +83,10 @@ export class GridPass {
     this.shader.setMat4('u_view', view);
     this.shader.setMat4('u_proj', proj);
     this.shader.setVec3('u_eye', eye);
+    const tv = themeViewport;
+    this.shader.setVec3('u_gridColor', new Vec3(tv.grid[0], tv.grid[1], tv.grid[2]));
+    this.shader.setVec3('u_axisXColor', new Vec3(tv.axisX[0], tv.axisX[1], tv.axisX[2]));
+    this.shader.setVec3('u_axisZColor', new Vec3(tv.axisZ[0], tv.axisZ[1], tv.axisZ[2]));
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);

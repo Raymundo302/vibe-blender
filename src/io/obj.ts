@@ -27,7 +27,7 @@ export function exportObj(scene: Scene): string {
   let base = 0; // running count of verts emitted (for global 1-based indices)
 
   for (const obj of scene.objects) {
-    if (!obj.visible) continue;
+    if (!scene.effectiveVisible(obj)) continue;
     if (obj.kind !== 'mesh') continue; // lights/cameras carry no geometry (P8-5)
     lines.push(`o ${obj.name}`);
 

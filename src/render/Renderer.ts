@@ -20,6 +20,7 @@ import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
 import { cameraFovY } from '../core/scene/objectData';
 import { createMatcapTexture } from './matcap';
+import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
@@ -47,7 +48,7 @@ export type PickResult =
   | { kind: 'object'; id: number }
   | { kind: 'gizmo'; axis: GizmoAxis };
 
-const BG = [0.227, 0.227, 0.227] as const; // Blender viewport grey
+// Viewport clear color comes from the active theme (themeViewport.background).
 
 /** Which glyph the icon pass draws for a non-mesh object. */
 function iconShape(obj: SceneObject): IconShape {
@@ -217,11 +218,12 @@ export class Renderer {
       this.elementPickPass.resize(canvas.width, canvas.height);
     }
     gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.clearColor(BG[0], BG[1], BG[2], 1);
+    const bg = themeViewport.background;
+    gl.clearColor(bg[0], bg[1], bg[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const { view, proj, eye, fovY } = this.resolveView(scene, camera);
-    const visible = scene.objects.filter((o) => o.visible);
+    const visible = scene.objects.filter((o) => scene.effectiveVisible(o));
 
     // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
     // no fill; matcap/studio fill triangles with their respective shaders.
@@ -291,7 +293,7 @@ export class Renderer {
     }
 
     // Edit-mode cage (verts/edges/selected-face fill)
-    if (editObj && editObj.visible && scene.editMode) {
+    if (editObj && scene.effectiveVisible(editObj) && scene.editMode) {
       const mvp = proj.mul(view).mul(editObj.transform.matrix());
       this.editOverlayPass.render(mvp, editObj.mesh, scene.editMode);
       if (this.editPreviewLines) this.editOverlayPass.renderPreview(mvp, this.editPreviewLines);
@@ -328,7 +330,7 @@ export class Renderer {
 
     this.pickingPass.begin();
     for (const obj of scene.objects) {
-      if (!obj.visible) continue;
+      if (!scene.effectiveVisible(obj)) continue;
       this.pickingPass.drawObject(viewProj.mul(obj.transform.matrix()), obj.id + 1);
       this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
     }
@@ -340,7 +342,7 @@ export class Renderer {
     // Light/camera icons — drawn last (iconPass switches GL programs, and
     // pickingPass.drawObject assumes the picking shader is still active). The
     // looked-through camera has no on-screen icon, so it is not pickable either.
-    const iconObjs = scene.objects.filter((o) => o.visible && o.kind !== 'mesh' && o.id !== this.cameraViewId);
+    const iconObjs = scene.objects.filter((o) => scene.effectiveVisible(o) && o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (iconObjs.length > 0) {
       this.iconPass.begin(viewProj, canvas.width, canvas.height);
       for (const obj of iconObjs) this.iconPass.drawPick(obj.transform.position, obj.id + 1);

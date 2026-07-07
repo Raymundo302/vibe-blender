@@ -43,7 +43,7 @@ export function collectLights(scene: Scene): LightSet {
     spots: new Float32Array(MAX_LIGHTS * 2),
   };
   for (const obj of scene.objects) {
-    if (obj.kind !== 'light' || !obj.visible || !obj.light) continue;
+    if (obj.kind !== 'light' || !scene.effectiveVisible(obj) || !obj.light) continue;
     if (set.count >= MAX_LIGHTS) break;
     const i = set.count++;
     const l = obj.light;

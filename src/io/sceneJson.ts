@@ -113,6 +113,14 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
     shadeSmooth: obj.shadeSmooth,
     color: rgb(obj.color),
     materialId: obj.materialId,
+    // Owning collection as an INDEX into the scene's collections array (or null).
+    collection:
+      obj.collectionId === null
+        ? null
+        : (() => {
+            const i = scene.collections.findIndex((c) => c.id === obj.collectionId);
+            return i < 0 ? null : i;
+          })(),
     transform: {
       position: vec(obj.transform.position),
       rotation: quat(obj.transform.rotation),
@@ -177,6 +185,7 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
             const i = scene.objects.findIndex((o) => o.id === scene.activeCameraId);
             return i < 0 ? null : i;
           })(),
+    collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
     materials: scene.materials.map((m) => ({
       id: m.id,
       name: m.name,
@@ -220,8 +229,14 @@ interface MaterialData {
   subsurfaceWeight: number;
   subsurfaceRadius: number;
 }
+interface CollectionData {
+  name: string;
+  visible: boolean;
+}
 interface ObjectData {
   kind: ObjectKind;
+  /** Index into collections, or null (scene root). */
+  collection: number | null;
   name: string;
   visible: boolean;
   shadeSmooth?: boolean;
@@ -239,6 +254,7 @@ interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
   /** Index into objects of the active camera, or null. */
   activeCamera: number | null;
+  collections: CollectionData[];
   materials: MaterialData[];
   objects: ObjectData[];
 }
@@ -295,6 +311,19 @@ function parseScene(json: string): SceneData {
 
   const materials = parseMaterials(root.materials);
 
+  // Collections (P10, optional — absent in older files → empty).
+  const collections: CollectionData[] = [];
+  if (root.collections !== undefined) {
+    if (!Array.isArray(root.collections)) fail('collections must be an array');
+    for (const [ci, c] of (root.collections as unknown[]).entries()) {
+      if (typeof c !== 'object' || c === null) fail(`collections[${ci}] is not an object`);
+      const col = c as Record<string, unknown>;
+      if (typeof col.name !== 'string') fail(`collections[${ci}].name must be a string`);
+      if (typeof col.visible !== 'boolean') fail(`collections[${ci}].visible must be a boolean`);
+      collections.push({ name: col.name, visible: col.visible });
+    }
+  }
+
   if (!Array.isArray(root.objects)) fail('objects must be an array');
   const objects = (root.objects as unknown[]).map((o, i) => parseObject(o, i));
 
@@ -308,7 +337,13 @@ function parseScene(json: string): SceneData {
     if (objects[idx].kind !== 'camera') fail(`activeCamera index ${idx} is not a camera`);
     activeCamera = idx;
   }
-  return { camera, activeCamera, materials, objects };
+  // Per-object collection indices validate against the parsed array.
+  for (const [oi, od] of objects.entries()) {
+    if (od.collection !== null && (od.collection < 0 || od.collection >= collections.length)) {
+      fail(`objects[${oi}].collection index ${od.collection} is out of range`);
+    }
+  }
+  return { camera, activeCamera, collections, materials, objects };
 }
 
 /** Parse the scene material library (absent in v1/v2 → empty). */
@@ -390,6 +425,15 @@ function parseObject(o: unknown, i: number): ObjectData {
     materialId = numField(obj.materialId, `objects[${i}].materialId`);
   }
 
+  // collection: absent (pre-P10) or null → scene root; else an integer index
+  // (range-checked against the collections array once both are parsed).
+  let collection: number | null = null;
+  if (obj.collection !== undefined && obj.collection !== null) {
+    const idx = numField(obj.collection, `objects[${i}].collection`);
+    if (!Number.isInteger(idx)) fail(`objects[${i}].collection must be an integer index`);
+    collection = idx;
+  }
+
   const tf = obj.transform as Record<string, unknown> | undefined;
   if (typeof tf !== 'object' || tf === null) fail(`objects[${i}].transform is missing`);
   const m = obj.mesh as Record<string, unknown> | undefined;
@@ -443,6 +487,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     shadeSmooth: obj.shadeSmooth === true, // absent in v1/v2 files → flat
     color: parseColor(obj.color, i), // absent in older files → default grey
     materialId,
+    collection,
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
@@ -548,6 +593,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   scene.exitEditMode();
   for (const obj of [...scene.objects]) scene.remove(obj.id);
   for (const mat of [...scene.materials]) scene.removeMaterial(mat.id);
+  for (const col of [...scene.collections]) scene.removeCollection(col.id);
   scene.deselectAll();
   // Reset the object id counter so a full load reproduces the saved ids from a
   // clean 0-based space — otherwise applying into a scene that already handed
@@ -578,6 +624,13 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
     (scene as unknown as { nextMaterialId: number }).nextMaterialId = maxMaterialId + 1;
   }
 
+  // Rebuild collections first so member indices can resolve to fresh ids.
+  const rebuiltCols = data.collections.map((cd) => {
+    const col = scene.addCollection(cd.name);
+    col.visible = cd.visible;
+    return col;
+  });
+
   // Rebuild objects through the kind-aware public API so kinds are real.
   const rebuilt: SceneObject[] = [];
   for (const { od, mesh, modifiers } of built) {
@@ -593,6 +646,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
     obj.shadeSmooth = od.shadeSmooth === true;
     obj.color = [od.color[0], od.color[1], od.color[2]];
     obj.materialId = od.materialId;
+    obj.collectionId = od.collection === null ? null : rebuiltCols[od.collection].id;
     obj.transform = new Transform(
       Vec3.fromArray(od.position),
       new Quat(od.rotation[0], od.rotation[1], od.rotation[2], od.rotation[3]),

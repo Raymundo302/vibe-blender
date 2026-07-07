@@ -1,4 +1,6 @@
 import { Shader } from '../gl/Shader';
+import { themeViewport } from '../../ui/themes';
+import { Vec3 } from '../../core/math/vec3';
 import { EmptyVao } from '../gl/VertexArray';
 import { Framebuffer } from '../gl/Framebuffer';
 import type { Mat4 } from '../../core/math/mat4';
@@ -30,6 +32,7 @@ const EDGE_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 uniform sampler2D u_mask;
 uniform vec2 u_texelSize;
+uniform vec3 u_selectionColor;
 out vec4 outColor;
 void main() {
   vec2 uv = gl_FragCoord.xy * u_texelSize;
@@ -44,7 +47,7 @@ void main() {
   n = max(n, texture(u_mask, uv + vec2(-w, -w) * u_texelSize).r);
   float edge = n - center; // 1 just outside the silhouette, 0 elsewhere
   if (edge < 0.1) discard;
-  outColor = vec4(0.996, 0.451, 0.062, edge); // Blender selection orange
+  outColor = vec4(u_selectionColor, edge); // theme selection accent
 }`;
 
 export class OutlinePass {
@@ -93,6 +96,8 @@ export class OutlinePass {
     gl.bindTexture(gl.TEXTURE_2D, this.maskFbo.texture);
     this.edgeShader.setInt('u_mask', 0);
     this.edgeShader.setVec2('u_texelSize', 1 / this.maskFbo.width, 1 / this.maskFbo.height);
+    const sel = themeViewport.selection;
+    this.edgeShader.setVec3('u_selectionColor', new Vec3(sel[0], sel[1], sel[2]));
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
