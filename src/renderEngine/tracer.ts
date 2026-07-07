@@ -1,4 +1,6 @@
-import type { Snapshot, SnapMaterial, SnapLight, SnapCamera } from './snapshot';
+import type { Snapshot, SnapMaterial, SnapLight, SnapCamera, SnapWorld } from './snapshot';
+import { defaultSnapWorld } from './snapshot';
+import { sampleEquirect } from '../core/scene/worldData';
 
 /**
  * Pure progressive path tracer (P8-4) — "Cycles-lite". No DOM, no GL: importable
@@ -455,12 +457,50 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-/** Vertical sky gradient: dark grey ground → blue-grey up. */
+/**
+ * Legacy vertical sky gradient: dark grey ground → blue-grey up. Kept as the
+ * reference the default-world regression test pins against; the live tracer now
+ * calls worldSky() (which, for the default gradient world, is byte-identical).
+ */
 export function sky(dy: number, out: [number, number, number]): void {
   const t = Math.min(1, Math.max(0, dy * 0.5 + 0.5));
   out[0] = 0.05 + (0.11 - 0.05) * t;
   out[1] = 0.05 + (0.13 - 0.05) * t;
   out[2] = 0.05 + (0.16 - 0.05) * t;
+}
+
+/**
+ * World/environment color for a ray that missed all geometry, along direction
+ * (dx,dy,dz) (need not be normalized). Multiplied by world.strength.
+ *
+ *   flat     → the flat color.
+ *   gradient → horizon→zenith lerp on t = clamp(dy*0.5+0.5) — with the DEFAULT
+ *              world this exactly reproduces the old sky() (regression bar).
+ *   hdri     → equirect lookup; falls back to the gradient if pixels are absent.
+ */
+export function worldSky(
+  world: SnapWorld,
+  dx: number, dy: number, dz: number,
+  out: [number, number, number],
+): void {
+  const s = world.strength;
+  if (world.mode === 0) {
+    out[0] = world.color[0] * s;
+    out[1] = world.color[1] * s;
+    out[2] = world.color[2] * s;
+    return;
+  }
+  if (world.mode === 2 && world.hdri) {
+    sampleEquirect(world.hdri, dx, dy, dz, out);
+    out[0] *= s; out[1] *= s; out[2] *= s;
+    return;
+  }
+  // gradient (also the hdri-without-pixels fallback). traceRay passes a unit
+  // direction, so dy is used directly — byte-identical to the old sky(dy).
+  const t = Math.min(1, Math.max(0, dy * 0.5 + 0.5));
+  out[0] = (world.horizon[0] + (world.zenith[0] - world.horizon[0]) * t) * s;
+  out[1] = (world.horizon[1] + (world.zenith[1] - world.horizon[1]) * t) * s;
+  out[2] = (world.horizon[2] + (world.zenith[2] - world.horizon[2]) * t) * s;
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +513,7 @@ export interface TraceScene {
   materials: SnapMaterial[];
   lights: SnapLight[];
   camera: SnapCamera;
+  world: SnapWorld;
   /** null when the scene has no geometry (sky-only render). */
   bvh: BVHNode | null;
 }
@@ -484,6 +525,9 @@ export function prepareScene(snap: Snapshot): TraceScene {
     materials: snap.materials,
     lights: snap.lights,
     camera: snap.camera,
+    // Absent world (older snapshots) → the default sky, so their images are
+    // byte-identical to the pre-P10-4 tracer.
+    world: snap.world ?? defaultSnapWorld(),
     bvh: snap.tris.length >= 9 ? buildBVH(snap.tris) : null,
   };
 }
@@ -533,7 +577,7 @@ export function traceRay(
       ? intersectBVH(scene.bvh, scene.tris, ox, oy, oz, dx, dy, dz)
       : null;
     if (!hit) {
-      sky(dy, skyC);
+      worldSky(scene.world, dx, dy, dz, skyC);
       rr += tr * skyC[0]; rg += tg * skyC[1]; rb += tb * skyC[2];
       break;
     }

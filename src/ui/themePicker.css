@@ -1,0 +1,82 @@
+/* Theme picker popup (P10-3). Uses the shared --vb-* tokens so it re-themes
+   itself the moment a theme is applied. */
+.theme-picker {
+  position: fixed;
+  z-index: 300;
+  min-width: 240px;
+  max-width: 300px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font: var(--vb-font, 12px/1.4 "Segoe UI", system-ui, sans-serif);
+  color: var(--vb-text, #d0d0d0);
+  user-select: none;
+}
+.theme-picker-heading {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vb-text-dim, #8a8a8a);
+}
+.theme-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 5px 8px;
+}
+.theme-picker-row:hover { background: var(--vb-hover, #4a4a4a); }
+.theme-picker-active {
+  border-color: var(--vb-accent, #fe730f);
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 16%, transparent);
+}
+.theme-picker-swatch {
+  flex: none;
+  display: flex;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--vb-border, #3d3d3d);
+}
+.theme-picker-chip {
+  display: block;
+  width: 12px;
+  height: 22px;
+}
+.theme-picker-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.theme-picker-name {
+  font-weight: 600;
+  color: var(--vb-text, #d0d0d0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.theme-picker-tag {
+  font-size: 11px;
+  color: var(--vb-text-dim, #8a8a8a);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.theme-picker-check {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--vb-accent, #fe730f);
+  font-weight: 700;
+}

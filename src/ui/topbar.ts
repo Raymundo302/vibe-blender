@@ -3,6 +3,7 @@ import type { Renderer } from '../render/Renderer';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
 import { sculptState } from '../tools/sculptBrushes';
+import { openThemePicker } from './themePicker';
 
 /**
  * Callbacks the topbar chip-buttons fire. Phase 3 tasks extend this as they add
@@ -88,6 +89,10 @@ export class Topbar {
     // reserve F12 for devtools, so the button is the reliable entry point.
     const renderBtn = Topbar.makeButton('🎬 Render', 'render', () => actions.toggleRender());
     renderBtn.title = 'Render image (F12)';
+    // 🎨 opens the theme picker popup, anchored under the button.
+    const themeBtn = Topbar.makeButton('🎨', 'theme-picker', () => openThemePicker(themeBtn));
+    themeBtn.title = 'Theme';
+
     // "?" opens the shortcut cheat-sheet (same overlay as F1).
     const helpBtn = Topbar.makeButton('?', 'help', () => actions.toggleHelp());
     helpBtn.title = 'Keyboard shortcuts (F1)';
@@ -97,7 +102,7 @@ export class Topbar {
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, snap, xray, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, helpBtn, this.statusEl);
+    root.append(title, chip, shading, snap, xray, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, themeBtn, helpBtn, this.statusEl);
     this.update();
   }
 

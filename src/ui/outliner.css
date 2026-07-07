@@ -7,3 +7,57 @@
   opacity: 0.9;
   user-select: none;
 }
+
+/* Collections (P10-1) --------------------------------------------------------- */
+
+/* "New Collection" action pinned to the top of the panel. */
+.outliner-newcol {
+  display: block;
+  width: calc(100% - 12px);
+  margin: 4px 6px;
+  padding: 3px 8px;
+  text-align: left;
+  font: inherit;
+  color: var(--vb-text, #d0d0d0);
+  background: var(--vb-inset, #232323);
+  border: 1px solid var(--vb-border, #1a1a1a);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.outliner-newcol:hover {
+  background: var(--vb-accent, #4772b3);
+  color: #fff;
+}
+
+/* Collection header row: triangle + folder + name + eye + delete. */
+.outliner-collection-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  font-weight: 600;
+  user-select: none;
+}
+.outliner-collection-header:hover {
+  background: #343434;
+}
+.outliner-tri {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--vb-muted, #8a8a8a);
+}
+.outliner-collection-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Member object rows nest under their collection header. */
+.outliner-row.outliner-indent {
+  padding-left: 22px;
+}

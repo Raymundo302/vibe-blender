@@ -17,6 +17,7 @@ import {
   type Modifier,
   type ModifierParams,
 } from '../core/modifiers/Modifier';
+import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/worldData';
 
 /**
  * Scene save/load as versioned JSON (task P3-2, extended to format v3 by P8-5).
@@ -85,7 +86,7 @@ function serializeLight(l: LightData): Record<string, unknown> {
 
 /** Full CameraData payload, numbers rounded. */
 function serializeCamera(c: CameraData): Record<string, unknown> {
-  return { focalLength: num(c.focalLength), near: num(c.near), far: num(c.far) };
+  return { focalLength: num(c.focalLength), near: num(c.near), far: num(c.far), lockToView: !!c.lockToView };
 }
 
 /**
@@ -185,6 +186,18 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
             const i = scene.objects.findIndex((o) => o.id === scene.activeCameraId);
             return i < 0 ? null : i;
           })(),
+    // World/environment (P10-4). The HDRI is "packed" as a data-URL string,
+    // Blender-style: self-contained but it bloats the file by the encoded image
+    // size (a 2K equirect PNG is a few MB of base64). Kept a plain string so the
+    // serialize→parse→serialize round trip stays byte-identical + deterministic.
+    world: {
+      mode: scene.world.mode,
+      color: rgb(scene.world.color),
+      horizon: rgb(scene.world.horizon),
+      zenith: rgb(scene.world.zenith),
+      strength: num(scene.world.strength),
+      hdri: scene.world.hdri,
+    },
     collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
     materials: scene.materials.map((m) => ({
       id: m.id,
@@ -254,6 +267,8 @@ interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
   /** Index into objects of the active camera, or null. */
   activeCamera: number | null;
+  /** Environment/sky (absent in pre-P10-4 files → default). */
+  world: World;
   collections: CollectionData[];
   materials: MaterialData[];
   objects: ObjectData[];
@@ -310,6 +325,7 @@ function parseScene(json: string): SceneData {
   };
 
   const materials = parseMaterials(root.materials);
+  const world = parseWorld(root.world);
 
   // Collections (P10, optional — absent in older files → empty).
   const collections: CollectionData[] = [];
@@ -343,7 +359,38 @@ function parseScene(json: string): SceneData {
       fail(`objects[${oi}].collection index ${od.collection} is out of range`);
     }
   }
-  return { camera, activeCamera, collections, materials, objects };
+  return { camera, activeCamera, world, collections, materials, objects };
+}
+
+/**
+ * Parse the world/environment block (absent in pre-P10-4 files → defaultWorld,
+ * which reproduces the old sky). The decoded HDRI cache is never in the file;
+ * applySceneJson rebuilds it from the `hdri` data URL after load.
+ */
+function parseWorld(v: unknown): World {
+  const def = defaultWorld();
+  if (v === undefined || v === null) return def;
+  if (typeof v !== 'object' || Array.isArray(v)) fail('world must be an object');
+  const w = v as Record<string, unknown>;
+  if (w.mode !== 'flat' && w.mode !== 'gradient' && w.mode !== 'hdri') {
+    fail('world.mode must be one of flat, gradient, hdri');
+  }
+  const strength = w.strength === undefined ? 1 : numField(w.strength, 'world.strength');
+  if (strength < 0) fail('world.strength must not be negative');
+  let hdri: string | null = null;
+  if (w.hdri !== undefined && w.hdri !== null) {
+    if (typeof w.hdri !== 'string') fail('world.hdri must be a string or null');
+    hdri = w.hdri;
+  }
+  return {
+    mode: w.mode,
+    color: (w.color === undefined ? def.color : numArray(w.color, 3, 'world.color')) as [number, number, number],
+    horizon: (w.horizon === undefined ? def.horizon : numArray(w.horizon, 3, 'world.horizon')) as [number, number, number],
+    zenith: (w.zenith === undefined ? def.zenith : numArray(w.zenith, 3, 'world.zenith')) as [number, number, number],
+    strength,
+    hdri,
+    hdriImage: null,
+  };
 }
 
 /** Parse the scene material library (absent in v1/v2 → empty). */
@@ -401,6 +448,8 @@ function parseCamera(v: unknown, i: number): CameraData {
     focalLength: numField(c.focalLength, `objects[${i}].camera.focalLength`),
     near: numField(c.near, `objects[${i}].camera.near`),
     far: numField(c.far, `objects[${i}].camera.far`),
+    // Optional (pre-lock files omit it) → false.
+    lockToView: c.lockToView === true,
   };
 }
 
@@ -672,6 +721,15 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
         mod.setParam(field.key, id);
       }
     }
+  }
+
+  // Environment: adopt the parsed world (fresh object, no aliasing) and, when it
+  // packs an HDRI, rebuild the decoded pixel cache off-thread (browser only —
+  // Node/jsdom test loads just leave hdriImage null → tracer uses the gradient).
+  scene.world = data.world;
+  if (data.world.mode === 'hdri' && data.world.hdri && typeof Image !== 'undefined') {
+    const w = data.world;
+    decodeHdriDataUrl(w.hdri!).then((img) => { if (scene.world === w) w.hdriImage = img; }).catch(() => { /* leave gradient fallback */ });
   }
 
   if (scene.objects.length > 0) scene.selectOnly(scene.objects[0].id);

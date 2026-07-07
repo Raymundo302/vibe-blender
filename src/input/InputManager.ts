@@ -21,7 +21,10 @@ import { edgeLoop, vertLoop, faceLoop } from '../core/mesh/ops/loopSelect';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import { frameSelection } from '../tools/frame';
 import { cameraTransformFromView } from '../tools/cameraToView';
+import { OrbitCamera } from '../camera/OrbitCamera';
+import { objectForward } from '../core/scene/objectData';
 import { Vec3 } from '../core/math/vec3';
+import { Transform } from '../core/math/transform';
 import type { Mat4 } from '../core/math/mat4';
 import type { EditModeState } from '../core/scene/EditMode';
 import { rayPlane } from '../core/math/ray';
@@ -36,6 +39,7 @@ import {
 } from '../tools/sculptBrushes';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
+import { CollectionMenu } from '../ui/collectionMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
 import { TransformCommand } from '../core/undo/commands';
@@ -43,6 +47,52 @@ import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
 import { SeparateCommand } from '../core/undo/separateCommand';
+
+// --- Lock-Camera-to-View rig math (pure, unit-tested) ------------------------
+//
+// Blender's "Lock Camera to View" lets you fly the camera by navigating the
+// viewport while looking through it. We model the interaction with a private
+// turntable OrbitCamera "rig" seeded from the camera's pose, mutate the rig with
+// the same orbit/pan/zoom math the main viewport uses, then write the rig pose
+// back onto the camera object each nav event. These helpers are the pure seams:
+// config-in / pose-out / change-detect, so the math is verifiable without DOM.
+
+/**
+ * Seed a fresh rig from a camera's world pose. eye = camera position; forward =
+ * the camera's aim (local -Z); the orbit TARGET is placed forward by `d`, where
+ * `d` is how far in front of the camera the world origin sits (the origin's
+ * signed distance along forward), clamped to 1..50. Blender orbits about the
+ * view's own dolly target; the world-origin projection is our documented
+ * stand-in so a freshly-locked camera turntables about roughly the scene center.
+ */
+export function configureRigFromCamera(rig: OrbitCamera, t: Transform): void {
+  const eye = t.position;
+  const forward = objectForward(t).normalize();
+  // (origin - eye) · forward = how far ahead the origin is along the aim.
+  const dRaw = Vec3.ZERO.sub(eye).dot(forward);
+  const d = Math.max(1, Math.min(50, dRaw));
+  rig.target = eye.add(forward.scale(d));
+  rig.distance = d;
+  // OrbitCamera reconstructs eye = target + dir(yaw,pitch)*distance, where the
+  // offset direction is (eye - target)/d = -forward. Invert that to yaw/pitch.
+  const n = forward.scale(-1);
+  rig.pitch = Math.asin(Math.max(-1, Math.min(1, n.y)));
+  rig.yaw = Math.atan2(n.x, n.z);
+}
+
+/** Write a rig's current pose back to a camera Transform (position + look-at). */
+export function cameraPoseFromRig(rig: OrbitCamera): Transform {
+  return cameraTransformFromView(rig.eye, rig.forward, Vec3.Y);
+}
+
+/** True if two poses differ in position or rotation beyond `eps` (quat double
+ *  cover handled: q and -q are the same rotation). */
+export function poseChanged(a: Transform, b: Transform, eps = 1e-6): boolean {
+  if (a.position.distanceTo(b.position) > eps) return true;
+  const qa = a.rotation, qb = b.rotation;
+  const dot = qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w;
+  return Math.abs(dot) < 1 - eps;
+}
 
 /**
  * Blender-style duplicate name: strip a trailing `.NNN`, then pick the lowest
@@ -275,7 +325,16 @@ export class InputManager {
    *  gizmo drag it confirms on pointer *release* (see onPointerUp). */
   private sculptStroke = false;
   private addMenu: AddMenu | null = null;
+  private collectionMenu: CollectionMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
+
+  /** Lock-Camera-to-View session (P10-2). While in camera view with the viewed
+   *  camera's lockToView on, MMB/wheel drive this rig instead of the main
+   *  OrbitCamera, and each event writes the rig pose back onto the camera. The
+   *  whole session collapses to ONE TransformCommand pushed on finalize. */
+  private camRig: OrbitCamera | null = null;
+  private camRigObj: SceneObject | null = null;
+  private camRigBefore: Transform | null = null;
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -345,7 +404,18 @@ export class InputManager {
     }
 
     if (e.button === 1) {
-      // MMB: orbit, Shift+MMB: pan. Navigating exits camera-view first.
+      // MMB: orbit, Shift+MMB: pan.
+      // Locked camera view: navigation MOVES the camera (rig) instead of exiting.
+      if (this.ensureCamRig()) {
+        if (e.shiftKey) this.panning = true;
+        else this.orbiting = true;
+        this.canvas.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        return;
+      }
+      // Unlocked (or user camera): navigating exits camera-view first. Commit any
+      // pending rig session (e.g. lock was just turned off) before leaving.
+      this.finalizeCamRig();
       this.renderer.cameraViewId = null;
       if (e.shiftKey) this.panning = true;
       else this.orbiting = true;
@@ -401,6 +471,13 @@ export class InputManager {
     }
     const dx = this.pointer.x - prev.x;
     const dy = this.pointer.y - prev.y;
+    // Locked camera view: MMB drag flies the camera via the rig.
+    if ((this.orbiting || this.panning) && this.camRig) {
+      if (this.orbiting) this.camRig.orbit(dx, dy);
+      else this.camRig.pan(dx, dy, this.ctx.viewportSize().height);
+      this.writeCamRig();
+      return;
+    }
     if (this.orbiting) this.ctx.camera.orbit(dx, dy);
     else if (this.panning) this.ctx.camera.pan(dx, dy, this.ctx.viewportSize().height);
     else if (this.ctx.scene.editMode && sculptState.tool !== 'none') this.updateBrushCursor();
@@ -481,6 +558,13 @@ export class InputManager {
       this.activeOp.adjustRadius(this.ctx, e.deltaY);
       return;
     }
+    // Locked camera view: the wheel dollies the camera via the rig.
+    if (this.ensureCamRig()) {
+      this.camRig!.zoom(e.deltaY);
+      this.writeCamRig();
+      return;
+    }
+    this.finalizeCamRig();
     this.renderer.cameraViewId = null; // zooming exits camera-view
     this.ctx.camera.zoom(e.deltaY);
   }
@@ -624,6 +708,8 @@ export class InputManager {
       e.preventDefault();
       const scene = this.ctx.scene;
       if (this.renderer.cameraViewId !== null) {
+        // Leaving camera view commits any lock-to-view fly as one undo step.
+        this.finalizeCamRig();
         this.renderer.cameraViewId = null;
         this.ctx.setStatus('View: User');
       } else if (scene.activeCameraId !== null) {
@@ -711,6 +797,27 @@ export class InputManager {
       }
       this.ctx.undo.push(cmd);
       this.ctx.setStatus(`Joined ${count} objects`);
+      return;
+    }
+    // M: Move to Collection (object mode). Opens a popup at the pointer listing
+    // collections + New Collection + Scene Root; each assigns every selected
+    // object's collectionId through the undo stack. (Edit-mode M merges — the
+    // edit branch returned above, so this only fires in object mode.)
+    if (key === 'm' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (this.collectionMenu) { this.collectionMenu.close(); return; }
+      const ids = [...this.ctx.scene.selection];
+      if (ids.length === 0) { this.ctx.setStatus('M: select objects first'); return; }
+      this.collectionMenu = new CollectionMenu({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        scene: this.ctx.scene,
+        undo: this.ctx.undo,
+        objectIds: ids,
+        setStatus: (t) => this.ctx.setStatus(t),
+        onClose: () => { this.collectionMenu = null; },
+      });
       return;
     }
     // X: delete the selection (no confirmation, no modifiers).
@@ -828,6 +935,63 @@ export class InputManager {
       this.ctx.undo.push(new TransformCommand('Camera to View', [{ object: camObj, before, after: pose }]));
     }
     this.ctx.setStatus('Camera set to view');
+  }
+
+  // --- Lock-Camera-to-View rig session ---------------------------------------
+
+  /** The camera object being looked through with lockToView ON, else null. */
+  private lockedViewCamera(): SceneObject | null {
+    const id = this.renderer.cameraViewId;
+    if (id === null) return null;
+    const obj = this.ctx.scene.get(id);
+    if (!obj || obj.kind !== 'camera' || !obj.camera || !obj.camera.lockToView) return null;
+    return obj;
+  }
+
+  /**
+   * Ensure a rig session is running for the currently locked view camera,
+   * seeding it lazily from the live camera pose on the first nav event (this
+   * covers both "entered camera view with lock on" and "checkbox turned on while
+   * in camera view" without any cross-wiring). Returns the rig's camera object,
+   * or null when we are NOT in a locked camera view.
+   */
+  private ensureCamRig(): SceneObject | null {
+    const obj = this.lockedViewCamera();
+    if (!obj) return null;
+    if (!this.camRig || this.camRigObj !== obj) {
+      this.finalizeCamRig(); // commit any stale session before retargeting
+      this.camRig = new OrbitCamera();
+      configureRigFromCamera(this.camRig, obj.transform);
+      this.camRigObj = obj;
+      this.camRigBefore = obj.transform;
+    }
+    return obj;
+  }
+
+  /** Write the rig's current pose onto the camera object (live, no undo yet). */
+  private writeCamRig(): void {
+    if (this.camRig && this.camRigObj) {
+      this.camRigObj.transform = cameraPoseFromRig(this.camRig);
+    }
+  }
+
+  /**
+   * End the rig session: if the camera actually moved, push ONE TransformCommand
+   * so the whole continuous fly collapses to a single undo step (Blender-ish —
+   * navigation never spams the stack). Idempotent / safe to call when idle.
+   */
+  private finalizeCamRig(): void {
+    if (this.camRig && this.camRigObj && this.camRigBefore) {
+      const after = this.camRigObj.transform;
+      if (poseChanged(this.camRigBefore, after)) {
+        this.ctx.undo.push(new TransformCommand('Camera Nav', [
+          { object: this.camRigObj, before: this.camRigBefore, after },
+        ]));
+      }
+    }
+    this.camRig = null;
+    this.camRigObj = null;
+    this.camRigBefore = null;
   }
 
   /** Edit-mode keymap. Element tools (G/R/S, E, I, X, ...) arrive with P2-3..P2-6. */

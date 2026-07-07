@@ -2,6 +2,7 @@ import { Vec3 } from '../core/math/vec3';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import { cameraFovY, objectForward, DEFAULT_MATERIAL } from '../core/scene/objectData';
+import type { HdriImage } from '../core/scene/worldData';
 
 /**
  * Plain-data scene snapshot for the path tracer (P8-4). Everything here is
@@ -70,6 +71,37 @@ export interface SnapCamera {
   focusDistance?: number;
 }
 
+/**
+ * Environment/sky for the tracer's ray-miss color (P10-4). Plain data so it
+ * crosses the Worker boundary: `hdri` is a decoded pixel blob (Float32Array),
+ * NOT the data-URL string. `mode` codes: 0 flat, 1 gradient, 2 hdri.
+ */
+export interface SnapWorld {
+  mode: 0 | 1 | 2;
+  color: [number, number, number];
+  horizon: [number, number, number];
+  zenith: [number, number, number];
+  strength: number;
+  /** Equirect pixels when mode 2 (else null → falls back to the gradient). */
+  hdri: HdriImage | null;
+}
+
+/**
+ * The default snap world — reproduces the tracer's original hardcoded sky. Used
+ * by prepareScene when a snapshot omits `world` (older tests build snapshots
+ * without it), so their images stay byte-identical to the pre-P10-4 tracer.
+ */
+export function defaultSnapWorld(): SnapWorld {
+  return {
+    mode: 1,
+    color: [0.05, 0.05, 0.05],
+    horizon: [0.05, 0.05, 0.05],
+    zenith: [0.11, 0.13, 0.16],
+    strength: 1,
+    hdri: null,
+  };
+}
+
 export interface Snapshot {
   /** World-space triangle vertices, 9 floats per triangle (ax,ay,az, bx…). */
   tris: Float32Array;
@@ -79,6 +111,8 @@ export interface Snapshot {
   materials: SnapMaterial[];
   lights: SnapLight[];
   camera: SnapCamera;
+  /** Sky/environment; optional so pre-P10-4 snapshots default to the old sky. */
+  world?: SnapWorld;
 }
 
 function toMat(m: {
@@ -196,12 +230,23 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   // until the user opens it in the render window).
   camera.focusDistance = focusDistanceForBounds(tris, camera);
 
+  const w = scene.world;
+  const world: SnapWorld = {
+    mode: w.mode === 'flat' ? 0 : w.mode === 'gradient' ? 1 : 2,
+    color: [w.color[0], w.color[1], w.color[2]],
+    horizon: [w.horizon[0], w.horizon[1], w.horizon[2]],
+    zenith: [w.zenith[0], w.zenith[1], w.zenith[2]],
+    strength: w.strength,
+    hdri: w.mode === 'hdri' && w.hdriImage ? w.hdriImage : null,
+  };
+
   return {
     tris,
     triMat: Int32Array.from(triMatArr),
     materials,
     lights,
     camera,
+    world,
   };
 }
 

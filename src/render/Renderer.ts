@@ -15,7 +15,8 @@ import {
   type ElementPickResult,
 } from './passes/elementPickPass';
 import { elementIndexMaps } from '../core/mesh/editOverlayData';
-import { RenderedPass, collectLights } from './passes/renderedPass';
+import { RenderedPass, WorldBackgroundPass, collectLights } from './passes/renderedPass';
+import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
 import { cameraFovY } from '../core/scene/objectData';
@@ -25,7 +26,7 @@ import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type { Mat4 } from '../core/math/mat4';
-import type { Vec3 } from '../core/math/vec3';
+import { Vec3 } from '../core/math/vec3';
 
 interface GpuMesh {
   triangles: VertexArray;
@@ -82,10 +83,15 @@ export class Renderer {
   private readonly editOverlayPass: EditOverlayPass;
   private readonly elementPickPass: ElementPickPass;
   private readonly renderedPass: RenderedPass;
+  private readonly worldBgPass: WorldBackgroundPass;
   private readonly iconPass: IconPass;
   private readonly cameraFrustumPass: CameraFrustumPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
+  /** Equirect HDRI texture for the Rendered-mode background, or null. */
+  private hdriTexture: WebGLTexture | null = null;
+  /** The `world.hdri` data URL currently uploaded (null tracks "none"). */
+  private hdriUrl: string | null = null;
 
   /**
    * Whether the translate gizmo may draw / be picked. InputManager clears this
@@ -129,6 +135,7 @@ export class Renderer {
     this.editOverlayPass = new EditOverlayPass(gl);
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     this.renderedPass = new RenderedPass(gl);
+    this.worldBgPass = new WorldBackgroundPass(gl);
     this.iconPass = new IconPass(gl);
     this.cameraFrustumPass = new CameraFrustumPass(gl);
     gl.enable(gl.DEPTH_TEST);
@@ -164,6 +171,37 @@ export class Renderer {
     };
     this.gpuMeshes.set(obj.id, entry);
     return entry;
+  }
+
+  /**
+   * Keep the GL HDRI texture in sync with scene.world.hdri. Uploads the equirect
+   * image (sRGB internal format → sampled as linear) the first time a new data
+   * URL appears; clears the binding when the world drops HDRI. Async image
+   * decode: until it lands, the background falls back to the gradient (hasHdri 0).
+   */
+  private syncHdriTexture(scene: Scene): void {
+    const url = scene.world.mode === 'hdri' ? scene.world.hdri : null;
+    if (url === this.hdriUrl) return;
+    this.hdriUrl = url;
+    this.hdriTexture = null; // fall back to gradient until the new image loads
+    if (!url) return;
+    const gl = this.ctx.gl;
+    const img = new Image();
+    img.onload = () => {
+      // Ignore a stale load (world.hdri changed again before this resolved).
+      if (this.hdriUrl !== url) return;
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.hdriTexture = tex;
+    };
+    img.onerror = () => { /* keep the gradient fallback */ };
+    img.src = url;
   }
 
   /**
@@ -240,7 +278,15 @@ export class Renderer {
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else if (this.shadingMode === 'rendered') {
-      this.renderedPass.begin(view, proj, eye, collectLights(scene));
+      // World environment as the backdrop (flat / gradient / HDRI), then the
+      // meshes over it. Other shading modes keep the theme clear color.
+      this.syncHdriTexture(scene);
+      const invViewProj = proj.mul(view).invert();
+      this.worldBgPass.render(invViewProj, eye, scene.world, this.hdriTexture);
+      const amb = averageWorldColor(scene.world);
+      const k = scene.world.strength * 0.3;
+      this.renderedPass.begin(view, proj, eye, collectLights(scene),
+        new Vec3(amb[0] * k, amb[1] * k, amb[2] * k));
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
         this.renderedPass.setObject(obj.transform.matrix(), scene.materialOf(obj));

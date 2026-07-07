@@ -1,0 +1,27 @@
+/* ----------------------------------------------------- passepartout (P10-2) */
+/*
+ * Blender's camera-view passepartout: darkens everything outside the render
+ * frame while looking through a camera. Four mask panes dim the letterbox
+ * margins; a hairline rect marks the frame. The whole overlay is pinned inside
+ * #viewport-wrap and is NON-INTERACTIVE (pointer-events: none) so viewport
+ * picking/navigation still reach the canvas through it — clicks select the
+ * object under the frame exactly as if the overlay were not there.
+ */
+.passepartout {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 15; /* over the canvas, under the N-panel (z 30+) and menus */
+}
+
+.passepartout-mask {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+
+.passepartout-frame {
+  position: absolute;
+  border: 1px solid var(--vb-border, #3d3d3d);
+  pointer-events: none;
+}

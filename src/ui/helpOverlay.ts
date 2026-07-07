@@ -45,6 +45,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Object Mode', keys: 'Shift+A', description: 'Add menu (primitives)' },
   { group: 'Object Mode', keys: 'Shift+D', description: 'Duplicate selection (then Move)' },
   { group: 'Object Mode', keys: 'Alt+A', description: 'Deselect all' },
+  { group: 'Object Mode', keys: 'M', description: 'Move selection to a collection' },
   { group: 'Object Mode', keys: 'X / Delete', description: 'Delete selection' },
 
   // Edit mode
@@ -78,7 +79,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Camera', keys: 'MMB drag', description: 'Orbit' },
   { group: 'Camera', keys: 'Shift+MMB drag', description: 'Pan' },
   { group: 'Camera', keys: 'Mouse wheel', description: 'Zoom' },
-  { group: 'Camera', keys: 'Numpad0', description: 'View through the active camera (toggle)' },
+  { group: 'Camera', keys: 'Numpad0', description: 'View through the active camera (toggle). With Camera tab › Lock to View on, navigating flies the camera' },
   { group: 'Camera', keys: '. (Period)', description: 'Frame the selection' },
 
   // File

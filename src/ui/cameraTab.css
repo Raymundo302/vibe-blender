@@ -31,7 +31,7 @@
 }
 
 .camera-tab-active-badge {
-  color: #ffa940;
+  color: var(--vb-accent, #ffa940);
   font-size: 11px;
 }
 

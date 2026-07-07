@@ -18,6 +18,7 @@ import './core/modifiers/builtins'; // side-effect: registers Mirror + Array mod
 import { Topbar } from './ui/topbar';
 import { HelpOverlay } from './ui/helpOverlay';
 import { NPanel } from './ui/nPanel';
+import { Passepartout } from './ui/passepartout';
 import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { Autosave } from './io/autosave';
@@ -168,6 +169,10 @@ const helpOverlay = new HelpOverlay(document.body);
 // Viewport N-panel (P6-2): a slim Item sidebar overlaid on the viewport's right
 // edge, toggled with N. Lives inside #viewport-wrap, not a workspace area.
 const nPanel = new NPanel(viewportWrap, scene, undo);
+
+// Passepartout (P10-2): darkens the viewport outside the 16:9 render frame while
+// looking through a camera. Driven from the frame loop (like the panels below).
+const passepartout = new Passepartout(viewportWrap, renderer, canvas);
 
 new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
 
@@ -323,6 +328,7 @@ function frame(): void {
   workspaces.update();
   topbar.update();
   nPanel.update();
+  passepartout.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -1,0 +1,62 @@
+/* World properties tab (P10-4). */
+
+.world-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.world-tab-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.world-tab-label {
+  flex: 0 0 68px;
+  font-size: 11px;
+}
+
+.world-tab-mode {
+  flex: 1 1 auto;
+}
+
+.world-tab-color,
+.world-tab-horizon,
+.world-tab-zenith {
+  width: 48px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border, #444);
+  background: none;
+  cursor: pointer;
+}
+
+.world-tab-strength {
+  width: 72px;
+}
+
+.world-tab-hdri {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.world-tab-file {
+  font-size: 10px;
+}
+
+.world-tab-preview {
+  width: 128px;
+  height: 64px;
+  object-fit: cover;
+  border: 1px solid var(--border, #444);
+  background:
+    repeating-conic-gradient(#3a3a3a 0% 25%, #2a2a2a 0% 50%) 50% / 12px 12px;
+}
+
+.world-tab-hdri-label {
+  font-size: 10px;
+  opacity: 0.7;
+}

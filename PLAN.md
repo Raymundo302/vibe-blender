@@ -192,7 +192,7 @@ New architecture decisions:
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
 | F10-1 | Theme system core (ThemeSpec registry, viewport palette plumbing, claude + default themes) + collections model (effectiveVisible everywhere, index serialization) | fable | — | verified |
-| P10-1 | Collections UI: outliner groups, M move-to-collection, undo commands | opus | F10-1 | spec-ready |
-| P10-3 | Themes: tokenize css, six 90s themes from Ray's reference, picker UI | opus | F10-1 | spec-ready |
-| P10-4 | World: flat/gradient/HDRI environment (tab, rendered background, tracer sky) | opus | F10-1 | spec-ready |
-| P10-2 | Camera Lock-to-View + passepartout | opus | batch 1 | spec-ready |
+| P10-1 | Collections UI: outliner groups, M move-to-collection, undo commands | opus | F10-1 | verified |
+| P10-3 | Themes: tokenize css, six 90s themes from Ray's reference, picker UI | opus | F10-1 | verified |
+| P10-4 | World: flat/gradient/HDRI environment (tab, rendered background, tracer sky) | opus | F10-1 | verified |
+| P10-2 | Camera Lock-to-View + passepartout | opus | batch 1 | verified |

@@ -88,6 +88,7 @@ class CameraTab {
   private readonly focalInput: HTMLInputElement;
   private readonly nearInput: HTMLInputElement;
   private readonly farInput: HTMLInputElement;
+  private readonly lockInput: HTMLInputElement;
   private readonly activeBtn: HTMLButtonElement;
   private readonly activeBadge: HTMLSpanElement;
 
@@ -135,6 +136,26 @@ class CameraTab {
       this.commit('Set Clip End', (c) => { c.far = raw; });
     });
     this.body.append(this.labelledRow('Clip End', this.farInput));
+
+    // Lock Camera to View ----------------------------------------------------
+    // When on, navigating the viewport while looking through this camera (Numpad0)
+    // moves the camera instead of exiting the view (see InputManager rig).
+    this.lockInput = document.createElement('input');
+    this.lockInput.type = 'checkbox';
+    this.lockInput.className = 'camera-tab-lock';
+    this.lockInput.dataset.field = 'lockToView';
+    this.lockInput.addEventListener('change', () => {
+      const on = this.lockInput.checked;
+      this.commit('Lock Camera to View', (c) => { c.lockToView = on; });
+    });
+    const lockRow = document.createElement('label');
+    lockRow.className = 'camera-tab-row camera-tab-lock-row';
+    const lockLabel = document.createElement('span');
+    lockLabel.className = 'properties-group-title camera-tab-label';
+    lockLabel.textContent = 'Lock to View';
+    lockLabel.style.marginBottom = '0';
+    lockRow.append(lockLabel, this.lockInput);
+    this.body.append(lockRow);
 
     // Set Active + indicator -------------------------------------------------
     const activeRow = document.createElement('div');
@@ -210,6 +231,8 @@ class CameraTab {
     if (this.nearInput.value !== near) this.nearInput.value = near;
     const far = String(round(c.far));
     if (this.farInput.value !== far) this.farInput.value = far;
+    const lock = !!c.lockToView;
+    if (this.lockInput.checked !== lock) this.lockInput.checked = lock;
   }
 
   private isPanelFocused(): boolean {

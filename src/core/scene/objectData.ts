@@ -50,10 +50,16 @@ export interface CameraData {
   focalLength: number;
   near: number;
   far: number;
+  /**
+   * Blender's "Lock Camera to View": while looking through this camera
+   * (Numpad0), viewport navigation MOVES the camera instead of exiting the
+   * view. Optional so pre-lock scenes/tests still parse (default false).
+   */
+  lockToView?: boolean;
 }
 
 export function defaultCamera(): CameraData {
-  return { focalLength: 50, near: 0.1, far: 500 };
+  return { focalLength: 50, near: 0.1, far: 500, lockToView: false };
 }
 
 /** Vertical FOV (radians) from focal length: 24mm-tall sensor → half-height 12. */

@@ -1,8 +1,10 @@
 import { Shader } from '../gl/Shader';
+import { VertexArray } from '../gl/VertexArray';
 import { Vec3 } from '../../core/math/vec3';
 import type { Mat4 } from '../../core/math/mat4';
 import type { Scene } from '../../core/scene/Scene';
 import { objectForward, type Material } from '../../core/scene/objectData';
+import type { World } from '../../core/scene/worldData';
 
 /**
  * "Rendered" viewport shading (Phase 8): forward PBR-lite lit by the scene's
@@ -101,6 +103,7 @@ uniform vec3 u_baseColor;
 uniform float u_metallic;
 uniform float u_roughness;
 uniform vec3 u_emissive;
+uniform vec3 u_ambient; // flat world-derived ambient (avg world color × strength × 0.3)
 
 out vec4 outColor;
 
@@ -129,7 +132,9 @@ void main() {
   vec3 baseColor = u_baseColor * v_tint;
   vec3 F0 = mix(vec3(0.04), baseColor, u_metallic);
 
-  vec3 color = vec3(0.03) * baseColor; // whisper of ambient so shapes read
+  // Flat ambient from the world (honest approximation of image-based lighting:
+  // average world color × strength × 0.3, computed on the CPU as u_ambient).
+  vec3 color = u_ambient * baseColor;
   for (int i = 0; i < ${MAX_LIGHTS}; i++) {
     if (i >= u_lightCount) break;
     vec3 L;
@@ -174,13 +179,14 @@ export class RenderedPass {
     this.shader = new Shader(gl, VERT, FRAG, 'mesh-rendered');
   }
 
-  /** Bind per-frame state: camera + the frame's light set. */
-  begin(view: Mat4, proj: Mat4, eye: Vec3, lights: LightSet): void {
+  /** Bind per-frame state: camera + the frame's light set + world ambient. */
+  begin(view: Mat4, proj: Mat4, eye: Vec3, lights: LightSet, ambient: Vec3): void {
     const s = this.shader;
     s.use();
     s.setMat4('u_view', view);
     s.setMat4('u_proj', proj);
     s.setVec3('u_eye', eye);
+    s.setVec3('u_ambient', ambient);
     s.setInt('u_lightCount', lights.count);
     // Shader has no array setters; set array uniforms element by element.
     for (let i = 0; i < lights.count; i++) {
@@ -212,4 +218,106 @@ export class RenderedPass {
 
 function vec3At(a: Float32Array, i: number): Vec3 {
   return new Vec3(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]);
+}
+
+// ---------------------------------------------------------------------------
+// World background (P10-4): a fullscreen pass that paints the environment as
+// the Rendered-viewport backdrop. Per fragment it reconstructs the view ray
+// (from the inverse view-projection) and evaluates flat / gradient / HDRI —
+// the exact same math the path tracer's ray-miss uses (worldSky / equirectUV),
+// so the viewport preview and the F12 render agree. Tonemap+gamma match the
+// mesh pass so lit geometry and sky sit in one display space.
+// ---------------------------------------------------------------------------
+
+const BG_VERT = /* glsl */ `#version 300 es
+layout(location = 0) in vec2 a_pos;
+out vec2 v_ndc;
+void main() {
+  v_ndc = a_pos;
+  gl_Position = vec4(a_pos, 1.0, 1.0);
+}`;
+
+const BG_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 v_ndc;
+uniform mat4 u_invViewProj;
+uniform vec3 u_eye;
+uniform int u_mode;        // 0 flat, 1 gradient, 2 hdri
+uniform vec3 u_color;
+uniform vec3 u_horizon;
+uniform vec3 u_zenith;
+uniform float u_strength;
+uniform int u_hasHdri;     // 1 when the equirect texture is ready
+uniform sampler2D u_hdri;  // sRGB-encoded equirect (sampled as linear)
+out vec4 outColor;
+
+const float PI = 3.14159265359;
+
+void main() {
+  vec4 farP = u_invViewProj * vec4(v_ndc, 1.0, 1.0);
+  vec4 nearP = u_invViewProj * vec4(v_ndc, -1.0, 1.0);
+  vec3 dir = normalize(farP.xyz / farP.w - nearP.xyz / nearP.w);
+
+  vec3 c;
+  if (u_mode == 0) {
+    c = u_color;
+  } else if (u_mode == 2 && u_hasHdri == 1) {
+    float u = 0.5 + atan(dir.x, dir.z) / (2.0 * PI);
+    float v = 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / PI;
+    c = texture(u_hdri, vec2(u, v)).rgb;
+  } else {
+    float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    c = mix(u_horizon, u_zenith, t);
+  }
+  c *= u_strength;
+  c = c / (c + vec3(1.0));      // Reinhard tonemap (matches the mesh pass)
+  c = pow(c, vec3(1.0 / 2.2));  // gamma
+  outColor = vec4(c, 1.0);
+}`;
+
+const WORLD_MODE_CODE: Record<World['mode'], number> = { flat: 0, gradient: 1, hdri: 2 };
+
+/** Fullscreen environment backdrop for Rendered viewport mode. */
+export class WorldBackgroundPass {
+  private readonly shader: Shader;
+  private readonly tri: VertexArray;
+
+  constructor(private readonly gl: WebGL2RenderingContext) {
+    this.shader = new Shader(gl, BG_VERT, BG_FRAG, 'world-bg');
+    // A single oversized triangle covering the NDC square.
+    this.tri = new VertexArray(gl, [
+      { location: 0, size: 2, data: new Float32Array([-1, -1, 3, -1, -1, 3]) },
+    ]);
+  }
+
+  /**
+   * Paint the world into the whole viewport. `invViewProj` = inverse(proj·view)
+   * of the current frame; `hdri` is the uploaded equirect texture (or null).
+   * Runs with depth test off and no depth write, so meshes draw over it.
+   */
+  render(invViewProj: Mat4, eye: Vec3, world: World, hdri: WebGLTexture | null): void {
+    const gl = this.gl;
+    const s = this.shader;
+    s.use();
+    s.setMat4('u_invViewProj', invViewProj);
+    s.setVec3('u_eye', eye);
+    s.setInt('u_mode', WORLD_MODE_CODE[world.mode]);
+    s.setVec3('u_color', new Vec3(world.color[0], world.color[1], world.color[2]));
+    s.setVec3('u_horizon', new Vec3(world.horizon[0], world.horizon[1], world.horizon[2]));
+    s.setVec3('u_zenith', new Vec3(world.zenith[0], world.zenith[1], world.zenith[2]));
+    s.setFloat('u_strength', world.strength);
+    const hasHdri = world.mode === 'hdri' && hdri !== null;
+    s.setInt('u_hasHdri', hasHdri ? 1 : 0);
+    if (hasHdri) {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, hdri);
+      s.setInt('u_hdri', 0);
+    }
+    const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    this.tri.draw(gl.TRIANGLES);
+    gl.depthMask(true);
+    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
+  }
 }

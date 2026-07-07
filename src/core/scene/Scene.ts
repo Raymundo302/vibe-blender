@@ -1,6 +1,7 @@
 import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
 import { EditModeState } from './EditMode';
+import { defaultWorld, type World } from './worldData';
 import type { Modifier, ModifierContext } from '../modifiers/Modifier';
 import {
   DEFAULT_MATERIAL,
@@ -94,6 +95,9 @@ export class Scene {
   readonly collections: SceneCollection[] = [];
   /** The camera F12 renders from / Numpad-0 looks through, or null. */
   activeCameraId: number | null = null;
+  /** Environment (background + image-based lighting). Default reproduces the
+   *  path tracer's original hardcoded sky, so pre-World scenes are unchanged. */
+  world: World = defaultWorld();
   private nextId = 0;
   private nextMaterialId = 0;
   private nextCollectionId = 0;
