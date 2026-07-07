@@ -185,11 +185,27 @@ idleHint.id = 'idle-hint';
 idleHint.textContent = 'F1 — shortcuts';
 viewportWrap.append(idleHint);
 
+// --- ?scene=<url> deep link -------------------------------------------------
+// Loads a scene file served relative to the app (e.g. ?scene=research/donut.
+// vibe.json under the dev server). Skips the autosave-restore prompt: an
+// explicit deep link IS the chosen scene. Fetch failures fall through to a
+// normal boot with a status message.
+const sceneParam = new URLSearchParams(location.search).get('scene');
+if (sceneParam) {
+  fetch(sceneParam)
+    .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+    .then((text) => {
+      loadSceneJson(text);
+      opCtx.setStatus(`Loaded ${sceneParam.split('/').pop()}`);
+    })
+    .catch((err) => opCtx.setStatus(`Scene link failed: ${(err as Error).message}`));
+}
+
 // Crash-restore prompt: if a stored autosave exists and differs from the pristine
 // default scene, offer to restore it. Mounted on <body> (non-blocking — see
 // theme.css) so it coexists with the splash without racing its dismissal.
 const storedAutosave = autosave.load();
-if (storedAutosave && storedAutosave.scene !== pristineScene) {
+if (!sceneParam && storedAutosave && storedAutosave.scene !== pristineScene) {
   new RestoreToast(document.body, {
     onRestore: () => {
       try {
