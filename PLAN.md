@@ -255,3 +255,24 @@ New architecture decisions:
 sampling through hierarchies; bump/map plumbing (F13-1) is the seam node outputs
 plug into. P14 and P15 are each ~Phase-8-sized — budget-cap per phase and let the
 task registry carry resume state if credits run out mid-night.
+
+### Phase 16 — Animation render & dry-run debts (planned 2026-07-08, night build cont.)
+Chosen from the P14-4/P15-4 dry-run findings (research/NODES-RUN.md,
+research/ANIM-RUN.md) + the standing punch list. Theme: make the fly-through
+RENDERABLE and pay the sharpest debts the runs surfaced.
+| # | Decision | Rationale |
+|---|----------|-----------|
+| A16 | **Animation render = frame loop over [start,end] driving the EXISTING single-frame paths** (Rendered-viewport capture per frame, or tracer at low spp per frame), assembled to WebM via MediaRecorder + optional PNG-zip | No new renderer: sampler poses the frame, existing paths draw it. WebM keeps it in-browser with zero deps; PNGs are the lossless escape hatch. |
+
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F16-1 | Sampler precision fix: rebuild ONLY keyed transform components (kills the euler↔quat one-time settle from ANIM-RUN) + regression test | fable | — | pending |
+| P16-1 | Render Animation: Ctrl+F12 + topbar 🎞 — frame loop start→end, per-frame Rendered capture (or tracer low-spp mode toggle), progress UI with cancel, WebM download + PNG-zip option | opus | F16-1 | pending |
+| P16-2 | Texture Coordinate node (Generated/object-space via ctx.pos from the tracer; documented UV fallback in the bake) + Map Range node + noise contrast param | opus | — | pending |
+| P16-3 | Dope-sheet-lite: per-channel expandable rows in the Timeline + per-key interpolation picker on selected keys (SetKeyInterpCommand) | opus | — | pending |
+| P16-4 | Quick-wins batch: theme-picker toggle-close, M→New Collection as ONE undo, camera lock-to-view framing distance, proportional-edit default radius, .hdr (RGBE) World parsing | opus | — | pending |
+
+**Exit criteria:** the donut fly-through (research/donut-flythrough.vibe.json)
+renders to a watchable WebM through the UI; procedural icing without a UV map
+(Generated coords, tracer path); per-key interp editable from the timeline;
+the four standing UX papercuts closed.
