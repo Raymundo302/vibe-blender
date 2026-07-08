@@ -46,6 +46,14 @@ export interface EvalContext {
   u: number;
   v: number;
   /**
+   * Generated texture coordinate (P16-2): the surface point's LOCAL mesh
+   * position normalized to the object's base evaluated-mesh AABB (Blender's
+   * "Generated"), 0..1 per axis. Only the path tracer fills this (per hit);
+   * the Rendered/bake path has no surface positions, so it stays undefined
+   * and the Texture Coordinate node falls back to (u, v, 0).
+   */
+  gen?: [number, number, number];
+  /**
    * Decoded images for 'image' params, keyed by the param's data-URL string.
    * The evaluator's CALLER fills this (browser decodes; tests build arrays
    * directly). Raw 0..1 RGB, row 0 = top — the F13-1 map-cache convention.

@@ -136,6 +136,12 @@ export interface Snapshot {
   /** Per-corner UV (2 floats × 3 corners per tri), parallel to tris (P11).
    * Optional so hand-built test snapshots stay valid; absent → all (0,0). */
   triUV?: Float32Array;
+  /** Per-corner GENERATED texture coord (3 floats × 3 corners per tri),
+   * parallel to tris (P16-2): the corner vert's LOCAL position normalized to
+   * the object's base evaluated-mesh AABB, 0..1 per axis. The tracer
+   * interpolates it like triUV and passes it as ctx.gen. Optional; absent →
+   * the Texture Coordinate node's generated output falls back to (u, v, 0). */
+  triGen?: Float32Array;
   /** Material library; index 0 is always the default grey material. */
   materials: SnapMaterial[];
   lights: SnapLight[];
@@ -226,6 +232,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   const triPos: number[] = [];
   const triMatArr: number[] = [];
   const triUVArr: number[] = [];
+  const triGenArr: number[] = [];
   /** Derived tinted materials, keyed by base index + tint (see face loop). */
   const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
@@ -240,6 +247,27 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     // Precompute world-space vert positions once.
     const world = new Map<number, Vec3>();
     for (const v of mesh.verts.values()) world.set(v.id, model.transformPoint(v.co));
+    // GENERATED coords (P16-2): each vert's LOCAL position normalized to the
+    // evaluated mesh's local AABB, 0..1 per axis. Computed once per object; a
+    // degenerate (flat) axis maps to 0.5 (the normalized center).
+    let mnx = Infinity, mny = Infinity, mnz = Infinity;
+    let mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+    for (const v of mesh.verts.values()) {
+      const c = v.co;
+      if (c.x < mnx) mnx = c.x; if (c.x > mxx) mxx = c.x;
+      if (c.y < mny) mny = c.y; if (c.y > mxy) mxy = c.y;
+      if (c.z < mnz) mnz = c.z; if (c.z > mxz) mxz = c.z;
+    }
+    const sx = mxx - mnx, sy = mxy - mny, sz = mxz - mnz;
+    const gen = new Map<number, [number, number, number]>();
+    for (const v of mesh.verts.values()) {
+      const c = v.co;
+      gen.set(v.id, [
+        sx > 1e-12 ? (c.x - mnx) / sx : 0.5,
+        sy > 1e-12 ? (c.y - mny) / sy : 0.5,
+        sz > 1e-12 ? (c.z - mnz) / sz : 0.5,
+      ]);
+    }
     for (const face of mesh.faces.values()) {
       const vs = face.verts;
       const a = world.get(vs[0]);
@@ -273,6 +301,8 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
         for (const corner of [0, i, i + 1]) {
           const uv = faceUVs?.[corner];
           triUVArr.push(uv?.[0] ?? 0, uv?.[1] ?? 0);
+          const g = gen.get(vs[corner]);
+          triGenArr.push(g?.[0] ?? 0, g?.[1] ?? 0, g?.[2] ?? 0);
         }
         triMatArr.push(faceMi);
       }
@@ -322,6 +352,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     tris,
     triMat: Int32Array.from(triMatArr),
     triUV: new Float32Array(triUVArr),
+    triGen: new Float32Array(triGenArr),
     materials,
     lights,
     camera,

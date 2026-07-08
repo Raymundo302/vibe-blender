@@ -266,11 +266,11 @@ RENDERABLE and pay the sharpest debts the runs surfaced.
 
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| F16-1 | Sampler precision fix: rebuild ONLY keyed transform components (kills the euler↔quat one-time settle from ANIM-RUN) + regression test | fable | — | pending |
-| P16-1 | Render Animation: Ctrl+F12 + topbar 🎞 — frame loop start→end, per-frame Rendered capture (or tracer low-spp mode toggle), progress UI with cancel, WebM download + PNG-zip option | opus | F16-1 | pending |
-| P16-2 | Texture Coordinate node (Generated/object-space via ctx.pos from the tracer; documented UV fallback in the bake) + Map Range node + noise contrast param | opus | — | pending |
-| P16-3 | Dope-sheet-lite: per-channel expandable rows in the Timeline + per-key interpolation picker on selected keys (SetKeyInterpCommand) | opus | — | pending |
-| P16-4 | Quick-wins batch: theme-picker toggle-close, M→New Collection as ONE undo, camera lock-to-view framing distance, proportional-edit default radius, .hdr (RGBE) World parsing | opus | — | pending |
+| F16-1 | Sampler precision fix: rebuild ONLY keyed transform components (kills the euler↔quat one-time settle from ANIM-RUN) + regression test | fable | — | verified |
+| P16-1 | Render Animation: Ctrl+F12 + topbar 🎞 — frame loop start→end, per-frame Rendered capture (or tracer low-spp mode toggle), progress UI with cancel, WebM download + PNG-zip option | opus | F16-1 | verified |
+| P16-2 | Texture Coordinate node (Generated/object-space via ctx.pos from the tracer; documented UV fallback in the bake) + Map Range node + noise contrast param | opus | — | verified |
+| P16-3 | Dope-sheet-lite: per-channel expandable rows in the Timeline + per-key interpolation picker on selected keys (SetKeyInterpCommand) | opus | — | verified |
+| P16-4 | Quick-wins batch: theme-picker toggle-close, M→New Collection as ONE undo, camera lock-to-view framing distance, proportional-edit default radius, .hdr (RGBE) World parsing | opus | — | verified |
 
 **Exit criteria:** the donut fly-through (research/donut-flythrough.vibe.json)
 renders to a watchable WebM through the UI; procedural icing without a UV map

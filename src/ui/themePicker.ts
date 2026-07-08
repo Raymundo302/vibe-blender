@@ -26,7 +26,7 @@ class ThemePicker {
   private readonly root: HTMLDivElement;
   private closed = false;
 
-  constructor(anchor: HTMLElement, private readonly onClose: () => void) {
+  constructor(private readonly anchor: HTMLElement, private readonly onClose: () => void) {
     this.root = document.createElement('div');
     this.root.className = 'theme-picker';
 
@@ -100,7 +100,14 @@ class ThemePicker {
   };
 
   private readonly onOutsidePointer = (e: PointerEvent): void => {
-    if (!this.root.contains(e.target as Node)) this.close();
+    // Ignore pointerdowns on the 🎨 anchor button: without this, the button's
+    // pointerdown closes the picker (dropping openPicker), and the click that
+    // follows re-opens it — so 🎨 could never toggle the picker shut. Letting
+    // the anchor's click reach openThemePicker with the picker still open makes
+    // it close (openPicker is non-null → close()).
+    const target = e.target as Node;
+    if (this.root.contains(target) || this.anchor.contains(target)) return;
+    this.close();
   };
 
   /** Idempotent teardown: removes the element and every listener exactly once. */

@@ -5,6 +5,8 @@ import {
   averageWorldColor,
   equirectUV,
   sampleEquirect,
+  parseRgbe,
+  decodeHdriDataUrl,
   type HdriImage,
   type World,
 } from './worldData';
@@ -171,5 +173,65 @@ describe('old scenes (no world key) load with the default world', () => {
     expect(() => applySceneJson(stripped, loaded, new OrbitCamera())).not.toThrow();
     expect(loaded.world.mode).toBe('gradient');
     expect(loaded.world).toEqual(defaultWorld());
+  });
+});
+
+// --- Radiance RGBE (.hdr) parsing -------------------------------------------
+
+/**
+ * Build a tiny new-format-RLE Radiance .hdr in memory: header + `-Y H +X W` +
+ * one RLE scanline per row. Each channel is a single run of `width` copies of a
+ * constant byte, so every pixel in the image decodes to the same RGBE quad.
+ */
+function makeRgbeRle(width: number, height: number, r: number, g: number, b: number, e: number): Uint8Array {
+  const out: number[] = [];
+  const pushStr = (s: string) => { for (const ch of s) out.push(ch.charCodeAt(0)); };
+  pushStr('#?RADIANCE\n');
+  pushStr('FORMAT=32-bit_rle_rgbe\n');
+  pushStr('\n');            // blank line ends the header vars
+  pushStr(`-Y ${height} +X ${width}\n`);
+  for (let y = 0; y < height; y++) {
+    out.push(2, 2, (width >> 8) & 0xff, width & 0xff); // adaptive-RLE marker
+    for (const val of [r, g, b, e]) {
+      out.push(128 + width, val); // one run of `width` copies (count>128 ⇒ run)
+    }
+  }
+  return new Uint8Array(out);
+}
+
+describe('parseRgbe (Radiance .hdr)', () => {
+  it('decodes a new-format RLE scanline to linear HDR floats', () => {
+    // E=128 ⇒ f = 2^(128-136) = 1/256, so byte 128 → 0.5, 64 → 0.25, 32 → 0.125.
+    const bytes = makeRgbeRle(8, 2, 128, 64, 32, 128);
+    const img = parseRgbe(bytes);
+    expect(img.width).toBe(8);
+    expect(img.height).toBe(2);
+    expect(img.data.length).toBe(8 * 2 * 3);
+    for (let i = 0; i < img.data.length; i += 3) {
+      expect(img.data[i]).toBeCloseTo(0.5, 6);
+      expect(img.data[i + 1]).toBeCloseTo(0.25, 6);
+      expect(img.data[i + 2]).toBeCloseTo(0.125, 6);
+    }
+  });
+
+  it('maps exponent 0 to pure black', () => {
+    const img = parseRgbe(makeRgbeRle(8, 1, 200, 200, 200, 0));
+    for (let i = 0; i < img.data.length; i++) expect(img.data[i]).toBe(0);
+  });
+
+  it('rejects a buffer without the Radiance magic', () => {
+    expect(() => parseRgbe(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toThrow();
+  });
+
+  it('routes a base64 .hdr data URL through decodeHdriDataUrl (RGBE branch)', async () => {
+    const bytes = makeRgbeRle(8, 1, 128, 64, 32, 128);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    const dataUrl = `data:application/octet-stream;base64,${btoa(bin)}`;
+    const img = await decodeHdriDataUrl(dataUrl);
+    expect(img.width).toBe(8);
+    expect(img.data[0]).toBeCloseTo(0.5, 6);
+    expect(img.data[1]).toBeCloseTo(0.25, 6);
+    expect(img.data[2]).toBeCloseTo(0.125, 6);
   });
 });

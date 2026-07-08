@@ -4,6 +4,7 @@ import { makeCube } from '../mesh/primitives';
 import { UndoStack } from './UndoStack';
 import {
   CreateCollectionCommand,
+  CreateCollectionAndMoveCommand,
   DeleteCollectionCommand,
   MoveToCollectionCommand,
   SetCollectionVisibilityCommand,
@@ -103,6 +104,39 @@ describe('collectionCommands (P10-1)', () => {
     expect(a.collectionId).toBeNull();
     undo.undo();
     expect(a.collectionId).toBe(col.id);
+  });
+
+  it('CreateCollectionAndMoveCommand: ONE undo returns objects AND removes the collection', () => {
+    const scene = new Scene();
+    const undo = new UndoStack();
+    const a = scene.add('A', makeCube());
+    const b = scene.add('B', makeCube());
+    // a starts at the root; b starts in a pre-existing collection.
+    const src = scene.addCollection('Src');
+    b.collectionId = src.id;
+    const collectionsBefore = scene.collections.length; // 1 (Src)
+
+    const { command, collection } = CreateCollectionAndMoveCommand.perform(scene, [a.id, b.id]);
+    undo.push(command);
+    // The new collection exists and both objects moved into it.
+    expect(scene.collections.length).toBe(collectionsBefore + 1);
+    expect(scene.getCollection(collection.id)).toBe(collection);
+    expect(a.collectionId).toBe(collection.id);
+    expect(b.collectionId).toBe(collection.id);
+
+    // Exactly ONE undo: objects return to their PREVIOUS assignment AND the new
+    // collection is gone.
+    expect(undo.undo()).toBe('Move to New Collection');
+    expect(scene.collections.length).toBe(collectionsBefore);
+    expect(scene.getCollection(collection.id)).toBeUndefined();
+    expect(a.collectionId).toBeNull();
+    expect(b.collectionId).toBe(src.id);
+
+    // Redo re-creates the collection (same id) and re-moves the objects.
+    undo.redo();
+    expect(scene.getCollection(collection.id)).toBe(collection);
+    expect(a.collectionId).toBe(collection.id);
+    expect(b.collectionId).toBe(collection.id);
   });
 
   it('SetCollectionVisibilityCommand toggles and round-trips', () => {

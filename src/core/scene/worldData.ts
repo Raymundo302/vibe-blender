@@ -128,13 +128,18 @@ export function sampleEquirect(
 /**
  * Decode a packed HDRI data URL into linear-light pixels (browser only).
  *
- * v1 supports a plain equirectangular PNG/JPEG (image/* data URL): drawn to a
- * canvas, read back, and converted sRGB→linear. Real Radiance .hdr (RGBE)
- * files are NOT parsed here — a .hdr dropped into the file input would need the
- * browser to decode it, which it can't; the UI documents PNG/JPEG equirect as
- * the supported format. The equirect *lighting* is genuine either way.
+ * Two paths:
+ *  - Radiance RGBE (.hdr): detected by the `#?` magic in the decoded bytes and
+ *    parsed natively (parseRgbe) — real high-dynamic-range float pixels, no
+ *    browser image decoder involved. Radiance stores LINEAR light already, so
+ *    no sRGB conversion is applied.
+ *  - Plain equirectangular PNG/JPEG (image/* data URL): drawn to a canvas, read
+ *    back, and converted sRGB→linear.
+ * The equirect *lighting* is genuine either way.
  */
 export function decodeHdriDataUrl(dataUrl: string): Promise<HdriImage> {
+  const rgbe = tryDecodeRgbeDataUrl(dataUrl);
+  if (rgbe) return Promise.resolve(rgbe);
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -166,4 +171,147 @@ export function decodeHdriDataUrl(dataUrl: string): Promise<HdriImage> {
 /** Standard sRGB → linear transfer (the tracer works in linear light). */
 export function srgbToLinear(c: number): number {
   return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+// --- Radiance RGBE (.hdr) parsing -------------------------------------------
+//
+// The Radiance HDR format: an ASCII header (starting `#?RADIANCE`/`#?RGBE`,
+// variable lines, a blank line), a resolution line (`-Y H +X W`), then binary
+// scanlines. Each pixel is 4 bytes R,G,B,E; the shared exponent E turns the
+// mantissae into HDR floats: rgb = comp · 2^(E-136)  (E=0 ⇒ black). Scanlines
+// come in three flavours we handle: new-format adaptive RLE (per-channel run/
+// literal, the common case), old-format RLE ((1,1,1,n) repeats the last pixel),
+// and flat uncompressed quads. Pure (no DOM) so the tracer can import it too.
+
+/** Decode a data-URL payload to bytes and parse it as RGBE if it has the magic. */
+function tryDecodeRgbeDataUrl(dataUrl: string): HdriImage | null {
+  const bytes = dataUrlToBytes(dataUrl);
+  if (!bytes || bytes.length < 2) return null;
+  // '#' '?' — the Radiance magic (covers `#?RADIANCE` and `#?RGBE`).
+  if (bytes[0] !== 0x23 || bytes[1] !== 0x3f) return null;
+  return parseRgbe(bytes);
+}
+
+/** Extract the raw bytes of a `data:` URL (base64 or percent-encoded). */
+function dataUrlToBytes(dataUrl: string): Uint8Array | null {
+  if (!dataUrl.startsWith('data:')) return null;
+  const comma = dataUrl.indexOf(',');
+  if (comma < 0) return null;
+  const meta = dataUrl.slice(5, comma);
+  const payload = dataUrl.slice(comma + 1);
+  if (/;base64/i.test(meta)) {
+    const bin = atob(payload);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  const text = decodeURIComponent(payload);
+  const out = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
+  return out;
+}
+
+/**
+ * Parse a Radiance RGBE (.hdr) byte buffer into a linear-light HdriImage
+ * (row 0 = top, +Y up — matching the equirect convention). Supports new-format
+ * adaptive RLE, old-format RLE, and flat uncompressed scanlines.
+ */
+export function parseRgbe(bytes: Uint8Array): HdriImage {
+  let pos = 0;
+  const readLine = (): string => {
+    let s = '';
+    while (pos < bytes.length) {
+      const c = bytes[pos++];
+      if (c === 0x0a) break; // '\n'
+      s += String.fromCharCode(c);
+    }
+    return s;
+  };
+
+  const magic = readLine();
+  if (!/^#\?(RADIANCE|RGBE)/.test(magic)) throw new Error('not a Radiance RGBE file');
+  // Header variables until the blank separator line.
+  for (let line = readLine(); line.length > 0; line = readLine()) { /* skip vars */ }
+
+  // Resolution line, e.g. "-Y 4 +X 6". We support both axis orderings.
+  const res = readLine();
+  const m = /^([+-][XY])\s+(\d+)\s+([+-][XY])\s+(\d+)/.exec(res);
+  if (!m) throw new Error('bad RGBE resolution line');
+  const a1 = m[1], n1 = parseInt(m[2], 10), a2 = m[3], n2 = parseInt(m[4], 10);
+  let width: number, height: number, yAxis: string;
+  if (a1[1] === 'Y') { yAxis = a1; height = n1; width = n2; }
+  else { yAxis = a2; width = n1; height = n2; }
+  if (width <= 0 || height <= 0) throw new Error('bad RGBE dimensions');
+  // `+Y` first ⇒ scanlines run bottom→top; the standard `-Y` runs top→bottom.
+  const flipY = yAxis === '+Y';
+
+  const data = new Float32Array(width * height * 3);
+  const scan = new Uint8Array(width * 4); // planar: [R…][G…][B…][E…]
+  for (let y = 0; y < height; y++) {
+    pos = readRgbeScanline(bytes, pos, scan, width);
+    const row = flipY ? height - 1 - y : y;
+    let di = row * width * 3;
+    for (let x = 0; x < width; x++) {
+      const e = scan[3 * width + x];
+      if (e === 0) { data[di] = 0; data[di + 1] = 0; data[di + 2] = 0; }
+      else {
+        const f = Math.pow(2, e - 136); // 2^(E-128) / 256
+        data[di] = scan[x] * f;
+        data[di + 1] = scan[width + x] * f;
+        data[di + 2] = scan[2 * width + x] * f;
+      }
+      di += 3;
+    }
+  }
+  return { width, height, data };
+}
+
+/** Read one scanline into the planar `scan` buffer; returns the new byte offset. */
+function readRgbeScanline(bytes: Uint8Array, pos: number, scan: Uint8Array, width: number): number {
+  // New-format adaptive RLE marker: 0x02 0x02 then the 16-bit width.
+  if (width >= 8 && width <= 0x7fff &&
+      bytes[pos] === 2 && bytes[pos + 1] === 2 && (bytes[pos + 2] & 0x80) === 0) {
+    if (((bytes[pos + 2] << 8) | bytes[pos + 3]) !== width) {
+      throw new Error('RGBE scanline width mismatch');
+    }
+    pos += 4;
+    for (let ch = 0; ch < 4; ch++) {
+      const base = ch * width;
+      let x = 0;
+      while (x < width) {
+        let count = bytes[pos++];
+        if (count > 128) { // run of (count-128) copies of the next byte
+          count -= 128;
+          const val = bytes[pos++];
+          if (x + count > width) throw new Error('RGBE RLE run overflow');
+          for (let i = 0; i < count; i++) scan[base + x++] = val;
+        } else { // literal run of `count` bytes
+          if (x + count > width) throw new Error('RGBE RLE literal overflow');
+          for (let i = 0; i < count; i++) scan[base + x++] = bytes[pos++];
+        }
+      }
+    }
+    return pos;
+  }
+  // Flat / old-format: interleaved RGBE quads, with (1,1,1,n) old-RLE repeats.
+  let x = 0, shift = 0;
+  let pr = 0, pg = 0, pb = 0, pe = 0;
+  while (x < width) {
+    const r = bytes[pos], g = bytes[pos + 1], b = bytes[pos + 2], e = bytes[pos + 3];
+    pos += 4;
+    if (r === 1 && g === 1 && b === 1) {
+      // Old RLE: repeat the previous pixel (e << 8·shift) times.
+      let count = e << (shift * 8);
+      shift++;
+      while (count-- > 0 && x < width) {
+        scan[x] = pr; scan[width + x] = pg; scan[2 * width + x] = pb; scan[3 * width + x] = pe;
+        x++;
+      }
+    } else {
+      pr = r; pg = g; pb = b; pe = e; shift = 0;
+      scan[x] = r; scan[width + x] = g; scan[2 * width + x] = b; scan[3 * width + x] = e;
+      x++;
+    }
+  }
+  return pos;
 }

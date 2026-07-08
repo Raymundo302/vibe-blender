@@ -22,6 +22,8 @@ export interface TopbarActions {
   toggleHelp(): void;
   /** Toggle the path-traced render window (F12's reliable stand-in). */
   toggleRender(): void;
+  /** Open the Render Animation modal (WebM / PNG-sequence export, Ctrl+F12). */
+  toggleRenderAnimation(): void;
 }
 
 /**
@@ -132,6 +134,9 @@ export class Topbar {
     // reserve F12 for devtools, so the button is the reliable entry point.
     const renderBtn = Topbar.makeButton('🎬 Render', 'render', () => actions.toggleRender());
     renderBtn.title = 'Render image (F12)';
+    // 🎞 opens the Render Animation modal (WebM video / PNG-sequence export).
+    const renderAnimBtn = Topbar.makeButton('🎞', 'render-animation', () => actions.toggleRenderAnimation());
+    renderAnimBtn.title = 'Render Animation (Ctrl+F12)';
     // 🎨 opens the theme picker popup, anchored under the button.
     const themeBtn = Topbar.makeButton('🎨', 'theme-picker', () => openThemePicker(themeBtn));
     themeBtn.title = 'Theme';
@@ -145,7 +150,7 @@ export class Topbar {
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, snap, xray, overlaysBtn, pivot, lights, autoKey, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, themeBtn, helpBtn, this.statusEl);
+    root.append(title, chip, shading, snap, xray, overlaysBtn, pivot, lights, autoKey, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, renderAnimBtn, themeBtn, helpBtn, this.statusEl);
     this.update();
   }
 

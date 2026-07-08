@@ -23,7 +23,8 @@ import type { UndoStack } from '../core/undo/UndoStack';
 import { applyAnimation } from '../core/anim/sampler';
 import { findCurve } from '../core/anim/fcurve';
 import { InsertKeysCommand, DeleteKeysCommand, LOC_ROT_SCALE } from '../core/anim/animCommands';
-import { MoveKeysCommand, type KeyMove } from '../core/anim/keyEditCommands';
+import { MoveKeysCommand, SetKeyInterpCommand, type KeyMove, type KeyInterpTarget } from '../core/anim/keyEditCommands';
+import type { Interp } from '../core/anim/fcurve';
 import { TransformCommand } from '../core/undo/commands';
 import './timeline.css';
 
@@ -35,9 +36,14 @@ import './timeline.css';
  */
 export const autoKeyState = { enabled: false };
 
-/** `${objectId}:${frame}` identity for a selected diamond. */
-function keyOf(objectId: number, frame: number): string {
-  return `${objectId}:${frame}`;
+/**
+ * Selection identity for a diamond (P16-3).
+ * Object-row diamond (all channels at a frame): `${objectId}:${frame}`.
+ * Channel sub-row diamond (one fcurve): `${objectId}:${frame}:${channelPath}`.
+ * channelPaths never contain ':', so a plain split disambiguates.
+ */
+function keyOf(objectId: number, frame: number, channelPath?: string): string {
+  return channelPath === undefined ? `${objectId}:${frame}` : `${objectId}:${frame}:${channelPath}`;
 }
 
 /** Left gutter (object-name label column) + right margin, in CSS px. */
@@ -94,12 +100,21 @@ export interface DiamondInfo {
 }
 
 interface Row {
+  /** 'object' = header row (all-channels-at-frame); 'channel' = fcurve sub-row. */
+  kind: 'object' | 'channel';
   object: SceneObject;
+  /** Set on channel rows only. */
+  channelPath?: string;
   diamonds: { frame: number; filled: boolean }[];
+  /** Set on object rows only: is it currently expanded (twisty ▾)? */
+  expanded?: boolean;
 }
 
 const ROW_H = 22;
 const RULER_H = 24;
+/** Twisty hit box (canvas-local px) in an object row's label gutter. */
+const TWISTY_X0 = 2;
+const TWISTY_X1 = 16;
 
 export class TimelinePane {
   readonly element: HTMLElement;
@@ -112,6 +127,7 @@ export class TimelinePane {
   private readonly startInput: HTMLInputElement;
   private readonly endInput: HTMLInputElement;
   private readonly fpsLabel: HTMLElement;
+  private readonly interpSelect: HTMLSelectElement;
 
   private cssW = 0;
   private cssH = 0;
@@ -125,7 +141,8 @@ export class TimelinePane {
   private scrubbing = false;
 
   // Keyframe selection + drag-move state (P15-3).
-  private selection = new Set<string>(); // keyOf(objectId, frame)
+  private selection = new Set<string>(); // keyOf(objectId, frame[, channelPath])
+  private expanded = new Set<number>(); // object ids whose channel sub-rows show
   private dragging = false;
   private dragMoved = false;
   private dragAnchorFrame = 0; // frame of the grabbed diamond
@@ -184,6 +201,26 @@ export class TimelinePane {
     this.fpsLabel = document.createElement('span');
     this.fpsLabel.className = 'timeline-fps';
 
+    // Per-key interpolation picker (P16-3). Enabled only when keys are
+    // selected; choosing a mode applies ONE SetKeyInterpCommand.
+    const interpWrap = document.createElement('label');
+    interpWrap.className = 'timeline-field timeline-interp-field';
+    const interpSpan = document.createElement('span');
+    interpSpan.textContent = 'Interp';
+    this.interpSelect = document.createElement('select');
+    this.interpSelect.className = 'timeline-interp';
+    for (const [value, label] of [['constant', 'Constant'], ['linear', 'Linear'], ['bezier', 'Bezier']] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.interpSelect.append(opt);
+    }
+    this.interpSelect.disabled = true;
+    this.interpSelect.addEventListener('change', () => {
+      this.applyInterp(this.interpSelect.value as Interp);
+    });
+    interpWrap.append(interpSpan, this.interpSelect);
+
     // Delete-selected-keys button — a discoverable alias for X / Delete.
     const delKeyBtn = document.createElement('button');
     delKeyBtn.className = 'timeline-btn timeline-delkey';
@@ -193,7 +230,7 @@ export class TimelinePane {
 
     header.append(
       toStartBtn, this.playBtn, frameWrap.wrap,
-      startWrap.wrap, endWrap.wrap, this.fpsLabel, delKeyBtn,
+      startWrap.wrap, endWrap.wrap, this.fpsLabel, interpWrap, delKeyBtn,
     );
 
     // --- Canvas (ruler + tracks) ---
@@ -229,8 +266,10 @@ export class TimelinePane {
       rowCount: (): number => this.rows.length,
       canvas: this.canvas,
       frameToX: (f: number) => frameToX(f, this.scene.frameStart, this.scene.frameEnd, this.cssW),
-      selectedKeys: (): { objectId: number; frame: number }[] => this.selectedKeys(),
-      diamondXY: (objectId: number, frame: number) => this.diamondXY(objectId, frame),
+      selectedKeys: (): { objectId: number; frame: number; channelPath?: string }[] => this.selectedKeys(),
+      diamondXY: (objectId: number, frame: number, channelPath?: string) => this.diamondXY(objectId, frame, channelPath),
+      channelRows: (): { objectId: number; channelPath: string; frames: number[] }[] => this.channelRows(),
+      toggleExpand: (objectId: number) => { this.toggleExpand(objectId); },
       autoKey: autoKeyState,
     };
   }
@@ -286,10 +325,16 @@ export class TimelinePane {
     if (e.button !== 0) return;
     const x = this.localX(e);
     const y = this.localY(e);
+    // --- Twisty toggle (object-row expand/collapse) takes priority ---
+    const twisty = this.twistyHit(x, y);
+    if (twisty !== null) {
+      this.toggleExpand(twisty);
+      return;
+    }
     const hit = this.hitTest(x, y);
     if (hit) {
       // --- Select a diamond (shift extends/toggles) ---
-      const id = keyOf(hit.objectId, hit.frame);
+      const id = keyOf(hit.objectId, hit.frame, hit.channelPath);
       if (e.shiftKey) {
         if (this.selection.has(id)) this.selection.delete(id);
         else this.selection.add(id);
@@ -338,8 +383,17 @@ export class TimelinePane {
     this.scrubbing = false;
   }
 
+  /** The object id whose twisty box is under (x, y), or null. */
+  private twistyHit(x: number, y: number): number | null {
+    if (y <= RULER_H || x < TWISTY_X0 || x > TWISTY_X1) return null;
+    const rowIndex = Math.floor((y - RULER_H) / ROW_H);
+    if (rowIndex < 0 || rowIndex >= this.rows.length) return null;
+    const row = this.rows[rowIndex];
+    return row.kind === 'object' ? row.object.id : null;
+  }
+
   /** The diamond under (x, y) in canvas-local px, or null. */
-  private hitTest(x: number, y: number): { objectId: number; frame: number } | null {
+  private hitTest(x: number, y: number): { objectId: number; frame: number; channelPath?: string } | null {
     if (y <= RULER_H) return null;
     const rowIndex = Math.floor((y - RULER_H) / ROW_H);
     if (rowIndex < 0 || rowIndex >= this.rows.length) return null;
@@ -348,14 +402,17 @@ export class TimelinePane {
     if (Math.abs(y - cy) > 8) return null;
     for (const d of row.diamonds) {
       const dx = frameToX(d.frame, this.scene.frameStart, this.scene.frameEnd, this.cssW);
-      if (Math.abs(x - dx) <= 6) return { objectId: row.object.id, frame: d.frame };
+      if (Math.abs(x - dx) <= 6) return { objectId: row.object.id, frame: d.frame, channelPath: row.channelPath };
     }
     return null;
   }
 
-  /** Canvas-local center of a committed diamond (e2e helper), or null. */
-  private diamondXY(objectId: number, frame: number): { x: number; y: number } | null {
-    const rowIndex = this.rows.findIndex((r) => r.object.id === objectId);
+  /**
+   * Canvas-local center of a committed diamond (e2e helper), or null. Pass a
+   * channelPath to target a channel sub-row diamond; omit for the object row.
+   */
+  private diamondXY(objectId: number, frame: number, channelPath?: string): { x: number; y: number } | null {
+    const rowIndex = this.rows.findIndex((r) => r.object.id === objectId && r.channelPath === channelPath);
     if (rowIndex < 0) return null;
     const row = this.rows[rowIndex];
     if (!row.diamonds.some((d) => d.frame === frame)) return null;
@@ -365,11 +422,28 @@ export class TimelinePane {
     };
   }
 
-  private selectedKeys(): { objectId: number; frame: number }[] {
+  private selectedKeys(): { objectId: number; frame: number; channelPath?: string }[] {
     return [...this.selection].map((id) => {
-      const [objectId, frame] = id.split(':').map(Number);
-      return { objectId, frame };
+      const parts = id.split(':');
+      const objectId = Number(parts[0]);
+      const frame = Number(parts[1]);
+      const channelPath = parts.length > 2 ? parts.slice(2).join(':') : undefined;
+      return { objectId, frame, channelPath };
     });
+  }
+
+  /** Channel sub-rows currently drawn (e2e handle). */
+  private channelRows(): { objectId: number; channelPath: string; frames: number[] }[] {
+    return this.rows
+      .filter((r) => r.kind === 'channel')
+      .map((r) => ({ objectId: r.object.id, channelPath: r.channelPath!, frames: r.diamonds.map((d) => d.frame) }));
+  }
+
+  /** Flip an object row between collapsed (object diamonds) and expanded. */
+  private toggleExpand(objectId: number): void {
+    if (this.expanded.has(objectId)) this.expanded.delete(objectId);
+    else this.expanded.add(objectId);
+    this.rows = this.computeRows();
   }
 
   private getUndo(): UndoStack | null {
@@ -383,38 +457,85 @@ export class TimelinePane {
       ?? this.scene.objects.find((o) => o.id === id);
   }
 
-  /** Commit a horizontal drag of all selected diamonds as ONE MoveKeysCommand. */
+  /**
+   * Commit a horizontal drag of all selected diamonds as ONE MoveKeysCommand.
+   * Grouped per (object, frame): a group of only channel sub-row diamonds moves
+   * just those channels; if any object-row diamond is in the group it moves
+   * every channel at the frame (channelPaths omitted).
+   */
   private commitMove(delta: number): void {
     const moves: KeyMove[] = [];
-    for (const { objectId, frame } of this.selectedKeys()) {
-      const object = this.objectById(objectId);
-      if (object) moves.push({ object, fromFrame: frame, toFrame: frame + delta });
+    for (const g of this.groupSelection()) {
+      const object = this.objectById(g.objectId);
+      if (!object) continue;
+      moves.push({ object, fromFrame: g.frame, toFrame: g.frame + delta, channelPaths: g.channelPaths });
     }
     const cmd = MoveKeysCommand.perform('Move Keyframes', moves);
     if (!cmd) return;
     this.getUndo()?.push(cmd);
-    // Selection follows the keys to their new frames.
+    // Selection follows the keys to their new frames (identity preserved).
     const moved = new Set<string>();
-    for (const { objectId, frame } of this.selectedKeys()) moved.add(keyOf(objectId, frame + delta));
+    for (const { objectId, frame, channelPath } of this.selectedKeys()) {
+      moved.add(keyOf(objectId, frame + delta, channelPath));
+    }
     this.selection = moved;
     applyAnimation(this.scene, this.scene.frameCurrent);
   }
 
-  /** Delete every channel keyed at each selected diamond's frame (undoable). */
-  private deleteSelectedKeys(): void {
-    if (this.selection.size === 0) return;
+  /**
+   * Resolve the current selection to concrete (object, channelPath, frame) key
+   * targets. Channel sub-row diamonds → that one channel; object-row diamonds →
+   * every channel keyed at the frame.
+   */
+  private resolveTargets(): { object: SceneObject; channelPath: string; frame: number }[] {
     const targets: { object: SceneObject; channelPath: string; frame: number }[] = [];
-    for (const { objectId, frame } of this.selectedKeys()) {
+    for (const { objectId, frame, channelPath } of this.selectedKeys()) {
       const object = this.objectById(objectId);
       if (!object || !object.anim) continue;
-      for (const c of object.anim.fcurves) {
-        if (c.keys.some((k) => k.frame === frame)) targets.push({ object, channelPath: c.channelPath, frame });
+      if (channelPath !== undefined) {
+        const c = object.anim.fcurves.find((c) => c.channelPath === channelPath);
+        if (c && c.keys.some((k) => k.frame === frame)) targets.push({ object, channelPath, frame });
+      } else {
+        for (const c of object.anim.fcurves) {
+          if (c.keys.some((k) => k.frame === frame)) targets.push({ object, channelPath: c.channelPath, frame });
+        }
       }
     }
+    return targets;
+  }
+
+  /** Group the selection by (object, frame) with a channelPaths filter (undefined = all). */
+  private groupSelection(): { objectId: number; frame: number; channelPaths?: string[] }[] {
+    const map = new Map<string, { objectId: number; frame: number; channelPaths?: string[] }>();
+    for (const { objectId, frame, channelPath } of this.selectedKeys()) {
+      const key = `${objectId}:${frame}`;
+      let g = map.get(key);
+      if (!g) { g = { objectId, frame, channelPaths: [] }; map.set(key, g); }
+      if (channelPath === undefined) g.channelPaths = undefined; // object row → all channels
+      else if (g.channelPaths) g.channelPaths.push(channelPath);
+    }
+    return [...map.values()];
+  }
+
+  /** Delete the selected keys (channel sub-row = one channel; object row = all). */
+  private deleteSelectedKeys(): void {
+    if (this.selection.size === 0) return;
+    const targets = this.resolveTargets();
     const cmd = DeleteKeysCommand.perform('Delete Keyframes', this.scene, targets);
     if (cmd) this.getUndo()?.push(cmd);
     this.selection.clear();
     applyAnimation(this.scene, this.scene.frameCurrent);
+  }
+
+  /** Apply an interpolation mode to the selected keys as ONE SetKeyInterpCommand. */
+  private applyInterp(interp: Interp): void {
+    if (this.selection.size === 0) return;
+    const targets: KeyInterpTarget[] = this.resolveTargets();
+    const cmd = SetKeyInterpCommand.perform('Set Key Interpolation', targets, interp);
+    if (cmd) {
+      this.getUndo()?.push(cmd);
+      applyAnimation(this.scene, this.scene.frameCurrent);
+    }
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
@@ -470,9 +591,10 @@ export class TimelinePane {
     for (const object of this.scene.selectedObjects) {
       const anim = object.anim;
       if (!anim || anim.fcurves.length === 0) continue;
-      // Union of all key frames across this object's fcurves.
+      // Union of all key frames across this object's fcurves (summary row).
       const frames = new Set<number>();
       for (const c of anim.fcurves) for (const k of c.keys) frames.add(k.frame);
+      const expanded = this.expanded.has(object.id);
       const diamonds = [...frames].sort((a, b) => a - b).map((frame) => ({
         frame,
         filled: LOC_ROT_SCALE.every((path) => {
@@ -480,15 +602,27 @@ export class TimelinePane {
           return !!curve && curve.keys.some((k) => k.frame === frame);
         }),
       }));
-      rows.push({ object, diamonds });
+      rows.push({ kind: 'object', object, diamonds, expanded });
+      // When expanded: one sub-row per fcurve, with its own diamonds.
+      if (expanded) {
+        for (const c of anim.fcurves) {
+          rows.push({
+            kind: 'channel',
+            object,
+            channelPath: c.channelPath,
+            diamonds: [...c.keys].sort((a, b) => a.frame - b.frame).map((k) => ({ frame: k.frame, filled: true })),
+          });
+        }
+      }
     }
     return rows;
   }
 
-  /** Flat list of every diamond drawn (e2e handle). */
+  /** Flat list of every OBJECT-row diamond drawn (e2e handle; sub-rows excluded). */
   keyFramesShown(): DiamondInfo[] {
     const out: DiamondInfo[] = [];
     for (const row of this.rows) {
+      if (row.kind !== 'object') continue;
       for (const d of row.diamonds) {
         out.push({ objectId: row.object.id, name: row.object.name, frame: d.frame, filled: d.filled });
       }
@@ -564,6 +698,8 @@ export class TimelinePane {
     this.playBtn.textContent = this.scene.playing ? '⏸' : '▶';
     this.playBtn.classList.toggle('is-playing', this.scene.playing);
     this.fpsLabel.textContent = `${this.scene.fps} fps`;
+    // Interp picker is live only when keys are selected.
+    if (document.activeElement !== this.interpSelect) this.interpSelect.disabled = this.selection.size === 0;
     if (document.activeElement !== this.frameInput) this.frameInput.value = String(this.scene.frameCurrent);
     if (document.activeElement !== this.startInput) this.startInput.value = String(this.scene.frameStart);
     if (document.activeElement !== this.endInput) this.endInput.value = String(this.scene.frameEnd);
@@ -622,24 +758,37 @@ export class TimelinePane {
       c.fillText(String(f), x, RULER_H / 2);
     }
 
-    // Track rows: name label + diamonds.
-    c.textAlign = 'left';
+    // Track rows: label + diamonds.
     this.rows.forEach((row, i) => {
       const y = RULER_H + i * ROW_H;
       if (y + ROW_H > H) return; // clip rows past the pane height
+      const cy = y + ROW_H / 2;
       if (i % 2 === 0) {
         c.fillStyle = 'rgba(255,255,255,0.03)';
         c.fillRect(0, y, W, ROW_H);
       }
-      // Label gutter.
-      c.fillStyle = '#c8c8c8';
-      c.font = '11px sans-serif';
-      const name = row.object.name.length > 12 ? row.object.name.slice(0, 11) + '…' : row.object.name;
-      c.fillText(name, 6, y + ROW_H / 2);
+      if (row.kind === 'object') {
+        // Twisty glyph + object name.
+        c.fillStyle = '#9a9a9a';
+        c.font = '10px monospace';
+        c.textAlign = 'left';
+        c.fillText(row.expanded ? '▾' : '▸', TWISTY_X0 + 2, cy);
+        c.fillStyle = '#c8c8c8';
+        c.font = '11px sans-serif';
+        const name = row.object.name.length > 10 ? row.object.name.slice(0, 9) + '…' : row.object.name;
+        c.fillText(name, TWISTY_X1 + 2, cy);
+      } else {
+        // Channel sub-row: right-aligned small channelPath label in the gutter.
+        c.fillStyle = '#8a8a8a';
+        c.font = '9px monospace';
+        c.textAlign = 'right';
+        const label = row.channelPath ?? '';
+        c.fillText(label, PAD_LEFT - 6, cy);
+        c.textAlign = 'left';
+      }
       // Diamonds (selected ones ride the live drag offset while dragging).
-      const cy = y + ROW_H / 2;
       for (const d of row.diamonds) {
-        const selected = this.selection.has(keyOf(row.object.id, d.frame));
+        const selected = this.selection.has(keyOf(row.object.id, d.frame, row.channelPath));
         const drawFrame = selected && this.dragging ? d.frame + this.dragDelta : d.frame;
         const x = frameToX(drawFrame, frameStart, frameEnd, W);
         this.drawDiamond(x, cy, d.filled, selected);

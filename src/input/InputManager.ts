@@ -63,18 +63,30 @@ import { SeparateCommand } from '../core/undo/separateCommand';
 
 /**
  * Seed a fresh rig from a camera's world pose. eye = camera position; forward =
- * the camera's aim (local -Z); the orbit TARGET is placed forward by `d`, where
- * `d` is how far in front of the camera the world origin sits (the origin's
- * signed distance along forward), clamped to 1..50. Blender orbits about the
- * view's own dolly target; the world-origin projection is our documented
- * stand-in so a freshly-locked camera turntables about roughly the scene center.
+ * the camera's aim (local -Z); the orbit TARGET is placed forward by `d`, and
+ * the rig's eye reconstructs EXACTLY back to the camera position for ANY d (the
+ * pose is reproduced to epsilon — see the round-trip test), so the ONLY thing
+ * `d` controls is the depth of the pivot the first orbit swings about.
+ *
+ * `preferredDistance` (the live viewport OrbitCamera's dolly distance) is used
+ * when given so the locked fly continues at the SAME framing depth the user was
+ * just navigating at — no lurch/teleport on the first orbit because the pivot
+ * matches the view they came from. Without it (bare unit tests) we fall back to
+ * the world-origin projection along the aim, clamped to 1..50, so a freshly
+ * locked camera still turntables about roughly the scene centre. Either way the
+ * result is clamped to a sane 0.1..500 band.
  */
-export function configureRigFromCamera(rig: OrbitCamera, t: Transform): void {
+export function configureRigFromCamera(rig: OrbitCamera, t: Transform, preferredDistance?: number): void {
   const eye = t.position;
   const forward = objectForward(t).normalize();
-  // (origin - eye) · forward = how far ahead the origin is along the aim.
-  const dRaw = Vec3.ZERO.sub(eye).dot(forward);
-  const d = Math.max(1, Math.min(50, dRaw));
+  let d: number;
+  if (preferredDistance !== undefined && Number.isFinite(preferredDistance) && preferredDistance > 0) {
+    d = Math.max(0.1, Math.min(500, preferredDistance));
+  } else {
+    // (origin - eye) · forward = how far ahead the origin is along the aim.
+    const dRaw = Vec3.ZERO.sub(eye).dot(forward);
+    d = Math.max(1, Math.min(50, dRaw));
+  }
   rig.target = eye.add(forward.scale(d));
   rig.distance = d;
   // OrbitCamera reconstructs eye = target + dir(yaw,pitch)*distance, where the
@@ -1115,7 +1127,9 @@ export class InputManager {
     if (!this.camRig || this.camRigObj !== obj) {
       this.finalizeCamRig(); // commit any stale session before retargeting
       this.camRig = new OrbitCamera();
-      configureRigFromCamera(this.camRig, obj.transform);
+      // Seed the pivot depth from the live viewport distance so the locked fly
+      // continues at the framing the user was just navigating at (no teleport).
+      configureRigFromCamera(this.camRig, obj.transform, this.ctx.camera.distance);
       this.camRigObj = obj;
       this.camRigBefore = obj.transform;
     }

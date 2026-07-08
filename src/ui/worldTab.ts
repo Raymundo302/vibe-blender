@@ -17,9 +17,10 @@ import './worldTab.css';
  * Undo: the capture pattern (before/after command on commit). Loading an HDRI is
  * ONE command holding the old/new packed data URL + mode.
  *
- * HDRI format: a plain equirectangular PNG or JPEG (v1). Real Radiance `.hdr`
- * (RGBE) is not decoded — the browser can't rasterize it — so the file input
- * documents PNG/JPEG; the equirect lighting is genuine regardless.
+ * HDRI format: an equirectangular PNG/JPEG, OR a real Radiance `.hdr` (RGBE)
+ * file — the latter is parsed natively (parseRgbe) into true HDR float pixels
+ * since the browser can't rasterize it. The inline <img> preview only shows the
+ * browser-decodable image/* URLs (a .hdr URL would draw a broken-image glyph).
  */
 
 // ------------------------------------------------------------- undo commands --
@@ -295,8 +296,13 @@ class WorldTab {
     this.strengthInput.value = String(w.strength);
     // The <img> shows the packed data URL directly (browser decodes + scales it
     // via CSS). Hidden when there is no image so no broken-image glyph shows.
-    if (w.hdri) { this.preview.src = w.hdri; this.preview.style.display = ''; }
-    else { this.preview.removeAttribute('src'); this.preview.style.display = 'none'; }
+    // Only the browser can rasterize image/* URLs; a Radiance .hdr URL is loaded
+    // and lit correctly but has no <img>-renderable preview, so hide it there.
+    if (w.hdri && w.hdri.startsWith('data:image')) {
+      this.preview.src = w.hdri; this.preview.style.display = '';
+    } else {
+      this.preview.removeAttribute('src'); this.preview.style.display = 'none';
+    }
     this.hdriLabel.textContent = w.hdri ? 'equirect loaded' : '(no image)';
   }
 

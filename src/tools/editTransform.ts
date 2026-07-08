@@ -16,13 +16,25 @@ type AxisLock = 'x' | 'y' | 'z' | null;
 /**
  * Proportional-editing settings. Module-level so the state (on/off + radius)
  * persists across operator invocations and is shared with the InputManager
- * (O toggle, wheel radius) and the circle overlay. Default radius 2.
+ * (O toggle, wheel radius) and the circle overlay.
+ *
+ * Default radius is 1.0 world unit — a sane influence for a default-scale scene
+ * (the startup cube is 2 units across, so ~half its extent). Because this is
+ * module-level state that adjustRadius() mutates in place, the last radius the
+ * user dialled in with the wheel is REMEMBERED for the rest of the session and
+ * seeds every subsequent proportional transform (Blender behaviour).
  */
 export interface ProportionalSettings {
   enabled: boolean;
   radius: number;
 }
-export const proportional: ProportionalSettings = { enabled: false, radius: 2 };
+export const proportional: ProportionalSettings = { enabled: false, radius: 1.0 };
+
+// Debug handle for e2e (harmless in production): read the live proportional
+// default/last-used radius without importing the module.
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__proportional = proportional;
+}
 
 /**
  * Smooth-falloff weight for a vert at local distance `d` from the nearest

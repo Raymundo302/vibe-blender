@@ -3,7 +3,7 @@ import { Scene } from '../scene/Scene';
 import { makeCube } from '../mesh/primitives';
 import type { SceneObject } from '../scene/Scene';
 import { insertKey, findCurve } from './fcurve';
-import { MoveKeysCommand } from './keyEditCommands';
+import { MoveKeysCommand, SetKeyInterpCommand } from './keyEditCommands';
 
 /** frames present on a given channel, sorted. */
 function frames(obj: SceneObject, path: string): number[] {
@@ -13,6 +13,10 @@ function frames(obj: SceneObject, path: string): number[] {
 function valueAt(obj: SceneObject, path: string, frame: number): number | undefined {
   const c = obj.anim && findCurve(obj.anim, path);
   return c?.keys.find((k) => k.frame === frame)?.value;
+}
+function interpAt(obj: SceneObject, path: string, frame: number): string | undefined {
+  const c = obj.anim && findCurve(obj.anim, path);
+  return c?.keys.find((k) => k.frame === frame)?.interp;
 }
 
 describe('MoveKeysCommand', () => {
@@ -99,5 +103,87 @@ describe('MoveKeysCommand', () => {
     expect(MoveKeysCommand.perform('Move', [{ object: obj, fromFrame: 5, toFrame: 5 }])).toBeNull();
     // Moving a frame with no keys is also a no-op.
     expect(MoveKeysCommand.perform('Move', [{ object: obj, fromFrame: 99, toFrame: 40 }])).toBeNull();
+  });
+
+  it('channelPaths restricts a move to the named channel only', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    obj.anim = { fcurves: [] };
+    insertKey(obj.anim, 'location.x', 10, 1, 'bezier');
+    insertKey(obj.anim, 'location.y', 10, 2, 'bezier'); // same frame, other channel
+
+    const cmd = MoveKeysCommand.perform('Move', [
+      { object: obj, fromFrame: 10, toFrame: 15, channelPaths: ['location.x'] },
+    ]);
+    expect(cmd).not.toBeNull();
+    // Only location.x moved; location.y untouched at 10.
+    expect(frames(obj, 'location.x')).toEqual([15]);
+    expect(frames(obj, 'location.y')).toEqual([10]);
+
+    cmd!.undo();
+    expect(frames(obj, 'location.x')).toEqual([10]);
+    expect(frames(obj, 'location.y')).toEqual([10]);
+  });
+});
+
+describe('SetKeyInterpCommand', () => {
+  it('round-trips with mixed before-values', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    obj.anim = { fcurves: [] };
+    // Three keys with THREE different starting interps.
+    insertKey(obj.anim, 'location.x', 1, 0, 'constant');
+    insertKey(obj.anim, 'location.y', 1, 0, 'linear');
+    insertKey(obj.anim, 'location.z', 1, 0, 'bezier');
+
+    const cmd = SetKeyInterpCommand.perform('Set Interp', [
+      { object: obj, channelPath: 'location.x', frame: 1 },
+      { object: obj, channelPath: 'location.y', frame: 1 },
+      { object: obj, channelPath: 'location.z', frame: 1 },
+    ], 'linear');
+    expect(cmd).not.toBeNull();
+
+    // All three now linear.
+    expect(interpAt(obj, 'location.x', 1)).toBe('linear');
+    expect(interpAt(obj, 'location.y', 1)).toBe('linear');
+    expect(interpAt(obj, 'location.z', 1)).toBe('linear');
+
+    // Undo restores EACH key's original (mixed) interp.
+    cmd!.undo();
+    expect(interpAt(obj, 'location.x', 1)).toBe('constant');
+    expect(interpAt(obj, 'location.y', 1)).toBe('linear');
+    expect(interpAt(obj, 'location.z', 1)).toBe('bezier');
+
+    cmd!.redo();
+    expect(interpAt(obj, 'location.x', 1)).toBe('linear');
+    expect(interpAt(obj, 'location.y', 1)).toBe('linear');
+    expect(interpAt(obj, 'location.z', 1)).toBe('linear');
+  });
+
+  it('skips keys already at the target interp, and returns null for a pure no-op', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    obj.anim = { fcurves: [] };
+    insertKey(obj.anim, 'location.x', 1, 0, 'linear');   // already linear
+    insertKey(obj.anim, 'location.y', 1, 0, 'constant'); // will change
+
+    const cmd = SetKeyInterpCommand.perform('Set Interp', [
+      { object: obj, channelPath: 'location.x', frame: 1 },
+      { object: obj, channelPath: 'location.y', frame: 1 },
+    ], 'linear');
+    expect(cmd).not.toBeNull();
+    expect(interpAt(obj, 'location.y', 1)).toBe('linear');
+
+    // Undo only touches the one that changed.
+    cmd!.undo();
+    expect(interpAt(obj, 'location.x', 1)).toBe('linear');
+    expect(interpAt(obj, 'location.y', 1)).toBe('constant');
+
+    // Everything already linear → nothing to do.
+    insertKey(obj.anim, 'location.y', 1, 0, 'linear');
+    expect(SetKeyInterpCommand.perform('Set Interp', [
+      { object: obj, channelPath: 'location.x', frame: 1 },
+      { object: obj, channelPath: 'location.y', frame: 1 },
+    ], 'linear')).toBeNull();
   });
 });

@@ -52,6 +52,24 @@ describe('configureRigFromCamera → cameraPoseFromRig round-trip', () => {
     configureRigFromCamera(rigNear, near);
     expect(rigNear.distance).toBeCloseTo(1, 6);
   });
+
+  it('adopts the preferred (viewport) distance for the pivot, still reproducing the pose', () => {
+    // Camera aimed AWAY from the origin: the origin projection would clamp the
+    // pivot to a too-close 1.0 (the old teleporty framing). With a preferred
+    // viewport distance the rig pivots at THAT depth instead — no lurch on the
+    // first orbit — while the reconstructed eye stays exactly on the camera.
+    const pose = poseLookingAt(new Vec3(12, 0, 0), new Vec3(13, 0, 0)); // forward = +X
+    const rig = new OrbitCamera();
+    configureRigFromCamera(rig, pose, 8);
+    expect(rig.distance).toBeCloseTo(8, 6);
+    const out = cameraPoseFromRig(rig);
+    expect(out.position.distanceTo(pose.position)).toBeLessThan(1e-5);
+
+    // Non-finite / non-positive preferred distances fall back to the projection.
+    const rigNaN = new OrbitCamera();
+    configureRigFromCamera(rigNaN, pose, Number.NaN);
+    expect(rigNaN.distance).toBeCloseTo(1, 6); // origin projection here clamps to 1
+  });
 });
 
 describe('rig orbit keeps the target fixed', () => {

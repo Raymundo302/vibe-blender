@@ -1,6 +1,6 @@
 import type { Command } from '../undo/UndoStack';
 import type { SceneObject } from '../scene/Scene';
-import { deleteKey, insertKey, type Keyframe } from './fcurve';
+import { deleteKey, insertKey, findCurve, type Interp, type Keyframe } from './fcurve';
 
 /**
  * Timeline keyframe MOVE undo command (P15-3).
@@ -26,6 +26,12 @@ export interface KeyMove {
   object: SceneObject;
   fromFrame: number;
   toFrame: number;
+  /**
+   * Dope-sheet sub-row move (P16-3): restrict the move to these channel paths.
+   * Omitted → the object-row semantics of moving EVERY channel keyed at
+   * `fromFrame` (unchanged from P15-3).
+   */
+  channelPaths?: string[];
 }
 
 interface MoveEntry {
@@ -62,6 +68,7 @@ export class MoveKeysCommand implements Command {
       const anim = m.object.anim!;
       const paths = anim.fcurves
         .filter((c) => c.keys.some((k) => k.frame === m.fromFrame))
+        .filter((c) => !m.channelPaths || m.channelPaths.includes(c.channelPath))
         .map((c) => c.channelPath);
       for (const channelPath of paths) {
         const moved = deleteKey(anim, channelPath, m.fromFrame);
@@ -104,6 +111,75 @@ export class MoveKeysCommand implements Command {
     for (const e of this.entries) {
       if (!e.object.anim) e.object.anim = { fcurves: [] };
       insertKey(e.object.anim, e.channelPath, e.toFrame, e.moved.value, e.moved.interp);
+    }
+  }
+}
+
+/**
+ * Per-key interpolation change (P16-3, dope-sheet interp picker).
+ *
+ * The pane's Constant/Linear/Bezier dropdown targets a set of exact
+ * (object, channelPath, frame) keys — a sub-row selection targets ONE channel,
+ * an object-row selection targets every channel keyed at that frame. Applying
+ * pushes ONE command; each entry captures the key's OLD interp so undo restores
+ * it exactly even when the selection had mixed before-values.
+ *
+ * Keys already at the requested interp are skipped (no-op entries), so a
+ * selection that changes nothing yields null.
+ */
+export interface KeyInterpTarget {
+  object: SceneObject;
+  channelPath: string;
+  frame: number;
+}
+
+interface InterpEntry {
+  object: SceneObject;
+  channelPath: string;
+  frame: number;
+  before: Interp;
+  after: Interp;
+}
+
+export class SetKeyInterpCommand implements Command {
+  private constructor(
+    readonly name: string,
+    private readonly entries: InterpEntry[],
+  ) {}
+
+  /**
+   * Set `interp` on every target key that currently differs. Applies
+   * immediately (A4 convention — caller only pushes). Returns null when no key
+   * actually changed (missing keys / all already at `interp`).
+   */
+  static perform(name: string, targets: KeyInterpTarget[], interp: Interp): SetKeyInterpCommand | null {
+    const entries: InterpEntry[] = [];
+    for (const t of targets) {
+      const key = SetKeyInterpCommand.findKey(t.object, t.channelPath, t.frame);
+      if (!key || key.interp === interp) continue;
+      entries.push({ object: t.object, channelPath: t.channelPath, frame: t.frame, before: key.interp, after: interp });
+      key.interp = interp;
+    }
+    return entries.length ? new SetKeyInterpCommand(name, entries) : null;
+  }
+
+  private static findKey(object: SceneObject, channelPath: string, frame: number): Keyframe | undefined {
+    if (!object.anim) return undefined;
+    const curve = findCurve(object.anim, channelPath);
+    return curve?.keys.find((k) => k.frame === frame);
+  }
+
+  undo(): void {
+    for (const e of this.entries) {
+      const key = SetKeyInterpCommand.findKey(e.object, e.channelPath, e.frame);
+      if (key) key.interp = e.before;
+    }
+  }
+
+  redo(): void {
+    for (const e of this.entries) {
+      const key = SetKeyInterpCommand.findKey(e.object, e.channelPath, e.frame);
+      if (key) key.interp = e.after;
     }
   }
 }

@@ -6,3 +6,4 @@
 import './coreNodes';
 import './nodesB';
 import './nodesA';
+import './nodesC';

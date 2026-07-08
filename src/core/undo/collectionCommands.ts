@@ -74,6 +74,49 @@ export class DeleteCollectionCommand implements Command {
   }
 }
 
+/**
+ * "M → New Collection": create a fresh collection AND move the selection into
+ * it as ONE undo step. Blender treats this as a single action — Ctrl+Z both
+ * returns the objects to their previous collections AND removes the new
+ * collection. Composing the two primitive commands (create + move) keeps their
+ * individual invariants (stable collection id preserved across undo/redo, each
+ * object's previous assignment captured) while presenting a single entry.
+ *
+ * Order matters: redo creates the collection BEFORE the move (the move targets
+ * its id); undo reverses (move back first, then remove the now-empty collection).
+ */
+export class CreateCollectionAndMoveCommand implements Command {
+  readonly name = 'Move to New Collection';
+
+  private constructor(
+    private readonly create: CreateCollectionCommand,
+    private readonly move: MoveToCollectionCommand,
+  ) {}
+
+  /**
+   * Create a collection, move `objectIds` into it, and return the composite.
+   * The mutations have ALREADY happened when this returns (perform convention),
+   * so the caller just pushes the result. Returns the new collection too so the
+   * caller can report its name.
+   */
+  static perform(scene: Scene, objectIds: number[]): { command: CreateCollectionAndMoveCommand; collection: SceneCollection } {
+    const collection = scene.addCollection();
+    const create = new CreateCollectionCommand(scene, collection);
+    const move = MoveToCollectionCommand.perform(scene, objectIds, collection.id);
+    return { command: new CreateCollectionAndMoveCommand(create, move), collection };
+  }
+
+  undo(): void {
+    this.move.undo();
+    this.create.undo();
+  }
+
+  redo(): void {
+    this.create.redo();
+    this.move.redo();
+  }
+}
+
 export class MoveToCollectionCommand implements Command {
   readonly name = 'Move to Collection';
   /** Per-object previous assignment, so undo restores each one individually. */

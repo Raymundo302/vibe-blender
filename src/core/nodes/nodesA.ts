@@ -122,15 +122,31 @@ registerNodeDef({
   params: [
     { key: 'scale', label: 'Scale', kind: 'float', min: 0, max: 64, default: 5 },
     { key: 'octaves', label: 'Detail', kind: 'float', min: 1, max: 8, default: 3 },
+    { key: 'contrast', label: 'Contrast', kind: 'float', min: 0, max: 1, default: 0 },
   ],
   eval: (inputs, params, ctx) => {
     const [u, v] = uvCoord(inputs, ctx);
     const scale = asFloat(params.scale, 5);
     const octaves = asFloat(params.octaves, 3);
-    const n = clamp01(fbm(u * scale, v * scale, octaves));
+    const contrast = asFloat(params.contrast, 0);
+    const n = applyContrast(clamp01(fbm(u * scale, v * scale, octaves)), contrast);
     return { value: n, color: [n, n, n] as NodeValue };
   },
 });
+
+/**
+ * Contrast push (P16-2): blend the raw fbm value toward its own smoothstep by
+ * `contrast` (0..1). smoothstep (3n²−2n³) pulls values away from 0.5 toward 0/1,
+ * so higher contrast = crisper noise. contrast 0 returns `n` UNCHANGED (early
+ * exit, bit-identical to the pre-P16 output). Monotonic in contrast: for n>0.5
+ * the value rises, for n<0.5 it falls, for n=0.5 it is fixed.
+ */
+function applyContrast(n: number, contrast: number): number {
+  const c = contrast <= 0 ? 0 : contrast > 1 ? 1 : contrast;
+  if (c === 0) return n;
+  const smooth = n * n * (3 - 2 * n);
+  return n + (smooth - n) * c;
+}
 
 // --- Mix Color ---------------------------------------------------------------
 // Linear blend a·(1−fac) + b·fac, fac clamped 0..1.

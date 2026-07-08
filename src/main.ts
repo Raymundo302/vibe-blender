@@ -18,6 +18,7 @@ import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
 import './ui/cameraTab'; // side-effect: registers the Camera data tab (P8-2)
 import './ui/worldTab'; // side-effect: registers the World tab (P10-4)
 import { initRenderEngine } from './renderEngine/init'; // F12 render engine (P8-4)
+import { AnimRender } from './renderEngine/animRender'; // 🎞 Render Animation (P16-1)
 import './core/modifiers/builtins'; // side-effect: registers Mirror + Array modifiers
 import { Topbar } from './ui/topbar';
 import { HelpOverlay } from './ui/helpOverlay';
@@ -200,6 +201,12 @@ new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, 
 // same toggle through the returned controls.
 const renderEngine = initRenderEngine({ scene, camera, setStatus: opCtx.setStatus, host: document.body });
 
+// 🎞 Render Animation (P16-1): frame loop → WebM / PNG-zip, modal + Ctrl+F12.
+const animRender = new AnimRender({
+  scene, camera, renderer, gl: ctx.gl, canvas,
+  setStatus: opCtx.setStatus, host: document.body,
+});
+
 // First-visit splash inside #viewport-wrap. It auto-dismisses on the first canvas
 // pointer event or any key (listeners below); dismiss() is idempotent so these
 // fire harmlessly for the rest of the session.
@@ -346,6 +353,7 @@ const topbar = new Topbar(scene, renderer, {
   importObj: importObjFile,
   toggleHelp: () => helpOverlay.toggle(),
   toggleRender: () => renderEngine.toggle(),
+  toggleRenderAnimation: () => animRender.toggle(),
 }, cursorOverlay);
 topbar.mountTabs(workspaces.createTabs());
 
@@ -353,6 +361,13 @@ topbar.mountTabs(workspaces.createTabs());
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots,
+  animRender: {
+    render: (opts: { mode: 'webm' | 'png'; start?: number; end?: number; fps?: number }) => animRender.render(opts),
+    cancel: () => animRender.cancel(),
+    open: () => animRender.openModal(),
+    close: () => animRender.closeModal(),
+    isRunning: () => animRender.isRunning,
+  },
   autosave: {
     saveNow: () => autosave.saveNow(),
     clear: () => autosave.clear(),

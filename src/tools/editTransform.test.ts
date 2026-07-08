@@ -94,6 +94,12 @@ describe('EditScaleOperator', () => {
   });
 });
 
+describe('proportional default radius', () => {
+  it('defaults to 1.0 world unit (sane for a default-scale scene)', () => {
+    expect(proportional.radius).toBeCloseTo(1.0, 6);
+  });
+});
+
 describe('proportionalFalloff (smooth 3t²−2t³)', () => {
   it('is 1 at the center, 0 at/beyond the radius, 0.5 at half', () => {
     expect(proportionalFalloff(0, 2)).toBeCloseTo(1, 6);
@@ -157,7 +163,7 @@ describe('EditTranslateOperator — proportional falloff', () => {
       expect(disp6.length()).toBeCloseTo(0, 6); // opposite corner (beyond radius) → 0
     } finally {
       proportional.enabled = false;
-      proportional.radius = 2;
+      proportional.radius = 1.0; // restore the module default
     }
   });
 });

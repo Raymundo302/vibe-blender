@@ -670,6 +670,10 @@ export interface TraceScene {
   /** Per-corner UVs (2 floats × 3 corners per tri), parallel to tris. null when
    * the snapshot carried none — every hit then samples UV (0,0). */
   triUV: Float32Array | null;
+  /** Per-corner GENERATED coords (3 floats × 3 corners per tri), parallel to
+   * tris (P16-2). null → the Texture Coordinate node's generated output falls
+   * back to (u, v, 0). */
+  triGen: Float32Array | null;
   materials: SnapMaterial[];
   lights: SnapLight[];
   camera: SnapCamera;
@@ -683,6 +687,7 @@ export function prepareScene(snap: Snapshot): TraceScene {
     tris: snap.tris,
     triMat: snap.triMat,
     triUV: snap.triUV ?? null,
+    triGen: snap.triGen ?? null,
     materials: snap.materials,
     lights: snap.lights,
     camera: snap.camera,
@@ -746,6 +751,7 @@ export function traceRay(
   const uv0: [number, number] = [0, 0];
   const uv1: [number, number] = [0, 0];
   const uv2: [number, number] = [0, 0];
+  const genV: [number, number, number] = [0, 0, 0]; // interpolated GENERATED coord
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const hit = scene.bvh
@@ -800,10 +806,22 @@ export function traceRay(
       sampleImageBilinear(mat.metalImage!, uu, vv, mapSamp);
       matMetal = matMetal * mapSamp[0];
     }
+    // Interpolate the per-corner GENERATED coord (P16-2) the same way as UV
+    // (barycentric A=1-u-v, B=u, C=v). Only when a node graph will consume it,
+    // so the non-node path stays byte-identical.
+    let gen: [number, number, number] | undefined;
+    if (useNodes && scene.triGen) {
+      const g = hit.tri * 9;
+      const w0 = 1 - hit.u - hit.v;
+      genV[0] = scene.triGen[g] * w0 + scene.triGen[g + 3] * hit.u + scene.triGen[g + 6] * hit.v;
+      genV[1] = scene.triGen[g + 1] * w0 + scene.triGen[g + 4] * hit.u + scene.triGen[g + 7] * hit.v;
+      genV[2] = scene.triGen[g + 2] * w0 + scene.triGen[g + 5] * hit.u + scene.triGen[g + 8] * hit.v;
+      gen = genV;
+    }
     // Evaluate the node graph at the interpolated hit UV and OVERRIDE the
     // shading params. evaluateGraph allocates per call (fine at demo scale).
     const nodeSample = useNodes
-      ? evaluateGraph(mat.nodeGraph!, { u: uu, v: vv, images: mat.nodeImages ?? undefined })
+      ? evaluateGraph(mat.nodeGraph!, { u: uu, v: vv, images: mat.nodeImages ?? undefined, gen })
       : null;
     if (nodeSample) {
       alb[0] = nodeSample.baseColor[0]; alb[1] = nodeSample.baseColor[1]; alb[2] = nodeSample.baseColor[2];

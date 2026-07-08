@@ -1,7 +1,7 @@
 import type { Scene } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import {
-  CreateCollectionCommand,
+  CreateCollectionAndMoveCommand,
   MoveToCollectionCommand,
 } from '../core/undo/collectionCommands';
 import './collectionMenu.css';
@@ -80,13 +80,12 @@ export class CollectionMenu {
     this.close();
   }
 
-  /** Create a fresh collection then move the selection into it (two undo steps). */
+  /** Create a fresh collection then move the selection into it as ONE undo step. */
   private moveToNew(): void {
     const { scene, undo, objectIds, setStatus } = this.opts;
-    const col = scene.addCollection();
-    undo.push(new CreateCollectionCommand(scene, col));
-    undo.push(MoveToCollectionCommand.perform(scene, objectIds, col.id));
-    setStatus(`Moved ${objectIds.length} object(s) to ${col.name}`);
+    const { command, collection } = CreateCollectionAndMoveCommand.perform(scene, objectIds);
+    undo.push(command);
+    setStatus(`Moved ${objectIds.length} object(s) to ${collection.name}`);
     this.close();
   }
 

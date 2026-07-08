@@ -1,0 +1,119 @@
+.anim-render-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.anim-render-panel {
+  min-width: 300px;
+  padding: 18px 20px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  color: var(--vb-text, #d0d0d0);
+  font: var(--vb-font, 13px system-ui, sans-serif);
+}
+
+.anim-render-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+
+.anim-render-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.anim-render-label {
+  color: var(--vb-text-dim, #9a9a9a);
+  font-size: 12px;
+}
+
+.anim-render-input {
+  width: 100%;
+  padding: 4px 6px;
+  background: var(--vb-bg, #1d1d1d);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  color: var(--vb-text, #d0d0d0);
+  font: inherit;
+}
+
+.anim-render-input:focus {
+  outline: none;
+  border-color: var(--vb-accent, #fe730f);
+}
+
+.anim-render-progress {
+  margin-top: 14px;
+  height: 8px;
+  background: var(--vb-bg, #1d1d1d);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.anim-render-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--vb-accent, #fe730f);
+  transition: width 0.1s linear;
+}
+
+.anim-render-counter {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--vb-text-dim, #9a9a9a);
+  min-height: 14px;
+}
+
+.anim-render-msg {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--vb-accent, #fe730f);
+  min-height: 14px;
+}
+
+.anim-render-buttons {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.anim-render-btn {
+  padding: 5px 14px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  color: var(--vb-text, #d0d0d0);
+  font: inherit;
+  cursor: pointer;
+}
+
+.anim-render-btn:hover:not(:disabled) {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+}
+
+.anim-render-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.anim-render-btn-primary {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+}
+
+.anim-render-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 18%, var(--vb-panel, #2b2b2b));
+}
