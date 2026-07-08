@@ -237,9 +237,9 @@ New architecture decisions:
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
 | F14-1 | Node graph core: data model (nodes/sockets/links, typed), TS evaluator → material sampler, bake-to-texture bridge for Rendered, sceneJson v(next), cycle guard | fable | F13-1 | verified |
-| P14-1 | Shader Editor workspace pane: canvas graph UI — drag nodes, wire sockets, box select, Shift+A add-node menu, delete, pan/zoom | opus | F14-1 | pending |
-| P14-2 | Starter node set A: Principled BSDF (output), Image Texture, Checker, Mix Color, RGB, Value | opus | F14-1 | pending |
-| P14-3 | Starter node set B: Noise, ColorRamp, Bump, Mapping/UV input, MixFloat | opus | P14-2 | pending |
+| P14-1 | Shader Editor workspace pane: canvas graph UI — drag nodes, wire sockets, box select, Shift+A add-node menu, delete, pan/zoom | opus | F14-1 | verified |
+| P14-2 | Starter node set A: Principled BSDF (output), Image Texture, Checker, Mix Color, RGB, Value | opus | F14-1 | verified |
+| P14-3 | Starter node set B: Noise, ColorRamp, Bump, Mapping/UV input, MixFloat | opus | P14-2 | verified |
 | P14-4 | Node dry run e2e: build a noise-driven donut-icing material via public entry points, F12 proof render | opus | P14-1..3 | pending |
 
 ### Phase 15 — Animation

@@ -64,9 +64,11 @@ registerNodeDef({
     // Not decoded / missing → neutral white so the material shows unchanged.
     if (!img || img.width <= 0 || img.height <= 0) return { color: [1, 1, 1] };
     const [u, v] = sampleUV(inputs.uv, ctx);
-    // v-flip: image pixels have row 0 = top, but uv v=1 = top (Blender / the
-    // F13-1 convention), so sampling row = (1 - v).
-    return { color: bilinear(img, u, 1 - v) };
+    // App-wide image convention (tracer sampleImageBilinear, renderedPass GLSL
+    // with UNPACK_FLIP_Y=false, P13 map slots): v = 0 samples the TOP row —
+    // raw v, no flip. The same data URL must look identical through an Image
+    // Texture node and the Material-tab texture slot.
+    return { color: bilinear(img, u, v) };
   },
 });
 

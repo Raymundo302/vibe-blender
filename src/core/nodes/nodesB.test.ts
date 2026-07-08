@@ -29,14 +29,13 @@ describe('imageTexture node', () => {
     expect(d.params[0].default).toBeNull();
   });
 
-  it('bilinear at texel centers returns each corner (v-flipped: uv v=1 = top)', () => {
-    // Sampling row = 1 - v. uv v=0.75 → sample row 0.25 → TOP row.
-    // Top row of the image is red (left) / green (right).
-    expect(evalImg({ uv: [0.25, 0.75, 0] }, { image: URL }, withImg)).toEqual([1, 0, 0]); // red, top-left
-    expect(evalImg({ uv: [0.75, 0.75, 0] }, { image: URL }, withImg)).toEqual([0, 1, 0]); // green, top-right
-    // uv v=0.25 → sample row 0.75 → BOTTOM row (blue left / white right).
-    expect(evalImg({ uv: [0.25, 0.25, 0] }, { image: URL }, withImg)).toEqual([0, 0, 1]); // blue, bottom-left
-    expect(evalImg({ uv: [0.75, 0.25, 0] }, { image: URL }, withImg)).toEqual([1, 1, 1]); // white, bottom-right
+  it('bilinear at texel centers returns each corner (raw v: v=0 = top row — the tracer/GLSL convention)', () => {
+    // Sampling row = v directly. uv v=0.25 → TOP row (red left / green right).
+    expect(evalImg({ uv: [0.25, 0.25, 0] }, { image: URL }, withImg)).toEqual([1, 0, 0]); // red, top-left
+    expect(evalImg({ uv: [0.75, 0.25, 0] }, { image: URL }, withImg)).toEqual([0, 1, 0]); // green, top-right
+    // uv v=0.75 → BOTTOM row (blue left / white right).
+    expect(evalImg({ uv: [0.25, 0.75, 0] }, { image: URL }, withImg)).toEqual([0, 0, 1]); // blue, bottom-left
+    expect(evalImg({ uv: [0.75, 0.75, 0] }, { image: URL }, withImg)).toEqual([1, 1, 1]); // white, bottom-right
   });
 
   it('center sample bilinearly averages all four corners', () => {
@@ -48,8 +47,8 @@ describe('imageTexture node', () => {
   });
 
   it('clamps to edge outside the unit square', () => {
-    // uv v just above 1 → sample row < 0 → clamps to top row; u<0 clamps left.
-    expect(evalImg({ uv: [-0.5, 1.4, 0] }, { image: URL }, withImg)).toEqual([1, 0, 0]);
+    // v below 0 clamps to the top row; u<0 clamps left → red corner.
+    expect(evalImg({ uv: [-0.5, -0.4, 0] }, { image: URL }, withImg)).toEqual([1, 0, 0]);
   });
 
   it('missing / null / undecoded image → neutral white', () => {
@@ -61,15 +60,15 @@ describe('imageTexture node', () => {
   it('uses ctx.u/ctx.v when the uv socket is unconnected (NaN sentinel default)', () => {
     const def = imgDef();
     const uvDefault = def.inputs[0].default; // the sentinel the evaluator passes through
-    // ctx maps to the top-left red texel: u=0.25, v=0.75 (v-flipped).
-    const ctx: EvalContext = { u: 0.25, v: 0.75, images: new Map([[URL, IMG]]) };
+    // ctx maps to the top-left red texel: u=0.25, v=0.25 (raw v).
+    const ctx: EvalContext = { u: 0.25, v: 0.25, images: new Map([[URL, IMG]]) };
     expect(evalImg({ uv: uvDefault }, { image: URL }, ctx)).toEqual([1, 0, 0]);
   });
 
   it('prefers the connected uv socket over ctx when connected', () => {
     // ctx points at red (top-left) but the connected uv points at white (bottom-right).
-    const ctx: EvalContext = { u: 0.25, v: 0.75, images: new Map([[URL, IMG]]) };
-    expect(evalImg({ uv: [0.75, 0.25, 0] }, { image: URL }, ctx)).toEqual([1, 1, 1]);
+    const ctx: EvalContext = { u: 0.25, v: 0.25, images: new Map([[URL, IMG]]) };
+    expect(evalImg({ uv: [0.75, 0.75, 0] }, { image: URL }, ctx)).toEqual([1, 1, 1]);
   });
 });
 

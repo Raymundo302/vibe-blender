@@ -126,7 +126,7 @@ export class ShaderEditor {
     this.onWheel = (e) => this.handleWheel(e);
     this.onPointerDown = (e) => this.handlePointerDown(e);
     this.onPointerMove = (e) => this.handlePointerMove(e);
-    this.onPointerUp = (e) => this.handlePointerUp(e);
+    this.onPointerUp = () => this.handlePointerUp();
     this.onEnter = () => { this.hovered = true; };
     this.onLeave = () => { this.hovered = false; };
     this.onKeyDown = (e) => this.handleKeyDown(e);
@@ -380,7 +380,7 @@ export class ShaderEditor {
     }
   }
 
-  private handlePointerUp(e: PointerEvent): void {
+  private handlePointerUp(): void {
     if (this.panning) { this.panning = null; return; }
 
     if (this.wire) {

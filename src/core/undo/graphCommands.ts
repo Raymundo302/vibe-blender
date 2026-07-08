@@ -44,9 +44,9 @@ export class GraphEditCommand implements Command {
    * undo/redo bump it themselves.
    */
   static capture(name: string, material: Material, mutate: () => void): GraphEditCommand {
-    const before = snapshot(material);
+    const before = snapshotMaterial(material);
     mutate();
-    const after = snapshot(material);
+    const after = snapshotMaterial(material);
     return new GraphEditCommand(name, material, before, after);
   }
 

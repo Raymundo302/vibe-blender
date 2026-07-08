@@ -38,9 +38,11 @@ export function ensureBaked(mat: Material, images?: EvalContext['images']): void
 
   for (let y = 0; y < SIZE; y++) {
     for (let x = 0; x < SIZE; x++) {
-      // Canvas row 0 = top; UV v=1 = top (the F13-1 image convention).
+      // Canvas row 0 = top AND uv v=0 = top — the app-wide image convention
+      // (tracer + GLSL sample with raw v). A v-driven graph must bake to the
+      // same orientation the tracer shades directly.
       const u = (x + 0.5) / SIZE;
-      const v = 1 - (y + 0.5) / SIZE;
+      const v = (y + 0.5) / SIZE;
       const s = evaluateGraph(mat.nodeGraph, { u, v, images });
       const i = (y * SIZE + x) * 4;
       const bc = s?.baseColor ?? [0.8, 0.8, 0.8];
