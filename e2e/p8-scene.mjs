@@ -8,6 +8,9 @@
  */
 import { runE2e } from './harness.mjs';
 
+// Bumped whenever sceneJson VERSION bumps — single spot for the whole suite.
+const CURRENT_FORMAT_VERSION = 7;
+
 runE2e(async (t) => {
   // Layout workspace so the Outliner is on screen.
   await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
@@ -46,7 +49,7 @@ runE2e(async (t) => {
   // --- Round trip: serialize → apply → serialize is byte-identical ---
   const s1 = await t.evaluate('window.__app.io.serialize()');
   const parsed = JSON.parse(s1);
-  t.check('serialized as format v3', parsed.version === 5);
+  t.check('serialized at the current format version', parsed.version === CURRENT_FORMAT_VERSION);
   t.check('materials serialized', Array.isArray(parsed.materials) && parsed.materials.length === 1);
   // Active camera is stored as an INDEX into objects (ids never hit the file —
   // that's what keeps round trips byte-identical after deletions leave id gaps).

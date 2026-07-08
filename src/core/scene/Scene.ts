@@ -50,6 +50,8 @@ export class SceneObject {
   /** Parent object id (P12 parenting), or null → world root. World transform =
    *  parent chain × local. Cycle-guarded in Scene.worldMatrix. */
   parentId: number | null = null;
+  /** Animation curves (P15), or undefined = never keyed. */
+  anim?: import('../anim/fcurve').AnimData;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -107,6 +109,14 @@ export class Scene {
   cursor: Vec3 = Vec3.ZERO;
   /** R/S pivot: selection median (default) or the 3D cursor (P12). */
   pivotMode: 'median' | 'cursor' = 'median';
+  /** Timeline (P15). frameCurrent is applied by the sampler on scrub/play. */
+  frameStart = 1;
+  frameEnd = 120;
+  frameCurrent = 1;
+  /** Playback rate; fixed 24 until a UI needs otherwise. */
+  fps = 24;
+  /** Runtime playback flag (timeline pane + spacebar) — NOT serialized. */
+  playing = false;
   private nextId = 0;
   private nextMaterialId = 0;
   private nextCollectionId = 0;
@@ -337,6 +347,7 @@ export class Scene {
     obj.materialId = src.materialId;
     obj.collectionId = src.collectionId;
     obj.parentId = src.parentId; // duplicate of a child stays a child
+    if (src.anim) obj.anim = JSON.parse(JSON.stringify(src.anim)); // curves are plain data
     this.objects.push(obj);
     return obj;
   }

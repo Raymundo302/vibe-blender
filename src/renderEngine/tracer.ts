@@ -1,6 +1,9 @@
 import type { Snapshot, SnapMaterial, SnapLight, SnapCamera, SnapWorld } from './snapshot';
 import { defaultSnapWorld } from './snapshot';
 import { sampleEquirect } from '../core/scene/worldData';
+import { evaluateGraph } from '../core/nodes/evaluate';
+// Register all node defs so the graph evaluates inside the tracer WORKER bundle.
+import '../core/nodes/builtins';
 
 /**
  * Pure progressive path tracer (P8-4) — "Cycles-lite". No DOM, no GL: importable
@@ -759,15 +762,22 @@ export function traceRay(
     // order tris/triUV were pushed in). 'none' materials multiply by [1,1,1], so
     // an untextured hit is byte-identical to the pre-P11 path.
     alb[0] = mat.baseColor[0]; alb[1] = mat.baseColor[1]; alb[2] = mat.baseColor[2];
+    // P14 shader nodes: when a material carries a node graph it is the WHOLE
+    // truth (Blender semantics) — the base-texture AND all P13 map-slot paths
+    // are SKIPPED and the graph output overrides baseColor / metallic /
+    // roughness / emission below. Materials WITHOUT a graph keep the exact
+    // pre-P14 code path (every flag below folds to its old value), so
+    // tracer.test.ts renders stay bit-identical.
+    const useNodes = mat.nodeGraph != null;
     // Interpolate the hit UV once when the base-color texture OR any P13 data map
     // needs it (barycentric: A weight = 1-u-v, B = u, C = v). With no UVs OR no
     // texture/map, none of this runs and the hit stays byte-identical to pre-P13.
-    const hasTex = !!mat.texKind && mat.texKind !== 'none';
-    const hasNormalMap = mat.normalImage != null;
-    const hasRoughMap = mat.roughImage != null;
-    const hasMetalMap = mat.metalImage != null;
+    const hasTex = !useNodes && !!mat.texKind && mat.texKind !== 'none';
+    const hasNormalMap = !useNodes && mat.normalImage != null;
+    const hasRoughMap = !useNodes && mat.roughImage != null;
+    const hasMetalMap = !useNodes && mat.metalImage != null;
     let uu = 0, vv = 0;
-    if (scene.triUV && (hasTex || hasNormalMap || hasRoughMap || hasMetalMap)) {
+    if (scene.triUV && (useNodes || hasTex || hasNormalMap || hasRoughMap || hasMetalMap)) {
       const o = hit.tri * 6;
       const w0 = 1 - hit.u - hit.v;
       uu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
@@ -790,12 +800,27 @@ export function traceRay(
       sampleImageBilinear(mat.metalImage!, uu, vv, mapSamp);
       matMetal = matMetal * mapSamp[0];
     }
-    // Emission.
-    const es = mat.emissiveStrength;
+    // Evaluate the node graph at the interpolated hit UV and OVERRIDE the
+    // shading params. evaluateGraph allocates per call (fine at demo scale).
+    const nodeSample = useNodes
+      ? evaluateGraph(mat.nodeGraph!, { u: uu, v: vv, images: mat.nodeImages ?? undefined })
+      : null;
+    if (nodeSample) {
+      alb[0] = nodeSample.baseColor[0]; alb[1] = nodeSample.baseColor[1]; alb[2] = nodeSample.baseColor[2];
+      matRough = nodeSample.roughness;
+      matMetal = nodeSample.metallic;
+    }
+    // Emission (graph output overrides the flat emissive × strength when set).
+    let emR = mat.emissive[0], emG = mat.emissive[1], emB = mat.emissive[2];
+    let es = mat.emissiveStrength;
+    if (nodeSample) {
+      emR = nodeSample.emissive[0]; emG = nodeSample.emissive[1]; emB = nodeSample.emissive[2];
+      es = nodeSample.emissiveStrength;
+    }
     if (es > 0) {
-      rr += tr * mat.emissive[0] * es;
-      rg += tg * mat.emissive[1] * es;
-      rb += tb * mat.emissive[2] * es;
+      rr += tr * emR * es;
+      rg += tg * emG * es;
+      rb += tb * emB * es;
     }
     // Front face = the ray is entering the surface from outside (geometric
     // normal opposes the ray). Subsurface scattering only happens on entry;

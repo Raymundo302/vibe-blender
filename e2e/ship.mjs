@@ -4,6 +4,9 @@
  */
 import { runE2e } from './harness.mjs';
 
+// Bumped whenever sceneJson VERSION bumps — single spot for the whole suite.
+const CURRENT_FORMAT_VERSION = 7;
+
 runE2e(async (t) => {
   // --- P3-2: scene save / load (JSON) ---
 
@@ -14,7 +17,7 @@ runE2e(async (t) => {
 
   const parsed = JSON.parse(saved);
   t.check('format + version are correct',
-    parsed.format === 'vibe-blender-scene' && parsed.version === 5);
+    parsed.format === 'vibe-blender-scene' && parsed.version === CURRENT_FORMAT_VERSION);
   t.check('the default Cube is serialized',
     parsed.objects.length === 1 && parsed.objects[0].name === 'Cube');
 
@@ -457,7 +460,7 @@ runE2e(async (t) => {
 
   // v2: serialized scene reports version 2 and every object carries a modifiers array.
   const v2 = JSON.parse(await t.evaluate('window.__app.io.serialize()'));
-  t.check('scene serializes as format version 4', v2.version === 5);
+  t.check('scene serializes at the current format version', v2.version === CURRENT_FORMAT_VERSION);
   t.check('every object has a modifiers array',
     Array.isArray(v2.objects[0].modifiers));
 

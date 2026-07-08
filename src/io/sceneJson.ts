@@ -2,6 +2,8 @@ import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { Transform } from '../core/math/transform';
 import { sanitizeGraph, type NodeGraph } from '../core/nodes/nodeGraph';
+import type { AnimData } from '../core/anim/fcurve';
+import { applyAnimation } from '../core/anim/sampler';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
@@ -39,8 +41,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 6;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6];
+const VERSION = 7;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -154,6 +156,15 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
   };
   if (obj.light) out.light = serializeLight(obj.light);
   if (obj.camera) out.camera = serializeCamera(obj.camera);
+  // Animation (v7) — key omitted entirely for never-keyed objects.
+  if (obj.anim && obj.anim.fcurves.length > 0) {
+    out.anim = {
+      fcurves: obj.anim.fcurves.map((c) => ({
+        channelPath: c.channelPath,
+        keys: c.keys.map((k) => [num(k.frame), num(k.value), k.interp]),
+      })),
+    };
+  }
   return out;
 }
 
@@ -218,6 +229,10 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
     // 3D cursor + transform pivot mode (v4/P12).
     cursor: vec(scene.cursor),
     pivotMode: scene.pivotMode,
+    // Timeline (v7/P15).
+    frameStart: scene.frameStart,
+    frameEnd: scene.frameEnd,
+    frameCurrent: scene.frameCurrent,
     collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
     materials: scene.materials.map((m) => ({
       id: m.id,
@@ -295,6 +310,8 @@ interface ObjectData {
   collection: number | null;
   /** Parent as an objects index (v4), or null. */
   parent: number | null;
+  /** Animation curves (v7), or null. */
+  anim: AnimData | null;
   name: string;
   visible: boolean;
   shadeSmooth?: boolean;
@@ -321,6 +338,10 @@ interface SceneData {
   cursor: [number, number, number];
   /** R/S pivot mode (absent pre-v4 → median). */
   pivotMode: 'median' | 'cursor';
+  /** Timeline (absent pre-v7 → 1/120/1). */
+  frameStart: number;
+  frameEnd: number;
+  frameCurrent: number;
 }
 
 /** Default viewport color for files saved before per-object color existed. */
@@ -434,7 +455,10 @@ function parseScene(json: string): SceneData {
     }
     pivotMode = root.pivotMode;
   }
-  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode };
+  const frameStart = root.frameStart === undefined ? 1 : numField(root.frameStart, 'frameStart');
+  const frameEnd = root.frameEnd === undefined ? 120 : numField(root.frameEnd, 'frameEnd');
+  const frameCurrent = root.frameCurrent === undefined ? 1 : numField(root.frameCurrent, 'frameCurrent');
+  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode, frameStart, frameEnd, frameCurrent };
 }
 
 /**
@@ -686,6 +710,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     materialId,
     collection,
     parent,
+    anim: parseAnim(obj.anim, i),
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
@@ -697,6 +722,33 @@ function parseObject(o: unknown, i: number): ObjectData {
   if (kind === 'light') data.light = parseLight(obj.light, i);
   if (kind === 'camera') data.camera = parseCamera(obj.camera, i);
   return data;
+}
+
+/** Parse an object's animation block (v7): fcurves of [frame, value, interp]
+ *  key triplets. Keys re-sorted by frame defensively. */
+function parseAnim(v: unknown, i: number): AnimData | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) fail(`objects[${i}].anim must be an object`);
+  const a = v as Record<string, unknown>;
+  if (!Array.isArray(a.fcurves)) fail(`objects[${i}].anim.fcurves must be an array`);
+  const fcurves = (a.fcurves as unknown[]).map((c, ci) => {
+    if (typeof c !== 'object' || c === null) fail(`objects[${i}].anim.fcurves[${ci}] is not an object`);
+    const curve = c as Record<string, unknown>;
+    if (typeof curve.channelPath !== 'string') fail(`objects[${i}].anim.fcurves[${ci}].channelPath must be a string`);
+    if (!Array.isArray(curve.keys)) fail(`objects[${i}].anim.fcurves[${ci}].keys must be an array`);
+    const keys = (curve.keys as unknown[]).map((k, ki) => {
+      if (!Array.isArray(k) || k.length !== 3) fail(`objects[${i}].anim.fcurves[${ci}].keys[${ki}] must be [frame, value, interp]`);
+      const frame = numField(k[0], `objects[${i}].anim key frame`);
+      const value = numField(k[1], `objects[${i}].anim key value`);
+      if (k[2] !== 'constant' && k[2] !== 'linear' && k[2] !== 'bezier') {
+        fail(`objects[${i}].anim.fcurves[${ci}].keys[${ki}] interp must be constant|linear|bezier`);
+      }
+      return { frame, value, interp: k[2] as 'constant' | 'linear' | 'bezier' };
+    });
+    keys.sort((x, y) => x.frame - y.frame);
+    return { channelPath: curve.channelPath, keys };
+  });
+  return { fcurves };
 }
 
 /**
@@ -882,6 +934,17 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   // 3D cursor + pivot mode (P12).
   scene.cursor = Vec3.fromArray(data.cursor);
   scene.pivotMode = data.pivotMode;
+
+  // Timeline + animation (v7/P15).
+  scene.frameStart = data.frameStart;
+  scene.frameEnd = data.frameEnd;
+  scene.frameCurrent = data.frameCurrent;
+  for (const [i, { od }] of built.entries()) {
+    if (od.anim) rebuilt[i].anim = od.anim;
+  }
+  // Land posed at the saved frame (idempotent: stored transforms are already
+  // the sampled values, so re-serializing stays byte-identical).
+  applyAnimation(scene, scene.frameCurrent);
 
   // 'object'-kind modifier params were saved as objects INDICES — remap them
   // onto the rebuilt objects' fresh ids (-1 stays "none", as does out-of-range).

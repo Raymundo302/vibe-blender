@@ -4,3 +4,5 @@
  * P14 workers: add your node files below, nothing else.
  */
 import './coreNodes';
+import './nodesB';
+import './nodesA';

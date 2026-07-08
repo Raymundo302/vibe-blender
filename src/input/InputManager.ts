@@ -27,6 +27,7 @@ import { Transform } from '../core/math/transform';
 import type { Mat4 } from '../core/math/mat4';
 import type { EditModeState } from '../core/scene/EditMode';
 import { rayPlane } from '../core/math/ray';
+import { InsertKeysCommand, LOC_ROT_SCALE } from '../core/anim/animCommands';
 import {
   sculptState,
   brushWeights,
@@ -913,6 +914,19 @@ export class InputManager {
       if (!cmd) return;
       this.ctx.undo.push(cmd);
       this.ctx.setStatus(`Cleared parent on ${targets.length} object(s)`);
+      return;
+    }
+    // I (P15, object mode): insert LocRotScale keyframes for the selection at
+    // the current frame. (Edit-mode I = inset — that branch returned above.)
+    if (key === 'i' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      const targets = scene.selectedObjects;
+      if (targets.length === 0) { this.ctx.setStatus('I: select objects first'); return; }
+      const cmd = InsertKeysCommand.perform('Insert Keyframe', scene, targets, LOC_ROT_SCALE, scene.frameCurrent);
+      if (!cmd) return;
+      this.ctx.undo.push(cmd);
+      this.ctx.setStatus(`Keyed LocRotScale @ frame ${scene.frameCurrent} (${targets.length} object(s))`);
       return;
     }
     // M: Move to Collection (object mode). Opens a popup at the pointer listing
