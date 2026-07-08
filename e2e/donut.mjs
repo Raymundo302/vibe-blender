@@ -188,6 +188,10 @@ runE2e(async (t) => {
     return best;
   })()`);
   const beforePE = await t.evaluate(`[...window.__app.scene.editObject.mesh.verts.values()].map(v => v.co.y)`);
+  // Pin the proportional radius to 2 — the value this suite's frozen geometry
+  // expectations (lump size → hero warmth distribution) were built with.
+  // P16-4 made the DEFAULT 1.0 and session-sticky, so an e2e must set its own.
+  await t.evaluate(`(window.__proportional.radius = 2)`);
   // Turn proportional editing ON (O), then G-drag the selected top vert upward.
   await t.key('o', 'KeyO', 0);
   await t.sleep(70);
