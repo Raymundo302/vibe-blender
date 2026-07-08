@@ -21,6 +21,8 @@ import { HelpOverlay } from './ui/helpOverlay';
 import { NPanel } from './ui/nPanel';
 import { Passepartout } from './ui/passepartout';
 import { CursorOverlay } from './ui/cursorOverlay';
+import { OriginDots } from './ui/originDots';
+import { loadOverlayPrefs, overlays } from './render/overlayPrefs';
 import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { Autosave } from './io/autosave';
@@ -179,6 +181,15 @@ const passepartout = new Passepartout(viewportWrap, renderer, canvas);
 // 3D cursor marker (P12): DOM overlay projected from scene.cursor every frame.
 const cursorOverlay = new CursorOverlay(viewportWrap, scene, camera, renderer, canvas);
 
+// Overlay prefs (P12-2): restore persisted grid/origin/icon/frustum/cursor
+// toggles before the first frame so the initial render honors them, and sync
+// the cursor marker's visibility to the stored pref.
+loadOverlayPrefs();
+cursorOverlay.visible = overlays.cursor3d;
+
+// Origin dots (P12-2): small orange dot at each selected object's world origin.
+const originDots = new OriginDots(viewportWrap, scene, camera, renderer, canvas);
+
 new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
 
 // F12 render engine (P8-4): owns its own keydown listener + result window.
@@ -317,13 +328,13 @@ const topbar = new Topbar(scene, renderer, {
   importObj: importObjFile,
   toggleHelp: () => helpOverlay.toggle(),
   toggleRender: () => renderEngine.toggle(),
-});
+}, cursorOverlay);
 topbar.mountTabs(workspaces.createTabs());
 
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay,
+  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots,
   autosave: {
     saveNow: () => autosave.saveNow(),
     clear: () => autosave.clear(),
@@ -343,6 +354,7 @@ function frame(): void {
   nPanel.update();
   passepartout.update();
   cursorOverlay.update();
+  originDots.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

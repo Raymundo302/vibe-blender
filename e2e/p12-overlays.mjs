@@ -1,0 +1,151 @@
+/**
+ * P12-2 e2e — Overlays dropdown, Pivot dropdown, 💡 lights toggle, persistence.
+ * Run with the dev server up (under flock):
+ *   flock /tmp/vibe-blender-e2e.lock node e2e/p12-overlays.mjs
+ */
+import { runE2e } from './harness.mjs';
+import { readFile } from 'node:fs/promises';
+
+const SHOT_A = '/tmp/p12-overlays-grid-on.png';
+const SHOT_B = '/tmp/p12-overlays-grid-off.png';
+
+runE2e(async (t) => {
+  // Start from a clean overlay state so the run is deterministic regardless of
+  // a prior session's stored prefs.
+  await t.evaluate(`(() => { localStorage.removeItem('vibe-overlays'); })()`);
+  await t.reload();
+
+  // Force the Layout workspace so the topbar + viewport are on screen.
+  await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
+  await t.sleep(150);
+
+  // --- Overlays dropdown --------------------------------------------------
+  t.check('Overlays button present',
+    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="overlays"]')`));
+
+  // Open it; the five checkbox rows appear in the popover.
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.sleep(120);
+  t.check('Overlays popover has 5 checkbox rows',
+    (await t.evaluate(`document.querySelectorAll('.topbar-menu-check').length`)) === 5);
+  t.check('Grid checkbox starts checked',
+    await t.evaluate(`document.querySelector('.topbar-menu-check[data-overlay="grid"] input').checked`));
+
+  // Screenshot with the grid ON, then un-check Grid and screenshot again.
+  await t.screenshot(SHOT_A);
+  await t.evaluate(`(() => {
+    const box = document.querySelector('.topbar-menu-check[data-overlay="grid"] input');
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(150);
+  t.check('un-checking Grid persists the pref to localStorage',
+    (await t.evaluate(`JSON.parse(localStorage.getItem('vibe-overlays')).grid`)) === false);
+  // Close the popover (a second click on the button toggles it shut).
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.sleep(80);
+
+  // render() still runs without throwing after the grid is off.
+  t.check('render() runs with grid off (no throw)',
+    (await t.evaluate(`(() => { window.__app.renderer.render(window.__app.scene, window.__app.camera); return true; })()`)) === true);
+
+  await t.sleep(80);
+  await t.screenshot(SHOT_B);
+  const a = await readFile(SHOT_A);
+  const b = await readFile(SHOT_B);
+  t.check('viewport screenshot changes when the grid is hidden', !a.equals(b));
+
+  // --- Icons overlay gates pickability ------------------------------------
+  // Isolate a single light at the world origin (hide meshes so nothing else is
+  // pickable there), then probe its projected screen position.
+  const lightId = await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    if (s.editMode) s.exitEditMode();
+    for (const o of s.objects) o.visible = (o.kind !== 'mesh') ? o.visible : false;
+    const l = s.addLight('Probe', 'point'); // new Transform() → world origin
+    // Deselect everything so no translate gizmo sits over the icon at the
+    // origin (gizmo handles win the pick); icons are pickable regardless.
+    s.deselectAll();
+    return l.id;
+  })()`);
+  await t.sleep(120);
+
+  const pickAtLight = `(() => {
+    const app = window.__app;
+    const s = app.scene, r = app.renderer, cam = app.camera;
+    const canvas = document.querySelector('#viewport-wrap canvas') || document.querySelector('canvas');
+    const rect = canvas.getBoundingClientRect();
+    const vp = r.currentViewProj(s, cam);
+    const p = s.worldTransformOf(s.get(${lightId})).position;
+    const ndc = vp.transformPoint(p);
+    const x = (ndc.x + 1) / 2 * rect.width;
+    const y = (1 - ndc.y) / 2 * rect.height;
+    const hit = r.pick(s, cam, x, y);
+    return hit && hit.kind === 'object' ? hit.id : -1;
+  })()`;
+
+  // Icons ON (default): the light's billboard is pickable at its position.
+  t.check('with Icons on, the light is pickable at its projected position',
+    (await t.evaluate(pickAtLight)) === lightId);
+
+  // Toggle Icons OFF via the dropdown checkbox.
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.sleep(100);
+  await t.evaluate(`(() => {
+    const box = document.querySelector('.topbar-menu-check[data-overlay="icons"] input');
+    box.checked = false;
+    box.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(120);
+  t.check('with Icons off, the light is NOT pickable at that position',
+    (await t.evaluate(pickAtLight)) !== lightId);
+  // Close the popover before moving on.
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.sleep(80);
+
+  // --- Pivot dropdown -----------------------------------------------------
+  t.check('pivotMode starts as median',
+    (await t.evaluate(`window.__app.scene.pivotMode`)) === 'median');
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="pivot"]').click()`);
+  await t.sleep(120);
+  await t.evaluate(`document.querySelector('.topbar-menu-row[data-pivot="cursor"]').click()`);
+  await t.sleep(120);
+  t.check('choosing 3D Cursor writes scene.pivotMode = cursor',
+    (await t.evaluate(`window.__app.scene.pivotMode`)) === 'cursor');
+  t.check('pivot button label reflects the mode',
+    (await t.evaluate(`document.querySelector('.topbar-btn[data-action="pivot"]').textContent`)).includes('3D Cursor'));
+
+  // --- 💡 Lights master toggle -------------------------------------------
+  // Add a second light so we exercise the all-on/all-off logic across many.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    const l2 = s.addLight('Probe2', 'sun');
+    l2.visible = true;
+  })()`);
+  const anyLightOn = `(() => window.__app.scene.objects.filter(o => o.kind === 'light').some(l => l.visible))()`;
+  const allLightsOff = `(() => window.__app.scene.objects.filter(o => o.kind === 'light').every(l => !l.visible))()`;
+  t.check('a light is on before toggling', await t.evaluate(anyLightOn));
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="lights-toggle"]').click()`);
+  await t.sleep(120);
+  t.check('💡 turns all lights off when any was on', await t.evaluate(allLightsOff));
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="lights-toggle"]').click()`);
+  await t.sleep(120);
+  t.check('💡 turns all lights back on', await t.evaluate(anyLightOn));
+
+  // --- Persistence across reload -----------------------------------------
+  // Grid + Icons were un-checked earlier; both should survive the reload.
+  await t.reload();
+  await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
+  await t.sleep(150);
+  t.check('grid pref persisted through reload (localStorage)',
+    (await t.evaluate(`JSON.parse(localStorage.getItem('vibe-overlays')).grid`)) === false);
+  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.sleep(120);
+  t.check('reopened Overlays menu shows Grid un-checked (pref applied at boot)',
+    (await t.evaluate(`document.querySelector('.topbar-menu-check[data-overlay="grid"] input').checked`)) === false);
+  t.check('reopened Overlays menu shows Icons un-checked',
+    (await t.evaluate(`document.querySelector('.topbar-menu-check[data-overlay="icons"] input').checked`)) === false);
+
+  // Clean up: restore all-on prefs so we don't leave the shared browser dirty.
+  await t.evaluate(`(() => { localStorage.removeItem('vibe-overlays'); })()`);
+});

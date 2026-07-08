@@ -1,0 +1,14 @@
+/* Selected-object origin dots (P12-2) — positioned by OriginDots.update() each
+   frame. A small orange dot with a dark halo so it reads on any background. */
+.origin-dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fe730f;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 5; /* over the canvas, under menus/panels — matches .cursor3d */
+}

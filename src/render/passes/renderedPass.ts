@@ -100,6 +100,15 @@ uniform int u_texKind;      // 0 none, 1 checker, 2 image
 uniform int u_hasTex;       // 1 when an image texture is bound
 uniform sampler2D u_tex;    // base-color image (sRGB-encoded → sampled linear)
 
+// P13 map slots (all LINEAR uploads — these are data, not color):
+uniform int u_normKind;        // 0 off, 1 tangent-space normal map, 2 bump height
+uniform float u_normStrength;  // 0..2
+uniform sampler2D u_normTex;   // unit 1
+uniform int u_hasRough;
+uniform sampler2D u_roughTex;  // unit 2 (grayscale in .r, multiplies roughness)
+uniform int u_hasMetal;
+uniform sampler2D u_metalTex;  // unit 3 (grayscale in .r, multiplies metallic)
+
 uniform vec3 u_eye;
 uniform int u_lightCount;
 uniform vec3 u_lightPos[${MAX_LIGHTS}];
@@ -137,7 +146,39 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 void main() {
   vec3 N = normalize(v_normal);
   vec3 V = normalize(u_eye - v_worldPos);
+
+  // P13: perturb N by the normal/bump map using a screen-space-derivative TBN
+  // (no per-vertex tangents needed; standard dFdx/dFdy construction).
+  if (u_normKind != 0) {
+    vec3 dpx = dFdx(v_worldPos);
+    vec3 dpy = dFdy(v_worldPos);
+    vec2 dux = dFdx(v_uv);
+    vec2 duy = dFdy(v_uv);
+    float det = dux.x * duy.y - duy.x * dux.y;
+    if (abs(det) > 1e-12) {
+      vec3 T = normalize(dpx * duy.y - dpy * dux.y) * sign(det);
+      T = normalize(T - N * dot(N, T));
+      vec3 B = cross(N, T);
+      if (u_normKind == 1) {
+        vec3 nTex = texture(u_normTex, v_uv).rgb * 2.0 - 1.0;
+        nTex.xy *= u_normStrength;
+        N = normalize(T * nTex.x + B * nTex.y + N * max(nTex.z, 0.05));
+      } else {
+        vec2 texel = 1.0 / vec2(textureSize(u_normTex, 0));
+        float hL = texture(u_normTex, v_uv - vec2(texel.x, 0.0)).r;
+        float hR = texture(u_normTex, v_uv + vec2(texel.x, 0.0)).r;
+        float hD = texture(u_normTex, v_uv - vec2(0.0, texel.y)).r;
+        float hU = texture(u_normTex, v_uv + vec2(0.0, texel.y)).r;
+        vec2 grad = vec2(hR - hL, hU - hD) * u_normStrength * 4.0;
+        N = normalize(N - T * grad.x - B * grad.y);
+      }
+    }
+  }
+
   float rough = clamp(u_roughness, 0.04, 1.0);
+  if (u_hasRough == 1) rough = clamp(rough * texture(u_roughTex, v_uv).r, 0.04, 1.0);
+  float metallic = u_metallic;
+  if (u_hasMetal == 1) metallic *= texture(u_metalTex, v_uv).r;
   vec3 baseColor = u_baseColor * v_tint;
   // Base-color texture through the UVs (matches the tracer's sampleMaterialTexture):
   // checker = 8×8 parity (even → 0.2 dark, odd → 1.0 light), image = bilinear.
@@ -147,7 +188,7 @@ void main() {
   } else if (u_texKind == 2 && u_hasTex == 1) {
     baseColor *= texture(u_tex, v_uv).rgb;
   }
-  vec3 F0 = mix(vec3(0.04), baseColor, u_metallic);
+  vec3 F0 = mix(vec3(0.04), baseColor, metallic);
 
   // Flat ambient from the world (honest approximation of image-based lighting:
   // average world color × strength × 0.3, computed on the CPU as u_ambient).
@@ -178,7 +219,7 @@ void main() {
     float G = geometrySmith(NdotV, NdotL, rough);
     vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
     vec3 specular = (D * G * F) / (4.0 * NdotV * NdotL + 1e-4);
-    vec3 kd = (1.0 - F) * (1.0 - u_metallic);
+    vec3 kd = (1.0 - F) * (1.0 - metallic);
     color += (kd * baseColor / PI + specular) * radiance * NdotL;
   }
   color += u_emissive;
@@ -240,6 +281,7 @@ export class RenderedPass {
       ),
     );
     s.setInt('u_texKind', mat.texKind === 'checker' ? 1 : mat.texKind === 'image' ? 2 : 0);
+    s.setFloat('u_normStrength', mat.normalStrength);
   }
 
   /**
@@ -253,6 +295,31 @@ export class RenderedPass {
     gl.bindTexture(gl.TEXTURE_2D, tex ?? this.white);
     this.shader.setInt('u_hasTex', tex ? 1 : 0);
     this.shader.setInt('u_tex', 0);
+  }
+
+  /**
+   * Bind the P13 map textures (units 1-3) for the next draw. A slot whose
+   * texture is null (no map, or its async decode is still in flight) binds the
+   * 1×1 white fallback AND disables the feature — u_normKind is forced to 0
+   * here even if the material has a normalDataUrl, so a mid-decode frame
+   * renders unperturbed instead of sampling garbage.
+   */
+  bindMaps(mat: Material, norm: WebGLTexture | null, rough: WebGLTexture | null, metal: WebGLTexture | null): void {
+    const gl = this.gl;
+    const s = this.shader;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, norm ?? this.white);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, rough ?? this.white);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, metal ?? this.white);
+    gl.activeTexture(gl.TEXTURE0);
+    s.setInt('u_normTex', 1);
+    s.setInt('u_roughTex', 2);
+    s.setInt('u_metalTex', 3);
+    s.setInt('u_normKind', norm ? (mat.normalIsBump ? 2 : 1) : 0);
+    s.setInt('u_hasRough', rough ? 1 : 0);
+    s.setInt('u_hasMetal', metal ? 1 : 0);
   }
 }
 

@@ -61,3 +61,41 @@
 .outliner-row.outliner-indent {
   padding-left: 22px;
 }
+
+/* Parenting (P12-3) ----------------------------------------------------------- */
+
+/* Twisty before a parent row's kind glyph; a same-width spacer aligns leaves. */
+.outliner-twisty {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  color: var(--vb-muted, #8a8a8a);
+  cursor: pointer;
+  user-select: none;
+}
+.outliner-twisty:hover {
+  color: var(--vb-text, #d0d0d0);
+}
+
+/* "↖ parent-name" suffix on a child whose parent is in another collection. */
+.outliner-parent-hint {
+  flex: none;
+  margin-left: 4px;
+  font-size: 10px;
+  color: var(--vb-muted, #8a8a8a);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Drop target highlight while dragging a row to (re)parent it. */
+.outliner-drop-target {
+  outline: 1px solid var(--vb-accent, #fe730f);
+  outline-offset: -1px;
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 20%, transparent);
+}
+.outliner-dragging {
+  cursor: grabbing;
+}

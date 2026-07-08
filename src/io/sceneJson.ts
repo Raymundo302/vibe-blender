@@ -38,8 +38,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 4;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4];
+const VERSION = 5;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -230,6 +230,11 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       subsurfaceRadius: num(m.subsurfaceRadius),
       texKind: m.texKind,
       texDataUrl: m.texDataUrl,
+      normalDataUrl: m.normalDataUrl,
+      normalIsBump: m.normalIsBump,
+      normalStrength: num(m.normalStrength),
+      roughDataUrl: m.roughDataUrl,
+      metalDataUrl: m.metalDataUrl,
     })),
     objects: scene.objects.map((o) => serializeObject(o, scene)),
   };
@@ -268,6 +273,11 @@ interface MaterialData {
   subsurfaceRadius: number;
   texKind: 'none' | 'checker' | 'image';
   texDataUrl: string | null;
+  normalDataUrl: string | null;
+  normalIsBump: boolean;
+  normalStrength: number;
+  roughDataUrl: string | null;
+  metalDataUrl: string | null;
 }
 interface CollectionData {
   name: string;
@@ -483,8 +493,21 @@ function parseMaterials(v: unknown): MaterialData[] {
         if (typeof mat.texDataUrl !== 'string') fail(`materials[${mi}].texDataUrl must be a string or null`);
         return mat.texDataUrl;
       })(),
+      // Map slots (v5/P13) — absent in older files → off/defaults.
+      normalDataUrl: optionalUrl(mat.normalDataUrl, `materials[${mi}].normalDataUrl`),
+      normalIsBump: mat.normalIsBump === true,
+      normalStrength: mat.normalStrength === undefined ? 1 : numField(mat.normalStrength, `materials[${mi}].normalStrength`),
+      roughDataUrl: optionalUrl(mat.roughDataUrl, `materials[${mi}].roughDataUrl`),
+      metalDataUrl: optionalUrl(mat.metalDataUrl, `materials[${mi}].metalDataUrl`),
     };
   });
+}
+
+/** An optional packed-image field: absent/null → null, else a string. */
+function optionalUrl(v: unknown, where: string): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string') fail(`${where} must be a string or null`);
+  return v;
 }
 
 /** Parse an object's LightData payload (kind 'light' only). */
@@ -780,6 +803,11 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       subsurfaceRadius: md.subsurfaceRadius,
       texKind: md.texKind,
       texDataUrl: md.texDataUrl,
+      normalDataUrl: md.normalDataUrl,
+      normalIsBump: md.normalIsBump,
+      normalStrength: md.normalStrength,
+      roughDataUrl: md.roughDataUrl,
+      metalDataUrl: md.metalDataUrl,
     };
     scene.materials.push(mat);
     if (md.id > maxMaterialId) maxMaterialId = md.id;

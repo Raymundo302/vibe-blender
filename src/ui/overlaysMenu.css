@@ -1,0 +1,52 @@
+/* Topbar dropdown popovers (P12-2): Overlays checkbox list + Pivot options.
+   Uses the shared --vb-* theme tokens so they re-theme instantly. */
+.topbar-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 180px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font: var(--vb-font, 12px/1.4 "Segoe UI", system-ui, sans-serif);
+  color: var(--vb-text, #d0d0d0);
+  user-select: none;
+}
+.topbar-menu-heading {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vb-text-dim, #8a8a8a);
+}
+.topbar-menu-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.topbar-menu-check:hover { background: var(--vb-hover, #4a4a4a); }
+.topbar-menu-check input {
+  accent-color: var(--vb-accent, #fe730f);
+  cursor: pointer;
+}
+.topbar-menu-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 5px 8px;
+}
+.topbar-menu-row:hover { background: var(--vb-hover, #4a4a4a); }
+.topbar-menu-active {
+  border-color: var(--vb-accent, #fe730f);
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 16%, transparent);
+}

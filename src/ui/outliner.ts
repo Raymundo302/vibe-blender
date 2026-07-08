@@ -2,7 +2,7 @@ import type { Panel } from './panel';
 import type { Scene, SceneObject, SceneCollection } from '../core/scene/Scene';
 import type { ObjectKind } from '../core/scene/objectData';
 import type { UndoStack } from '../core/undo/UndoStack';
-import { DeleteObjectsCommand, RenameObjectCommand } from '../core/undo/objectCommands';
+import { DeleteObjectsCommand, RenameObjectCommand, SetParentCommand } from '../core/undo/objectCommands';
 import {
   CreateCollectionCommand,
   DeleteCollectionCommand,
@@ -29,6 +29,15 @@ const KIND_GLYPH: Record<ObjectKind, string> = {
  * frozen e2e suites keep passing. Owns its DOM; collection styling lives in
  * outliner.css, base row styling in the shared theme.css.
  *
+ * Parenting (P12-3): within each group (a collection's members, or the scene
+ * root) parent objects nest their children 16px per depth, depth-first, each
+ * parent carrying a ▸/▾ twisty that hides its subtree when collapsed. A child
+ * whose parent lives in another collection renders un-nested under its own
+ * collection with a subtle "↖ parent" hint. Dragging a row onto another row
+ * parents it (and the rest of the selection, if it was selected) via
+ * SetParentCommand; dropping onto a collection header or empty space clears the
+ * parent. A refused drop (cycle) silently no-ops (no status access here).
+ *
  * update() runs every frame, so it diffs a cheap signature and only rebuilds the
  * row DOM when something visible changed — and never while a rename <input> is
  * focused (rebuilding would blow away the field the user is typing in).
@@ -46,6 +55,13 @@ export class OutlinerPanel implements Panel {
   private renamingCollectionId: number | null = null;
   /** Collections collapsed in THIS panel session (default: expanded). */
   private readonly collapsed = new Set<number>();
+  /** Parent objects collapsed in THIS panel session (default: expanded). */
+  private readonly collapsedObjects = new Set<number>();
+
+  /** Active drag-to-parent gesture (pointer-based), or null. */
+  private dragState: { id: number; startX: number; startY: number; active: boolean } | null = null;
+  /** Set true by a completed drag so the trailing click doesn't also select. */
+  private suppressNextClick = false;
 
   constructor(
     private readonly scene: Scene,
@@ -53,6 +69,15 @@ export class OutlinerPanel implements Panel {
   ) {
     this.element = document.createElement('div');
     this.element.className = 'outliner-list';
+    // A drag that crossed the threshold fires a click on mouseup; swallow it so
+    // the drop doesn't also re-select. Capture phase beats the row handler.
+    this.element.addEventListener('click', (e) => {
+      if (this.suppressNextClick) {
+        this.suppressNextClick = false;
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    }, true);
     this.rebuild();
   }
 
@@ -68,7 +93,9 @@ export class OutlinerPanel implements Panel {
   /** Cheap change signature: what the rows visibly depend on. */
   private signature(): string {
     const rows = this.scene.objects
-      .map((o) => `${o.id}:${o.name}:${o.visible ? 1 : 0}:${o.collectionId ?? -1}`)
+      .map((o) =>
+        `${o.id}:${o.name}:${o.visible ? 1 : 0}:${o.collectionId ?? -1}` +
+        `:${o.parentId ?? -1}:${this.collapsedObjects.has(o.id) ? 1 : 0}`)
       .join('|');
     const cols = this.scene.collections
       .map((c) => `${c.id}:${c.name}:${c.visible ? 1 : 0}:${this.collapsed.has(c.id) ? 1 : 0}`)
@@ -83,19 +110,18 @@ export class OutlinerPanel implements Panel {
 
     this.element.appendChild(this.makeNewCollectionButton());
 
-    // Collections first (Blender order), each with its indented members.
+    // Collections first (Blender order), each with its parent-nested members.
     for (const col of this.scene.collections) {
       this.element.appendChild(this.makeCollectionHeader(col));
       if (!this.collapsed.has(col.id)) {
-        for (const obj of this.scene.objects) {
-          if (obj.collectionId === col.id) this.element.appendChild(this.makeRow(obj, true));
-        }
+        const members = this.scene.objects.filter((o) => o.collectionId === col.id);
+        this.renderGroup(members, true);
       }
     }
 
     // Scene-root objects (no collection) after the collections.
     const rootObjects = this.scene.objects.filter((o) => o.collectionId === null);
-    for (const obj of rootObjects) this.element.appendChild(this.makeRow(obj, false));
+    this.renderGroup(rootObjects, false);
 
     if (this.scene.objects.length === 0 && this.scene.collections.length === 0) {
       const empty = document.createElement('div');
@@ -187,12 +213,76 @@ export class OutlinerPanel implements Panel {
     return row;
   }
 
-  private makeRow(obj: SceneObject, indented: boolean): HTMLElement {
+  /**
+   * Render a set of objects (a collection's members, or the scene root) with
+   * parent nesting. A "group root" is a member whose parent isn't in the same
+   * group — either no parent, or a parent that lives in another collection.
+   * Group roots render un-nested (base indent); their in-group descendants nest
+   * 16px deeper per level, depth-first. Cross-collection parents get a hint.
+   */
+  private renderGroup(members: SceneObject[], collectionMember: boolean): void {
+    const memberIds = new Set(members.map((m) => m.id));
+    for (const obj of members) {
+      if (obj.parentId === null || !memberIds.has(obj.parentId)) {
+        this.renderSubtree(obj, 0, memberIds, collectionMember);
+      }
+    }
+  }
+
+  private renderSubtree(
+    obj: SceneObject,
+    depth: number,
+    memberIds: Set<number>,
+    collectionMember: boolean,
+  ): void {
+    const children = this.scene.childrenOf(obj).filter((c) => memberIds.has(c.id));
+    const collapsed = this.collapsedObjects.has(obj.id);
+    // A group root that has a parent means the parent is in another collection;
+    // surface it as a subtle "↖ parent" hint rather than nesting cross-group.
+    const crossParent = depth === 0 && obj.parentId !== null ? this.scene.parentOf(obj) : null;
+    this.element.appendChild(
+      this.makeRow(obj, collectionMember, depth, children.length > 0, collapsed, crossParent),
+    );
+    if (children.length > 0 && !collapsed) {
+      for (const child of children) {
+        this.renderSubtree(child, depth + 1, memberIds, collectionMember);
+      }
+    }
+  }
+
+  private makeRow(
+    obj: SceneObject,
+    collectionMember: boolean,
+    depth: number,
+    hasChildren: boolean,
+    collapsed: boolean,
+    crossParent: SceneObject | null,
+  ): HTMLElement {
     const row = document.createElement('div');
     row.className = 'outliner-row';
-    if (indented) row.classList.add('outliner-indent');
+    row.dataset.objId = String(obj.id);
+    if (collectionMember) row.classList.add('outliner-indent');
+    // 16px per hierarchy depth on top of the group's base indent.
+    const base = collectionMember ? 22 : 8;
+    row.style.paddingLeft = `${base + depth * 16}px`;
     if (this.scene.selection.has(obj.id)) row.classList.add('outliner-selected');
     if (this.scene.activeId === obj.id) row.classList.add('outliner-active');
+
+    // Twisty for parents (collapse the subtree); a spacer keeps leaves aligned.
+    const twisty = document.createElement('span');
+    twisty.className = 'outliner-twisty';
+    if (hasChildren) {
+      twisty.textContent = collapsed ? '▸' : '▾';
+      twisty.title = collapsed ? 'Expand' : 'Collapse';
+      twisty.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (this.collapsedObjects.has(obj.id)) this.collapsedObjects.delete(obj.id);
+        else this.collapsedObjects.add(obj.id);
+        this.lastSig = '';
+        this.update();
+      });
+    }
+    row.appendChild(twisty);
 
     const glyph = document.createElement('span');
     glyph.className = 'outliner-glyph';
@@ -210,6 +300,14 @@ export class OutlinerPanel implements Panel {
     name.textContent = obj.name;
     row.appendChild(name);
 
+    if (crossParent) {
+      const hint = document.createElement('span');
+      hint.className = 'outliner-parent-hint';
+      hint.textContent = `↖ ${crossParent.name}`;
+      hint.title = `Child of ${crossParent.name} (in another collection)`;
+      row.appendChild(hint);
+    }
+
     const eye = document.createElement('button');
     eye.type = 'button';
     eye.className = 'outliner-btn outliner-eye';
@@ -224,6 +322,15 @@ export class OutlinerPanel implements Panel {
     del.textContent = '✕';
     del.title = 'Delete';
     row.appendChild(del);
+
+    // Pointer-based drag-to-parent: start on a left press over the row body
+    // (not the twisty or the eye/delete buttons).
+    row.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const tgt = e.target as HTMLElement;
+      if (tgt.closest('button') || tgt.classList.contains('outliner-twisty')) return;
+      this.beginDrag(obj.id, e.clientX, e.clientY);
+    });
 
     // Row selection. Shift toggles into/out of the selection.
     row.addEventListener('click', (e) => {
@@ -249,6 +356,90 @@ export class OutlinerPanel implements Panel {
     });
 
     return row;
+  }
+
+  // --- Drag-to-parent (pointer-based) ---------------------------------------
+
+  private beginDrag(id: number, x: number, y: number): void {
+    this.dragState = { id, startX: x, startY: y, active: false };
+    document.addEventListener('mousemove', this.onDragMove);
+    document.addEventListener('mouseup', this.onDragUp);
+  }
+
+  private readonly onDragMove = (e: MouseEvent): void => {
+    const st = this.dragState;
+    if (!st) return;
+    if (!st.active) {
+      if (Math.hypot(e.clientX - st.startX, e.clientY - st.startY) < 4) return;
+      st.active = true;
+      this.element.classList.add('outliner-dragging');
+    }
+    this.highlightDropTarget(e.clientX, e.clientY);
+  };
+
+  private readonly onDragUp = (e: MouseEvent): void => {
+    const st = this.dragState;
+    document.removeEventListener('mousemove', this.onDragMove);
+    document.removeEventListener('mouseup', this.onDragUp);
+    this.dragState = null;
+    this.clearDropHighlight();
+    this.element.classList.remove('outliner-dragging');
+    if (!st || !st.active) return; // never crossed threshold — it was a click
+    // Swallow the click the browser synthesizes from this press+release so the
+    // drop doesn't also re-select. If performDrop re-renders (it usually does),
+    // the press target is detached and no click fires — so clear the guard on
+    // the next tick to avoid it leaking onto a later, unrelated click.
+    this.suppressNextClick = true;
+    setTimeout(() => { this.suppressNextClick = false; }, 0);
+    this.performDrop(st.id, e.clientX, e.clientY);
+  };
+
+  /** Element under the pointer that a drop would act on: a row or a header. */
+  private dropElementAt(x: number, y: number): HTMLElement | null {
+    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    if (!el || !this.element.contains(el)) return null;
+    return (el.closest('.outliner-row') ?? el.closest('.outliner-collection-header')) as HTMLElement | null;
+  }
+
+  private highlightDropTarget(x: number, y: number): void {
+    this.clearDropHighlight();
+    const target = this.dropElementAt(x, y);
+    // Don't highlight the dragged row itself.
+    if (target && target.dataset.objId === String(this.dragState?.id)) return;
+    target?.classList.add('outliner-drop-target');
+  }
+
+  private clearDropHighlight(): void {
+    for (const el of this.element.querySelectorAll('.outliner-drop-target')) {
+      el.classList.remove('outliner-drop-target');
+    }
+  }
+
+  /**
+   * Resolve the drop: onto an object row → parent the dragged set to it; onto a
+   * collection header or empty space → clear the parent. If the dragged row was
+   * part of the selection, the whole selection moves; otherwise just that row.
+   */
+  private performDrop(draggedId: number, x: number, y: number): void {
+    const dragged = this.scene.get(draggedId);
+    if (!dragged) return;
+
+    const objects = this.scene.selection.has(draggedId)
+      ? this.scene.selectedObjects
+      : [dragged];
+
+    const target = this.dropElementAt(x, y);
+    const targetRow = target?.classList.contains('outliner-row') ? target : null;
+    const parent = targetRow?.dataset.objId != null ? this.scene.get(Number(targetRow.dataset.objId)) ?? null : null;
+
+    const cmd = parent
+      ? SetParentCommand.perform('Parent', this.scene, objects, parent)
+      : SetParentCommand.perform('Clear Parent', this.scene, objects, null);
+    // A null command onto a real target means every entry was refused (cycle or
+    // no-op). We have no status/toast access here, so silently no-op per spec.
+    if (cmd) this.undo.push(cmd);
+    this.lastSig = '';
+    this.update();
   }
 
   /** Swap the name label for an inline <input>; commit on Enter/blur, revert on Escape. */

@@ -34,6 +34,13 @@ export interface SnapMaterial {
    * pixels renders like an untextured material.
    */
   texImage?: { width: number; height: number; pixels: Float32Array } | null;
+  /** P13 map slots (decoded RAW 0..1 pixels — data, not color; null = off).
+   *  The tracer perturbs shading normals / scales rough+metal with these. */
+  normalImage?: { width: number; height: number; pixels: Float32Array } | null;
+  normalIsBump?: boolean;
+  normalStrength?: number;
+  roughImage?: { width: number; height: number; pixels: Float32Array } | null;
+  metalImage?: { width: number; height: number; pixels: Float32Array } | null;
 }
 
 /** 0 = point, 1 = sun, 2 = spot (matches renderedPass type codes). */
@@ -137,6 +144,11 @@ function toMat(m: {
   subsurfaceRadius?: number;
   texKind?: 'none' | 'checker' | 'image';
   texImage?: { width: number; height: number; pixels: Float32Array };
+  normalImage?: { width: number; height: number; pixels: Float32Array };
+  normalIsBump?: boolean;
+  normalStrength?: number;
+  roughImage?: { width: number; height: number; pixels: Float32Array };
+  metalImage?: { width: number; height: number; pixels: Float32Array };
 }): SnapMaterial {
   const texKind = m.texKind ?? 'none';
   return {
@@ -151,6 +163,11 @@ function toMat(m: {
     // Only carry the decoded pixels for image materials; share the Float32Array
     // (it is immutable per data URL) so the snapshot stays cheap.
     texImage: texKind === 'image' && m.texImage ? m.texImage : null,
+    normalImage: m.normalImage ?? null,
+    normalIsBump: m.normalIsBump ?? false,
+    normalStrength: m.normalStrength ?? 1,
+    roughImage: m.roughImage ?? null,
+    metalImage: m.metalImage ?? null,
   };
 }
 

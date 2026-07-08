@@ -46,7 +46,7 @@ runE2e(async (t) => {
   // --- Round trip: serialize → apply → serialize is byte-identical ---
   const s1 = await t.evaluate('window.__app.io.serialize()');
   const parsed = JSON.parse(s1);
-  t.check('serialized as format v3', parsed.version === 4);
+  t.check('serialized as format v3', parsed.version === 5);
   t.check('materials serialized', Array.isArray(parsed.materials) && parsed.materials.length === 1);
   // Active camera is stored as an INDEX into objects (ids never hit the file —
   // that's what keeps round trips byte-identical after deletions leave id gaps).

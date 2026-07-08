@@ -47,6 +47,11 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Object Mode', keys: 'Alt+A', description: 'Deselect all' },
   { group: 'Object Mode', keys: 'M', description: 'Move selection to a collection' },
   { group: 'Object Mode', keys: 'X / Delete', description: 'Delete selection' },
+  { group: 'Object Mode', keys: 'Ctrl+P', description: 'Parent selection to the active object' },
+  { group: 'Object Mode', keys: 'Alt+P', description: 'Clear parent (keep world transform)' },
+  { group: 'Object Mode', keys: 'Shift+RightClick', description: 'Place the 3D cursor under the pointer' },
+  { group: 'Object Mode', keys: 'Shift+C', description: 'Reset the 3D cursor to the world origin' },
+  { group: 'Object Mode', keys: 'Shift+S', description: 'Snap pie — cursor ↔ selection ↔ grid' },
 
   // Edit mode
   { group: 'Edit Mode', keys: 'LMB', description: 'Select element (Shift: toggle)' },

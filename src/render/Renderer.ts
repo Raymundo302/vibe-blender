@@ -20,6 +20,7 @@ import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
 import { cameraFovY, type Material } from '../core/scene/objectData';
+import { overlays } from './overlayPrefs';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
@@ -98,6 +99,9 @@ export class Renderer {
    * stays null while the async image decodes (falls back to white until ready).
    */
   private readonly matTextures = new Map<number, { url: string; tex: WebGLTexture | null }>();
+  /** P13: lazy data-URL → GL texture cache for map slots. Key prefix encodes
+   *  color space ('s:' sRGB base color, 'l:' linear data maps). */
+  private readonly urlTextures = new Map<string, { tex: WebGLTexture | null }>();
 
   /**
    * Whether the translate gizmo may draw / be picked. InputManager clears this
@@ -245,6 +249,38 @@ export class Renderer {
   }
 
   /**
+   * P13 map-slot upload: data URL → GL texture, cached by URL. Returns null
+   * while the async decode is in flight (caller binds a neutral fallback).
+   * `srgb` = false uploads LINEAR (normal/rough/metal maps are data, not
+   * color); true mirrors the base-color path. Cache is URL-keyed and never
+   * evicted — packed data URLs are few and shared across materials.
+   */
+  private textureFor(url: string | null, srgb: boolean): WebGLTexture | null {
+    if (!url) return null;
+    const key = (srgb ? 's:' : 'l:') + url;
+    const cached = this.urlTextures.get(key);
+    if (cached) return cached.tex;
+    const holder = { tex: null as WebGLTexture | null };
+    this.urlTextures.set(key, holder);
+    const gl = this.ctx.gl;
+    const img = new Image();
+    img.onload = () => {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, srgb ? gl.SRGB8_ALPHA8 : gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      holder.tex = tex;
+    };
+    img.onerror = () => { /* leave null → feature stays off */ };
+    img.src = url;
+    return null;
+  }
+
+  /**
    * Advance the shading mode one step (matcap → wireframe → studio → matcap)
    * and return the new mode. Called by the Z keybind and the topbar chip.
    */
@@ -333,6 +369,12 @@ export class Renderer {
         const mat = scene.materialOf(obj);
         this.renderedPass.setObject(scene.worldMatrix(obj), mat);
         this.renderedPass.bindTexture(this.materialTexture(mat));
+        this.renderedPass.bindMaps(
+          mat,
+          this.textureFor(mat.normalDataUrl, false),
+          this.textureFor(mat.roughDataUrl, false),
+          this.textureFor(mat.metalDataUrl, false),
+        );
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else {
@@ -343,12 +385,12 @@ export class Renderer {
       }
     }
 
-    // Grid (blended, after opaque)
-    this.gridPass.render(view, proj, eye);
+    // Grid (blended, after opaque) — Overlays › Grid toggles it (P12-2).
+    if (overlays.grid) this.gridPass.render(view, proj, eye);
 
     // Camera frustums — after the grid, before outlines. Skip the camera we are
     // currently looking through (its wireframe would smear across the whole view).
-    const frustums = visible.filter((o) => o.kind === 'camera' && o.id !== this.cameraViewId);
+    const frustums = visible.filter((o) => overlays.frustums && o.kind === 'camera' && o.id !== this.cameraViewId);
     if (frustums.length > 0) {
       const viewProj = proj.mul(view);
       this.cameraFrustumPass.begin();
@@ -359,7 +401,7 @@ export class Renderer {
 
     // Billboard icons for non-mesh objects (lights, cameras). The looked-through
     // camera has no icon either (it is the viewpoint).
-    const icons = visible.filter((o) => o.kind !== 'mesh' && o.id !== this.cameraViewId);
+    const icons = visible.filter((o) => overlays.icons && o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (icons.length > 0) {
       this.iconPass.begin(proj.mul(view), canvas.width, canvas.height);
       for (const obj of icons) {
@@ -438,7 +480,7 @@ export class Renderer {
     // Light/camera icons — drawn last (iconPass switches GL programs, and
     // pickingPass.drawObject assumes the picking shader is still active). The
     // looked-through camera has no on-screen icon, so it is not pickable either.
-    const iconObjs = scene.objects.filter((o) => scene.effectiveVisible(o) && o.kind !== 'mesh' && o.id !== this.cameraViewId);
+    const iconObjs = scene.objects.filter((o) => overlays.icons && scene.effectiveVisible(o) && o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (iconObjs.length > 0) {
       this.iconPass.begin(viewProj, canvas.width, canvas.height);
       for (const obj of iconObjs) this.iconPass.drawPick(scene.worldTransformOf(obj).position, obj.id + 1);

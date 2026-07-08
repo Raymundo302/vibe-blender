@@ -38,6 +38,8 @@ import {
 } from '../tools/sculptBrushes';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { AddMenu } from '../ui/addMenu';
+import { PieMenu } from '../ui/pieMenu';
+import { cursorToOrigin, cursorToSelected, cursorToGrid, selectionToCursor, selectionToGrid } from '../tools/snapOps';
 import { CollectionMenu } from '../ui/collectionMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { EdgeMenu } from '../ui/edgeMenu';
@@ -326,6 +328,7 @@ export class InputManager {
    *  gizmo drag it confirms on pointer *release* (see onPointerUp). */
   private sculptStroke = false;
   private addMenu: AddMenu | null = null;
+  private pieMenu: PieMenu | null = null;
   private collectionMenu: CollectionMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
   private edgeMenu: EdgeMenu | null = null;
@@ -726,6 +729,34 @@ export class InputManager {
       scene.selection.clear();
       for (const id of hadSelection) scene.selection.add(id);
       this.ctx.setStatus('Cursor to origin');
+      return;
+    }
+
+    // Shift+S (P12): open the Snap pie at the pointer. Works in both object and
+    // edit mode (placed before the edit-mode branch, like Shift+C). Re-press
+    // closes it. The Selection wedges are inert in edit mode and when nothing is
+    // selected (they only move whole objects). Cursor moves are not undoable.
+    if (key === 's' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (this.pieMenu) { this.pieMenu.close(); return; }
+      const scene = this.ctx.scene;
+      const undo = this.ctx.undo;
+      const status = (t: string) => this.ctx.setStatus(t);
+      const noSel = scene.editMode !== null || scene.selectedObjects.length === 0;
+      this.pieMenu = new PieMenu({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        title: 'Snap',
+        items: [
+          { label: 'Cursor to World Origin', action: () => status(cursorToOrigin(scene)) },
+          { label: 'Cursor to Selected', action: () => status(cursorToSelected(scene)) },
+          { label: 'Cursor to Grid', action: () => status(cursorToGrid(scene)) },
+          { label: 'Selection to Cursor', disabled: noSel, action: () => status(selectionToCursor(scene, undo)) },
+          { label: 'Selection to Grid', disabled: noSel, action: () => status(selectionToGrid(scene, undo)) },
+        ],
+        onClose: () => { this.pieMenu = null; },
+      });
       return;
     }
 

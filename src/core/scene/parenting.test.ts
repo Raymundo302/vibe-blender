@@ -197,3 +197,47 @@ describe('sceneJson v4 parenting + cursor', () => {
     expect(scene2.pivotMode).toBe('median');
   });
 });
+
+describe('sceneJson v5 material map slots (F13-1)', () => {
+  it('round-trips normal/rough/metal map fields byte-identically', async () => {
+    const { Scene } = await import('./Scene');
+    const scene = new Scene();
+    const cam = new OrbitCamera();
+    scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Mapped');
+    mat.normalDataUrl = 'data:image/png;base64,AAA';
+    mat.normalIsBump = true;
+    mat.normalStrength = 1.5;
+    mat.roughDataUrl = 'data:image/png;base64,BBB';
+    mat.metalDataUrl = null;
+    const json = serializeScene(scene, cam);
+    const scene2 = new Scene();
+    applySceneJson(json, scene2, new OrbitCamera());
+    const m2 = scene2.materials[0];
+    expect(m2.normalDataUrl).toBe('data:image/png;base64,AAA');
+    expect(m2.normalIsBump).toBe(true);
+    expect(m2.normalStrength).toBe(1.5);
+    expect(m2.roughDataUrl).toBe('data:image/png;base64,BBB');
+    expect(m2.metalDataUrl).toBeNull();
+    expect(serializeScene(scene2, cam)).toBe(json);
+  });
+
+  it('loads a v4 file with no map keys as maps-off defaults', () => {
+    const scene = new Scene();
+    const cam = new OrbitCamera();
+    scene.add('Cube', makeCube());
+    scene.addMaterial('Plain');
+    const data = JSON.parse(serializeScene(scene, cam));
+    data.version = 4;
+    for (const m of data.materials) {
+      delete m.normalDataUrl; delete m.normalIsBump; delete m.normalStrength;
+      delete m.roughDataUrl; delete m.metalDataUrl;
+    }
+    const scene2 = new Scene();
+    applySceneJson(JSON.stringify(data), scene2, new OrbitCamera());
+    const m2 = scene2.materials[0];
+    expect(m2.normalDataUrl).toBeNull();
+    expect(m2.normalIsBump).toBe(false);
+    expect(m2.normalStrength).toBe(1);
+  });
+});

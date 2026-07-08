@@ -132,11 +132,11 @@ describe('sceneJson round trip', () => {
 });
 
 describe('sceneJson format v2 modifiers', () => {
-  it('writes version 4', () => {
+  it('writes the current format version', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(5);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 

@@ -99,8 +99,24 @@ export interface Material {
   texKind: 'none' | 'checker' | 'image';
   /** Packed image as a data URL when texKind === 'image' (worldData-style). */
   texDataUrl: string | null;
+  /** Normal/bump map (P13): packed image data URL, or null = off. */
+  normalDataUrl: string | null;
+  /** Interpret normalDataUrl as a HEIGHT field (bump) instead of a
+   *  tangent-space normal map. */
+  normalIsBump: boolean;
+  /** Normal/bump perturbation strength (0..2, default 1). */
+  normalStrength: number;
+  /** Grayscale roughness map — MULTIPLIES `roughness`. null = off. */
+  roughDataUrl: string | null;
+  /** Grayscale metallic map — MULTIPLIES `metallic`. null = off. */
+  metalDataUrl: string | null;
   /** Runtime decoded pixels cache — NOT serialized (rebuilt on load/select). */
   texImage?: { width: number; height: number; pixels: Float32Array };
+  /** Runtime decoded map caches (P13) — NOT serialized. Raw 0..1 values (no
+   *  sRGB conversion — normal/rough/metal maps store data, not color). */
+  normalImage?: { width: number; height: number; pixels: Float32Array };
+  roughImage?: { width: number; height: number; pixels: Float32Array };
+  metalImage?: { width: number; height: number; pixels: Float32Array };
 }
 
 /** What objects without an assigned material render as (Blender's grey). */
@@ -116,6 +132,11 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   subsurfaceRadius: 0.05,
   texKind: 'none' as const,
   texDataUrl: null,
+  normalDataUrl: null,
+  normalIsBump: false,
+  normalStrength: 1,
+  roughDataUrl: null,
+  metalDataUrl: null,
 });
 
 /** Fresh mutable material with default params (scene assigns the id). */
@@ -132,5 +153,10 @@ export function makeMaterial(id: number, name: string): Material {
     subsurfaceRadius: 0.05,
     texKind: 'none',
     texDataUrl: null,
+    normalDataUrl: null,
+    normalIsBump: false,
+    normalStrength: 1,
+    roughDataUrl: null,
+    metalDataUrl: null,
   };
 }

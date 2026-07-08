@@ -221,9 +221,9 @@ New architecture decisions:
 |----|------|-------|---------|--------|
 | F12-1 | 3D cursor core: scene state, Shift+RightClick place (raycast to surface/grid), overlay crosshair, Add-at-cursor, pivot option, sceneJson | fable | — | pending |
 | F12-2 | Parenting core: parentIndex, world-matrix inheritance, cycle guard, Ctrl+P (keep transform) / Alt+P (clear, keep transform), undo cmds, serialization | fable | — | pending |
-| P12-1 | Radial pie-menu component (generic, keyboard+mouse) + Shift+S snap pie: Cursor→Selected, Cursor→Origin, Selection→Cursor, Cursor→Grid | opus | F12-1 | pending |
-| P12-2 | Overlays dropdown (header): toggle grid, axes, origin points, light/camera icons, wireframe-on-shaded, 3D cursor; persisted | opus | F12-1 | pending |
-| P12-3 | Outliner parent hierarchy: indent children, drag-to-parent, Ctrl+P/Alt+P menu entries | opus | F12-2 | pending |
+| P12-1 | Radial pie-menu component (generic, keyboard+mouse) + Shift+S snap pie: Cursor→Selected, Cursor→Origin, Selection→Cursor, Cursor→Grid | opus | F12-1 | built |
+| P12-2 | Overlays dropdown (header): toggle grid, axes, origin points, light/camera icons, wireframe-on-shaded, 3D cursor; persisted | opus | F12-1 | built |
+| P12-3 | Outliner parent hierarchy: indent children, drag-to-parent, Ctrl+P/Alt+P menu entries | opus | F12-2 | built |
 
 ### Phase 13 — Texture depth & image viewer
 | ID | Task | Owner | Depends | Status |
