@@ -24,7 +24,7 @@ export function bumpGraphVersion(material: Material): void {
 }
 
 /** Serialize the material's graph-relevant state to a JSON string. */
-function snapshot(material: Material): string {
+export function snapshotMaterial(material: Material): string {
   const state: GraphSnapshot = { useNodes: material.useNodes, graph: material.nodeGraph };
   return JSON.stringify(state);
 }

@@ -91,9 +91,10 @@ runE2e(async (t) => {
     for (let i = 0; i < px.length; i += 4) {
       const dr = px[i] - pre[i], dg = px[i + 1] - pre[i + 1], db = px[i + 2] - pre[i + 2];
       if (Math.abs(dr) + Math.abs(dg) + Math.abs(db) > 24) diff++;
-      // On the lit cube face, the ramp (fac 0.8 → red 0.8) should be redder
-      // than the flat 0.5 grey it replaced.
-      if (px[i] > pre[i] + 10 && px[i + 1] + 10 < pre[i + 1]) redder++;
+      // On the lit cube face, the ramp (fac 0.8 → red 0.8) makes the surface
+      // red-dominant: the red-minus-green separation grows vs the flat grey it
+      // replaced (grey R≈G → red R≫G), independent of overall brightness.
+      if ((px[i] - px[i + 1]) > (pre[i] - pre[i + 1]) + 15) redder++;
     }
     const mat = app.scene.getMaterial(${matId});
     return {

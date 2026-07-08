@@ -155,6 +155,9 @@ describe('sceneJson v7 animation', () => {
     insertKey(obj.anim, 'location.x', 24, 4.5, 'bezier');
     scene.frameEnd = 48;
     scene.frameCurrent = 12;
+    // A live app is always POSED at frameCurrent when it saves (the timeline
+    // samples on scrub) — mirror that, since load re-poses at frameCurrent.
+    applyAnimation(scene, scene.frameCurrent);
     const json = serializeScene(scene, cam);
     const scene2 = new Scene();
     applySceneJson(json, scene2, new OrbitCamera());
