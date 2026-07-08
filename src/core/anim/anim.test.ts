@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Scene } from '../scene/Scene';
 import { makeCube } from '../mesh/primitives';
 import { Vec3 } from '../math/vec3';
+import { Quat } from '../math/quat';
 import { Transform } from '../math/transform';
 import { evalFCurve, insertKey, deleteKey, type AnimData, type FCurve } from './fcurve';
 import { readChannel, writeChannel } from './channels';
@@ -198,3 +199,18 @@ class SceneWithCube extends Scene {
     this.add('Cube', makeCube());
   }
 }
+
+describe('F16-1 sampler precision', () => {
+  it('location-only animation leaves the rotation quaternion IDENTICAL', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    const rot = Quat.fromAxisAngle(new Vec3(0.3, 0.8, 0.1).normalize(), 0.7345);
+    obj.transform = new Transform(new Vec3(1, 2, 3), rot, new Vec3(1, 1, 1));
+    obj.anim = { fcurves: [] };
+    insertKey(obj.anim, 'location.x', 1, 0, 'linear');
+    insertKey(obj.anim, 'location.x', 10, 9, 'linear');
+    applyAnimation(scene, 5);
+    expect(obj.transform.rotation).toBe(rot); // same object — no rebuild at all
+    expect(obj.transform.position.y).toBe(2);
+  });
+});
