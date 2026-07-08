@@ -62,6 +62,13 @@
   color: var(--vb-text-dim, #8a8a8a);
 }
 
+/* Delete-selected-keys button (P15-3) — sits at the far right, past the fps
+ * label's margin-left:auto. A discoverable alias for the X / Delete shortcut. */
+.timeline-delkey {
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
 .timeline-canvas {
   display: block;
   flex: 1 1 auto;

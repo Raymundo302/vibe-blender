@@ -19,10 +19,26 @@
  * unit tests (timeline.test.ts); they carry no DOM dependency.
  */
 import type { Scene, SceneObject } from '../core/scene/Scene';
+import type { UndoStack } from '../core/undo/UndoStack';
 import { applyAnimation } from '../core/anim/sampler';
 import { findCurve } from '../core/anim/fcurve';
-import { LOC_ROT_SCALE } from '../core/anim/animCommands';
+import { InsertKeysCommand, DeleteKeysCommand, LOC_ROT_SCALE } from '../core/anim/animCommands';
+import { MoveKeysCommand, type KeyMove } from '../core/anim/keyEditCommands';
+import { TransformCommand } from '../core/undo/commands';
 import './timeline.css';
+
+/**
+ * Auto-key runtime flag (P15-3). Module-level state — NOT on Scene, NOT saved.
+ * The topbar ⏺ button flips `enabled`; the Timeline pane polls the undo stack
+ * in its update() and, when this is on, inserts LocRotScale keys for the
+ * selected objects at frameCurrent whenever a fresh TransformCommand lands.
+ */
+export const autoKeyState = { enabled: false };
+
+/** `${objectId}:${frame}` identity for a selected diamond. */
+function keyOf(objectId: number, frame: number): string {
+  return `${objectId}:${frame}`;
+}
 
 /** Left gutter (object-name label column) + right margin, in CSS px. */
 export const PAD_LEFT = 96;
@@ -108,11 +124,23 @@ export class TimelinePane {
   // Scrub drag state.
   private scrubbing = false;
 
+  // Keyframe selection + drag-move state (P15-3).
+  private selection = new Set<string>(); // keyOf(objectId, frame)
+  private dragging = false;
+  private dragMoved = false;
+  private dragAnchorFrame = 0; // frame of the grabbed diamond
+  private dragDelta = 0; // snapped integer frame offset applied to all selected
+  private hovered = false; // pointer is over this pane (gates X/Delete)
+  private lastPushCount = -1; // undo-stack push counter last seen (auto-key)
+
   private rows: Row[] = [];
 
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
   private readonly onPointerUp: (e: PointerEvent) => void;
+  private readonly onKeyDownCapture: (e: KeyboardEvent) => void;
+  private readonly onEnter: () => void;
+  private readonly onLeave: () => void;
 
   private accent = '#fe730f';
   private accentTick = 0;
@@ -156,9 +184,16 @@ export class TimelinePane {
     this.fpsLabel = document.createElement('span');
     this.fpsLabel.className = 'timeline-fps';
 
+    // Delete-selected-keys button — a discoverable alias for X / Delete.
+    const delKeyBtn = document.createElement('button');
+    delKeyBtn.className = 'timeline-btn timeline-delkey';
+    delKeyBtn.textContent = '🔑 −';
+    delKeyBtn.title = 'Delete selected keyframes (X)';
+    delKeyBtn.addEventListener('click', () => this.deleteSelectedKeys());
+
     header.append(
       toStartBtn, this.playBtn, frameWrap.wrap,
-      startWrap.wrap, endWrap.wrap, this.fpsLabel,
+      startWrap.wrap, endWrap.wrap, this.fpsLabel, delKeyBtn,
     );
 
     // --- Canvas (ruler + tracks) ---
@@ -168,13 +203,25 @@ export class TimelinePane {
 
     this.element.append(header, this.canvas);
 
-    // Scrub interactions on the canvas (NOT InputManager).
+    // Scrub / select / drag interactions on the canvas (NOT InputManager).
     this.onPointerDown = (e) => this.handlePointerDown(e);
     this.onPointerMove = (e) => this.handlePointerMove(e);
-    this.onPointerUp = () => { this.scrubbing = false; };
+    this.onPointerUp = () => this.handlePointerUp();
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+
+    // Hover gate for X / Delete so the timeline only eats those keys when the
+    // pointer is over it (otherwise object-mode X still deletes objects).
+    this.onEnter = () => { this.hovered = true; };
+    this.onLeave = () => { this.hovered = false; };
+    this.element.addEventListener('pointerenter', this.onEnter);
+    this.element.addEventListener('pointerleave', this.onLeave);
+
+    // X / Delete deletes selected keyframes. Capture phase + stopPropagation so
+    // it wins over InputManager's window (bubble-phase) object-delete handler.
+    this.onKeyDownCapture = (e) => this.handleKeyDown(e);
+    window.addEventListener('keydown', this.onKeyDownCapture, true);
 
     // Debug handle for e2e (harmless in production).
     (window as unknown as Record<string, unknown>).__timeline = {
@@ -182,6 +229,9 @@ export class TimelinePane {
       rowCount: (): number => this.rows.length,
       canvas: this.canvas,
       frameToX: (f: number) => frameToX(f, this.scene.frameStart, this.scene.frameEnd, this.cssW),
+      selectedKeys: (): { objectId: number; frame: number }[] => this.selectedKeys(),
+      diamondXY: (objectId: number, frame: number) => this.diamondXY(objectId, frame),
+      autoKey: autoKeyState,
     };
   }
 
@@ -201,6 +251,9 @@ export class TimelinePane {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('keydown', this.onKeyDownCapture, true);
+    this.element.removeEventListener('pointerenter', this.onEnter);
+    this.element.removeEventListener('pointerleave', this.onLeave);
     if ((window as unknown as Record<string, unknown>).__timeline &&
         ((window as unknown as { __timeline: { canvas: HTMLCanvasElement } }).__timeline.canvas === this.canvas)) {
       delete (window as unknown as Record<string, unknown>).__timeline;
@@ -225,15 +278,156 @@ export class TimelinePane {
     return e.clientX - this.canvas.getBoundingClientRect().left;
   }
 
+  private localY(e: { clientY: number }): number {
+    return e.clientY - this.canvas.getBoundingClientRect().top;
+  }
+
   private handlePointerDown(e: PointerEvent): void {
     if (e.button !== 0) return;
+    const x = this.localX(e);
+    const y = this.localY(e);
+    const hit = this.hitTest(x, y);
+    if (hit) {
+      // --- Select a diamond (shift extends/toggles) ---
+      const id = keyOf(hit.objectId, hit.frame);
+      if (e.shiftKey) {
+        if (this.selection.has(id)) this.selection.delete(id);
+        else this.selection.add(id);
+      } else if (!this.selection.has(id)) {
+        this.selection.clear();
+        this.selection.add(id);
+      }
+      // Begin a potential drag of the whole selection.
+      this.dragging = this.selection.has(id);
+      this.dragMoved = false;
+      this.dragAnchorFrame = hit.frame;
+      this.dragDelta = 0;
+      return;
+    }
+    // Empty ruler / track → scrub (clears selection unless shift-adding).
+    if (!e.shiftKey) this.selection.clear();
     this.scrubbing = true;
-    this.scrubTo(xToFrame(this.localX(e), this.scene.frameStart, this.scene.frameEnd, this.cssW));
+    this.scrubTo(xToFrame(x, this.scene.frameStart, this.scene.frameEnd, this.cssW));
   }
 
   private handlePointerMove(e: PointerEvent): void {
+    if (this.dragging) {
+      const targetAnchor = clampFrame(
+        xToFrame(this.localX(e), this.scene.frameStart, this.scene.frameEnd, this.cssW),
+        // Keys may live outside [start,end]; allow the anchor anywhere ≥ 0.
+        0, Number.MAX_SAFE_INTEGER,
+      );
+      const delta = targetAnchor - this.dragAnchorFrame;
+      if (delta !== this.dragDelta) {
+        this.dragDelta = delta;
+        if (delta !== 0) this.dragMoved = true;
+      }
+      return;
+    }
     if (!this.scrubbing) return;
     this.scrubTo(xToFrame(this.localX(e), this.scene.frameStart, this.scene.frameEnd, this.cssW));
+  }
+
+  private handlePointerUp(): void {
+    if (this.dragging) {
+      this.dragging = false;
+      if (this.dragMoved && this.dragDelta !== 0) this.commitMove(this.dragDelta);
+      this.dragDelta = 0;
+      this.dragMoved = false;
+    }
+    this.scrubbing = false;
+  }
+
+  /** The diamond under (x, y) in canvas-local px, or null. */
+  private hitTest(x: number, y: number): { objectId: number; frame: number } | null {
+    if (y <= RULER_H) return null;
+    const rowIndex = Math.floor((y - RULER_H) / ROW_H);
+    if (rowIndex < 0 || rowIndex >= this.rows.length) return null;
+    const row = this.rows[rowIndex];
+    const cy = RULER_H + rowIndex * ROW_H + ROW_H / 2;
+    if (Math.abs(y - cy) > 8) return null;
+    for (const d of row.diamonds) {
+      const dx = frameToX(d.frame, this.scene.frameStart, this.scene.frameEnd, this.cssW);
+      if (Math.abs(x - dx) <= 6) return { objectId: row.object.id, frame: d.frame };
+    }
+    return null;
+  }
+
+  /** Canvas-local center of a committed diamond (e2e helper), or null. */
+  private diamondXY(objectId: number, frame: number): { x: number; y: number } | null {
+    const rowIndex = this.rows.findIndex((r) => r.object.id === objectId);
+    if (rowIndex < 0) return null;
+    const row = this.rows[rowIndex];
+    if (!row.diamonds.some((d) => d.frame === frame)) return null;
+    return {
+      x: frameToX(frame, this.scene.frameStart, this.scene.frameEnd, this.cssW),
+      y: RULER_H + rowIndex * ROW_H + ROW_H / 2,
+    };
+  }
+
+  private selectedKeys(): { objectId: number; frame: number }[] {
+    return [...this.selection].map((id) => {
+      const [objectId, frame] = id.split(':').map(Number);
+      return { objectId, frame };
+    });
+  }
+
+  private getUndo(): UndoStack | null {
+    const app = (window as unknown as { __app?: { undo?: UndoStack } }).__app;
+    return app?.undo ?? null;
+  }
+
+  /** Resolve selected object ids → SceneObject via the currently drawn rows. */
+  private objectById(id: number): SceneObject | undefined {
+    return this.rows.find((r) => r.object.id === id)?.object
+      ?? this.scene.objects.find((o) => o.id === id);
+  }
+
+  /** Commit a horizontal drag of all selected diamonds as ONE MoveKeysCommand. */
+  private commitMove(delta: number): void {
+    const moves: KeyMove[] = [];
+    for (const { objectId, frame } of this.selectedKeys()) {
+      const object = this.objectById(objectId);
+      if (object) moves.push({ object, fromFrame: frame, toFrame: frame + delta });
+    }
+    const cmd = MoveKeysCommand.perform('Move Keyframes', moves);
+    if (!cmd) return;
+    this.getUndo()?.push(cmd);
+    // Selection follows the keys to their new frames.
+    const moved = new Set<string>();
+    for (const { objectId, frame } of this.selectedKeys()) moved.add(keyOf(objectId, frame + delta));
+    this.selection = moved;
+    applyAnimation(this.scene, this.scene.frameCurrent);
+  }
+
+  /** Delete every channel keyed at each selected diamond's frame (undoable). */
+  private deleteSelectedKeys(): void {
+    if (this.selection.size === 0) return;
+    const targets: { object: SceneObject; channelPath: string; frame: number }[] = [];
+    for (const { objectId, frame } of this.selectedKeys()) {
+      const object = this.objectById(objectId);
+      if (!object || !object.anim) continue;
+      for (const c of object.anim.fcurves) {
+        if (c.keys.some((k) => k.frame === frame)) targets.push({ object, channelPath: c.channelPath, frame });
+      }
+    }
+    const cmd = DeleteKeysCommand.perform('Delete Keyframes', this.scene, targets);
+    if (cmd) this.getUndo()?.push(cmd);
+    this.selection.clear();
+    applyAnimation(this.scene, this.scene.frameCurrent);
+  }
+
+  private handleKeyDown(e: KeyboardEvent): void {
+    // Only claim X / Delete when the pane is hovered AND has a key selection,
+    // and no form field is focused — otherwise let it fall through to the app.
+    const isDelete = e.key === 'x' || e.key === 'X' || e.key === 'Delete';
+    if (!isDelete || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+    if (!this.hovered || this.selection.size === 0) return;
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.deleteSelectedKeys();
   }
 
   /** Set frameCurrent (rounded, clamped) + run the sampler. NOT undoable. */
@@ -312,9 +506,36 @@ export class TimelinePane {
       if (a) this.accent = a;
     }
     this.advancePlayback();
+    this.pollAutoKey();
     this.syncHeader();
     this.rows = this.computeRows();
     this.draw();
+  }
+
+  /**
+   * Auto-key (P15-3). Watches the undo stack's monotonic push counter; when a
+   * NEW command lands and it's a TransformCommand (a confirmed G/R/S in Object
+   * Mode) while auto-key is on, insert LocRotScale keys for the selected
+   * objects at frameCurrent — pushed as its own InsertKeysCommand so it's
+   * undoable. pushCount (not peek identity) is used so undo/redo revealing an
+   * older TransformCommand never re-fires. This is the whole wiring: no hooks
+   * in the operators or InputManager.
+   */
+  private pollAutoKey(): void {
+    const undo = this.getUndo();
+    if (!undo) return;
+    const pc = undo.pushCount;
+    if (this.lastPushCount === -1) { this.lastPushCount = pc; return; } // prime, don't key history
+    if (pc === this.lastPushCount) return;
+    const top = undo.peek();
+    if (autoKeyState.enabled && !this.scene.editMode && top instanceof TransformCommand) {
+      const objects = this.scene.selectedObjects;
+      if (objects.length) {
+        const cmd = InsertKeysCommand.perform('Auto Keyframe', this.scene, objects, LOC_ROT_SCALE, this.scene.frameCurrent);
+        if (cmd) undo.push(cmd);
+      }
+    }
+    this.lastPushCount = undo.pushCount; // re-read: covers our own insert push
   }
 
   private advancePlayback(): void {
@@ -415,11 +636,13 @@ export class TimelinePane {
       c.font = '11px sans-serif';
       const name = row.object.name.length > 12 ? row.object.name.slice(0, 11) + '…' : row.object.name;
       c.fillText(name, 6, y + ROW_H / 2);
-      // Diamonds.
+      // Diamonds (selected ones ride the live drag offset while dragging).
       const cy = y + ROW_H / 2;
       for (const d of row.diamonds) {
-        const x = frameToX(d.frame, frameStart, frameEnd, W);
-        this.drawDiamond(x, cy, d.filled);
+        const selected = this.selection.has(keyOf(row.object.id, d.frame));
+        const drawFrame = selected && this.dragging ? d.frame + this.dragDelta : d.frame;
+        const x = frameToX(drawFrame, frameStart, frameEnd, W);
+        this.drawDiamond(x, cy, d.filled, selected);
       }
     });
 
@@ -442,24 +665,27 @@ export class TimelinePane {
     c.fill();
   }
 
-  private drawDiamond(x: number, y: number, filled: boolean): void {
+  private drawDiamond(x: number, y: number, filled: boolean, selected = false): void {
     const c = this.ctx2d;
-    const r = 4.5;
+    const r = selected ? 5.5 : 4.5;
     c.beginPath();
     c.moveTo(x, y - r);
     c.lineTo(x + r, y);
     c.lineTo(x, y + r);
     c.lineTo(x - r, y);
     c.closePath();
-    if (filled) {
-      c.fillStyle = '#e6b400';
+    if (selected) {
+      c.fillStyle = filled ? '#ffffff' : '#333';
       c.fill();
+      c.strokeStyle = '#ffffff';
+      c.lineWidth = 1.5;
+      c.stroke();
     } else {
-      c.fillStyle = '#1c1c1c';
+      c.fillStyle = filled ? '#e6b400' : '#1c1c1c';
       c.fill();
+      c.strokeStyle = '#e6b400';
+      c.lineWidth = 1;
+      c.stroke();
     }
-    c.strokeStyle = '#e6b400';
-    c.lineWidth = 1;
-    c.stroke();
   }
 }

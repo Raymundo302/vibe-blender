@@ -3,6 +3,7 @@ import type { UndoStack, Command } from '../core/undo/UndoStack';
 import type { Material } from '../core/scene/objectData';
 import { srgbToLinear } from '../core/scene/worldData';
 import { registerPropertiesTab } from './propertiesEditor';
+import { InsertKeysCommand } from '../core/anim/animCommands';
 import './materialTab.css';
 
 /** Decoded base-color image cache: linear RGB, row 0 = top. */
@@ -411,7 +412,9 @@ class MaterialTab {
     this.wireField(this.baseColorInput, 'baseColor',
       () => hexToRgb(this.baseColorInput.value),
       () => this.material()?.baseColor ?? [0, 0, 0]);
-    this.fields.append(this.fieldRow('Base Color', this.baseColorInput));
+    this.fields.append(this.fieldRow('Base Color', this.baseColorInput,
+      this.keyButton('material-tab-key-basecolor', 'Insert Base Color keyframe',
+        ['material.baseColor.r', 'material.baseColor.g', 'material.baseColor.b'])));
 
     // Metallic (slider 0..1) + numeric readout
     this.metallicNum = document.createElement('span');
@@ -431,7 +434,8 @@ class MaterialTab {
       () => parseFloat(this.roughnessInput.value),
       () => this.material()?.roughness ?? 0,
       () => { this.roughnessNum.textContent = Number(this.roughnessInput.value).toFixed(2); });
-    this.fields.append(this.fieldRow('Roughness', this.roughnessInput, this.roughnessNum));
+    this.fields.append(this.fieldRow('Roughness', this.roughnessInput, this.roughnessNum,
+      this.keyButton('material-tab-key-roughness', 'Insert Roughness keyframe', ['material.roughness'])));
 
     // Emissive color
     this.emissiveInput = document.createElement('input');
@@ -676,6 +680,30 @@ class MaterialTab {
     input.max = '1';
     input.step = '0.01';
     return input;
+  }
+
+  /**
+   * A small ● insert-keyframe button (P15-4) that keys `channels` on the active
+   * mesh object's material at scene.frameCurrent through one undoable
+   * InsertKeysCommand. No-op when nothing is keyable (no active mesh, or no
+   * assigned material so the channel is unresolvable / the frozen default).
+   */
+  private keyButton(className: string, title: string, channels: string[]): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `material-tab-key-btn ${className}`;
+    btn.textContent = '●';
+    btn.title = title;
+    btn.style.cssText =
+      'margin-left:6px;background:none;border:none;color:#e8a33d;cursor:pointer;font-size:11px;line-height:1;padding:2px 3px;';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'mesh') return;
+      const cmd = InsertKeysCommand.perform(title, this.scene, [obj], channels, this.scene.frameCurrent);
+      if (cmd) this.undo.push(cmd);
+    });
+    return btn;
   }
 
   private fieldRow(label: string, ...controls: HTMLElement[]): HTMLElement {

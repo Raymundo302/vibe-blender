@@ -247,9 +247,9 @@ New architecture decisions:
 |----|------|-------|---------|--------|
 | F15-1 | Animation core: FCurve/Keyframe model, channelPath resolver, scene time + sampler (applied pre-frame through parent hierarchy), I-key insert cmds, sceneJson | fable | F12-2 | verified |
 | P15-1 | Timeline workspace pane: playhead, scrub, frame range, keyframe diamonds per selected object, spacebar play/pause | opus | F15-1 | verified |
-| P15-2 | Interpolation: constant/linear/bezier (auto handles), per-key setting, evaluation tests | opus | F15-1 | pending |
-| P15-3 | Keyframe editing: move/delete keys in timeline, auto-key toggle, K insert menu (Location/Rotation/Scale/All) | opus | P15-1 | pending |
-| P15-4 | Animate beyond transforms: light power/color + material base color via channelPath, camera fly-through demo e2e | opus | P15-2 | pending |
+| P15-2 | Interpolation: constant/linear/bezier (auto handles), per-key setting, evaluation tests | opus | F15-1 | verified |
+| P15-3 | Keyframe editing: move/delete keys in timeline, auto-key toggle, K insert menu (Location/Rotation/Scale/All) | opus | P15-1 | verified |
+| P15-4 | Animate beyond transforms: light power/color + material base color via channelPath, camera fly-through demo e2e | opus | P15-2 | verified |
 
 **Sequencing:** 12 → 13 → 14 → 15. Parenting (F12-2) is a hard prereq for animation
 sampling through hierarchies; bump/map plumbing (F13-1) is the seam node outputs

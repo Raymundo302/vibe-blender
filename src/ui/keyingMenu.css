@@ -1,0 +1,39 @@
+/* --------------------------------------------------- Insert-Keyframe (I) menu */
+/* Mirrors the add-menu / col-menu look but self-contained (no dependency on a
+ * parallel worker's theme.css). Vite bundles this via the import in keyingMenu.ts. */
+.key-menu {
+  position: absolute;
+  z-index: 100;
+  min-width: 150px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #1a1a1a);
+  border-radius: 4px;
+  padding: 4px 0;
+  font: var(--vb-font, 12px/1.4 system-ui, sans-serif);
+  color: var(--vb-text, #d0d0d0);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+.key-menu-heading {
+  padding: 3px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vb-muted, #8a8a8a);
+}
+.key-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 4px 12px;
+}
+.key-menu-item:hover,
+.key-menu-item.default {
+  background: var(--vb-accent, #fe730f);
+  color: var(--vb-accent-contrast, #fff);
+}

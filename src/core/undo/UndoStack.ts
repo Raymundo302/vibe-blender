@@ -14,6 +14,7 @@ export interface Command {
 export class UndoStack {
   private readonly undoStack: Command[] = [];
   private readonly redoStack: Command[] = [];
+  private pushes = 0;
 
   constructor(private readonly limit = 64) {}
 
@@ -21,6 +22,21 @@ export class UndoStack {
     this.undoStack.push(cmd);
     if (this.undoStack.length > this.limit) this.undoStack.shift();
     this.redoStack.length = 0;
+    this.pushes++;
+  }
+
+  /**
+   * READ-ONLY inspection (added for P15-3 auto-key). `pushCount` increments
+   * ONLY on push (never on undo/redo), so a poller can detect "a new command
+   * was committed" without being fooled by undo revealing an older command.
+   * `peek()` returns the top command so the poller can see what kind it is.
+   */
+  get pushCount(): number {
+    return this.pushes;
+  }
+
+  peek(): Command | null {
+    return this.undoStack.length ? this.undoStack[this.undoStack.length - 1] : null;
   }
 
   /** Drop all history — for destructive context switches like loading a scene. */

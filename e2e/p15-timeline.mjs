@@ -29,7 +29,9 @@ runE2e(async (t) => {
 
   // 2. Key the cube at frame 1 (origin), move it, key at frame 24.
   await t.evaluate(`(() => { window.__app.scene.frameCurrent = 1; })()`);
-  await t.key('i', 'KeyI'); // insert LocRotScale @ frame 1
+  // P15-2: I opens the keying menu; a second I confirms the LocRotScale default.
+  await t.key('i', 'KeyI');
+  await t.key('i', 'KeyI'); // confirm default → insert LocRotScale @ frame 1
   await t.evaluate(`(() => {
     const s = window.__app.scene;
     const obj = s.activeObject;
@@ -37,7 +39,8 @@ runE2e(async (t) => {
     obj.transform = obj.transform.withPosition(new V(2, 0, 0));
     s.frameCurrent = 24;
   })()`);
-  await t.key('i', 'KeyI'); // insert LocRotScale @ frame 24
+  await t.key('i', 'KeyI');
+  await t.key('i', 'KeyI'); // I,I → insert LocRotScale @ frame 24
 
   const keyCount = await t.evaluate(`(() => {
     const c = window.__app.scene.activeObject.anim.fcurves.find(c => c.channelPath === 'location.x');

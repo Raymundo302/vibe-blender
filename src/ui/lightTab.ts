@@ -3,6 +3,7 @@ import type { UndoStack } from '../core/undo/UndoStack';
 import type { Command } from '../core/undo/UndoStack';
 import type { LightData, LightType } from '../core/scene/objectData';
 import { registerPropertiesTab } from './propertiesEditor';
+import { InsertKeysCommand } from '../core/anim/animCommands';
 import './lightTab.css';
 
 /**
@@ -139,7 +140,13 @@ class LightTab {
       const rgb = hexToRgb(this.colorInput.value);
       this.commit('Set Light Color', (l) => { l.color = rgb; });
     });
-    this.body.append(this.labelledRow('Color', this.colorInput));
+    const colorRow = this.labelledRow('Color', this.colorInput);
+    colorRow.append(this.keyButton(
+      'light-tab-key-color',
+      'Insert Color keyframe',
+      ['light.color.r', 'light.color.g', 'light.color.b'],
+    ));
+    this.body.append(colorRow);
 
     // Power -----------------------------------------------------------------
     this.powerInput = document.createElement('input');
@@ -154,7 +161,9 @@ class LightTab {
       const power = Math.max(0, raw);
       this.commit('Set Light Power', (l) => { l.power = power; });
     });
-    this.body.append(this.labelledRow('Power', this.powerInput));
+    const powerRow = this.labelledRow('Power', this.powerInput);
+    powerRow.append(this.keyButton('light-tab-key-power', 'Insert Power keyframe', ['light.power']));
+    this.body.append(powerRow);
 
     // Radius (soft-shadow source size; point/spot only) ---------------------
     this.radiusInput = document.createElement('input');
@@ -210,6 +219,31 @@ class LightTab {
 
     container.append(this.empty, this.body);
     this.update();
+  }
+
+  /**
+   * A small ● insert-keyframe button (P15-4) that keys `channels` on the active
+   * light at scene.frameCurrent through one undoable InsertKeysCommand. No-op
+   * when nothing is keyable (no active light / unresolvable channel). Sits
+   * inside a field row but is its own interactive control, so clicking it keys
+   * rather than toggling the adjacent input.
+   */
+  private keyButton(className: string, title: string, channels: string[]): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `light-tab-key-btn ${className}`;
+    btn.textContent = '●';
+    btn.title = title;
+    btn.style.cssText =
+      'margin-left:6px;background:none;border:none;color:#e8a33d;cursor:pointer;font-size:11px;line-height:1;padding:2px 3px;';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const obj = this.activeLight();
+      if (!obj) return;
+      const cmd = InsertKeysCommand.perform(title, this.scene, [obj], channels, this.scene.frameCurrent);
+      if (cmd) this.undo.push(cmd);
+    });
+    return btn;
   }
 
   private labelledRow(text: string, control: HTMLElement): HTMLElement {

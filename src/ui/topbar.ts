@@ -6,6 +6,7 @@ import { sculptState } from '../tools/sculptBrushes';
 import { openThemePicker } from './themePicker';
 import type { CursorOverlay } from './cursorOverlay';
 import { overlays, saveOverlayPrefs, type OverlayPrefs } from '../render/overlayPrefs';
+import { autoKeyState } from './timeline';
 import './overlaysMenu.css';
 
 /**
@@ -40,6 +41,7 @@ export class Topbar {
   private readonly xrayEl: HTMLButtonElement;
   private readonly pivotEl: HTMLButtonElement;
   private readonly lightsEl: HTMLButtonElement;
+  private readonly autoKeyEl: HTMLButtonElement;
   private lastSig = '';
 
   constructor(
@@ -109,6 +111,16 @@ export class Topbar {
     lights.title = 'Toggle all lights';
     this.lightsEl = lights;
 
+    // ⏺ Auto-key toggle (P15-3): when on, confirming a G/R/S transform in
+    // Object Mode auto-inserts LocRotScale keys (the Timeline pane polls the
+    // undo stack). Runtime-only flag in the timeline module — never on Scene.
+    const autoKey = Topbar.makeButton('⏺', 'autokey', () => {
+      autoKeyState.enabled = !autoKeyState.enabled;
+      this.update();
+    });
+    autoKey.title = 'Auto-Keying: insert keyframes on transform';
+    this.autoKeyEl = autoKey;
+
     const spacer = document.createElement('div');
     spacer.className = 'topbar-spacer';
 
@@ -133,7 +145,7 @@ export class Topbar {
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
     // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, snap, xray, overlaysBtn, pivot, lights, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, themeBtn, helpBtn, this.statusEl);
+    root.append(title, chip, shading, snap, xray, overlaysBtn, pivot, lights, autoKey, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, themeBtn, helpBtn, this.statusEl);
     this.update();
   }
 
@@ -277,9 +289,14 @@ export class Topbar {
     const pivot = this.scene.pivotMode;
     const lights = this.scene.objects.filter((o) => o.kind === 'light');
     const lightsOn = lights.some((l) => l.visible);
-    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}#${snapState.enabled}#${xrayState.enabled}#${pivot}#${lightsOn}`;
+    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}#${snapState.enabled}#${xrayState.enabled}#${pivot}#${lightsOn}#${autoKeyState.enabled}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
+
+    // Auto-key ⏺ glows red when on.
+    this.autoKeyEl.classList.toggle('topbar-btn-on', autoKeyState.enabled);
+    this.autoKeyEl.setAttribute('aria-pressed', String(autoKeyState.enabled));
+    this.autoKeyEl.style.color = autoKeyState.enabled ? '#ff3b30' : '';
 
     this.pivotEl.textContent = pivot === 'cursor' ? 'Pivot: 3D Cursor ▾' : 'Pivot: Median ▾';
     this.lightsEl.classList.toggle('topbar-btn-on', lightsOn);

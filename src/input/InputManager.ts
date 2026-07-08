@@ -27,7 +27,6 @@ import { Transform } from '../core/math/transform';
 import type { Mat4 } from '../core/math/mat4';
 import type { EditModeState } from '../core/scene/EditMode';
 import { rayPlane } from '../core/math/ray';
-import { InsertKeysCommand, LOC_ROT_SCALE } from '../core/anim/animCommands';
 import {
   sculptState,
   brushWeights,
@@ -42,6 +41,7 @@ import { AddMenu } from '../ui/addMenu';
 import { PieMenu } from '../ui/pieMenu';
 import { cursorToOrigin, cursorToSelected, cursorToGrid, selectionToCursor, selectionToGrid } from '../tools/snapOps';
 import { CollectionMenu } from '../ui/collectionMenu';
+import { KeyingMenu } from '../ui/keyingMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { EdgeMenu } from '../ui/edgeMenu';
 import { UvMenu } from '../ui/uvMenu';
@@ -331,6 +331,7 @@ export class InputManager {
   private addMenu: AddMenu | null = null;
   private pieMenu: PieMenu | null = null;
   private collectionMenu: CollectionMenu | null = null;
+  private keyingMenu: KeyingMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
   private edgeMenu: EdgeMenu | null = null;
   private uvMenu: UvMenu | null = null;
@@ -930,17 +931,26 @@ export class InputManager {
       this.ctx.setStatus(`Cleared parent on ${targets.length} object(s)`);
       return;
     }
-    // I (P15, object mode): insert LocRotScale keyframes for the selection at
-    // the current frame. (Edit-mode I = inset — that branch returned above.)
+    // I (P15, object mode): open the keying menu (Location / Rotation / Scale /
+    // LocRotScale) at the pointer. LocRotScale is the highlighted default, so a
+    // second I (I,I) keys all nine channels like the old plain-I did. (Edit-mode
+    // I = inset — that branch returned above.)
     if (key === 'i' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
+      if (this.keyingMenu) { this.keyingMenu.close(); return; }
       const scene = this.ctx.scene;
       const targets = scene.selectedObjects;
       if (targets.length === 0) { this.ctx.setStatus('I: select objects first'); return; }
-      const cmd = InsertKeysCommand.perform('Insert Keyframe', scene, targets, LOC_ROT_SCALE, scene.frameCurrent);
-      if (!cmd) return;
-      this.ctx.undo.push(cmd);
-      this.ctx.setStatus(`Keyed LocRotScale @ frame ${scene.frameCurrent} (${targets.length} object(s))`);
+      this.keyingMenu = new KeyingMenu({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        scene,
+        undo: this.ctx.undo,
+        objects: targets,
+        setStatus: (t) => this.ctx.setStatus(t),
+        onClose: () => { this.keyingMenu = null; },
+      });
       return;
     }
     // M: Move to Collection (object mode). Opens a popup at the pointer listing
