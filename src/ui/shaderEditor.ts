@@ -437,7 +437,15 @@ export class ShaderEditor {
     const a = document.activeElement;
     if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
 
-    if (e.code === 'Space') { this.spaceHeld = true; return; }
+    if (e.code === 'Space') {
+      // Space over this pane is the pan modifier — claim it fully so the
+      // global timeline play/pause (InputManager) never co-fires while the
+      // user space-pans the graph (same scoping as Shift+A below).
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.spaceHeld = true;
+      return;
+    }
 
     if (e.code === 'KeyA' && e.shiftKey) {
       e.preventDefault(); e.stopImmediatePropagation();

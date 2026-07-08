@@ -240,13 +240,13 @@ New architecture decisions:
 | P14-1 | Shader Editor workspace pane: canvas graph UI — drag nodes, wire sockets, box select, Shift+A add-node menu, delete, pan/zoom | opus | F14-1 | verified |
 | P14-2 | Starter node set A: Principled BSDF (output), Image Texture, Checker, Mix Color, RGB, Value | opus | F14-1 | verified |
 | P14-3 | Starter node set B: Noise, ColorRamp, Bump, Mapping/UV input, MixFloat | opus | P14-2 | verified |
-| P14-4 | Node dry run e2e: build a noise-driven donut-icing material via public entry points, F12 proof render | opus | P14-1..3 | pending |
+| P14-4 | Node dry run e2e: build a noise-driven donut-icing material via public entry points, F12 proof render | opus | P14-1..3 | verified |
 
 ### Phase 15 — Animation
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
 | F15-1 | Animation core: FCurve/Keyframe model, channelPath resolver, scene time + sampler (applied pre-frame through parent hierarchy), I-key insert cmds, sceneJson | fable | F12-2 | verified |
-| P15-1 | Timeline workspace pane: playhead, scrub, frame range, keyframe diamonds per selected object, spacebar play/pause | opus | F15-1 | pending |
+| P15-1 | Timeline workspace pane: playhead, scrub, frame range, keyframe diamonds per selected object, spacebar play/pause | opus | F15-1 | built |
 | P15-2 | Interpolation: constant/linear/bezier (auto handles), per-key setting, evaluation tests | opus | F15-1 | pending |
 | P15-3 | Keyframe editing: move/delete keys in timeline, auto-key toggle, K insert menu (Location/Rotation/Scale/All) | opus | P15-1 | pending |
 | P15-4 | Animate beyond transforms: light power/color + material base color via channelPath, camera fly-through demo e2e | opus | P15-2 | pending |

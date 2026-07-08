@@ -814,6 +814,20 @@ export class InputManager {
       return; // object-mode keys (G/R/S on objects, X, Shift-A/D) don't apply here
     }
 
+    // Spacebar (P15-1, object mode, no modifiers): play/pause the timeline.
+    // Plain Space is otherwise unbound (Ctrl+Space = area fullscreen, handled
+    // in workspace.ts). Skip while a form field is focused so timeline frame
+    // inputs keep working.
+    if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      if (e.repeat) return; // held Space must not machine-gun the toggle
+      const a = document.activeElement;
+      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      e.preventDefault();
+      this.ctx.scene.playing = !this.ctx.scene.playing;
+      this.ctx.setStatus(this.ctx.scene.playing ? 'Playing' : 'Paused');
+      return;
+    }
+
     if (key === 'g' && !e.ctrlKey && !e.altKey) {
       this.startOperator(new TranslateOperator());
       return;
