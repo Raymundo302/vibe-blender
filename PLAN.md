@@ -206,3 +206,52 @@ New architecture decisions:
 | P11-3 | Checker/image textures in Rendered mode + tracer, Material tab rows | opus | F11-1 | verified |
 | P11-4 | UV dry run: unwrap + checker the donut icing | opus | P11-1..3 | verified |
 | P11-5 | Modifiers preserve UVs (dry-run gap fix) | opus | P11-4 | verified |
+
+### Phases 12–15 — planned 2026-07-07 (night-build queue)
+New architecture decisions:
+| # | Decision | Rationale |
+|---|----------|-----------|
+| A12 | **3D cursor = scene-level state** (position, optional rotation later); overlay-drawn; used as Add-location and optional pivot | One field on Scene, serialized in sceneJson; every consumer (add menu, snap menu, pivot option) reads the same source. |
+| A13 | **Parenting = `parentIndex` on SceneObject** (serialized as index, like activeCamera); world = parentWorld × local; cycle-guarded | Index serialization already proven byte-stable (P8-5). Transform inheritance is THE seam animation (P15) rides on — Fable builds it. |
+| A14 | **Shader nodes evaluate in TS to a per-material sampler** shared by tracer + baked-to-texture for the Rendered raster path | One evaluator, two consumers; no GLSL codegen (fragile for workers). Graph data model + compiler = Fable; node UI + individual nodes = Opus. |
+| A15 | **Animation = FCurves** (channelPath + keyframe list + interpolation) stored per-object; a sampler applies scene time before each frame; timeline is a workspace pane | Same pane pattern as UV editor; channelPath strings ("location.x", "data.power") extend to lights/materials without new schema. |
+
+### Phase 12 — Cursor, pies, overlays & parenting
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F12-1 | 3D cursor core: scene state, Shift+RightClick place (raycast to surface/grid), overlay crosshair, Add-at-cursor, pivot option, sceneJson | fable | — | pending |
+| F12-2 | Parenting core: parentIndex, world-matrix inheritance, cycle guard, Ctrl+P (keep transform) / Alt+P (clear, keep transform), undo cmds, serialization | fable | — | pending |
+| P12-1 | Radial pie-menu component (generic, keyboard+mouse) + Shift+S snap pie: Cursor→Selected, Cursor→Origin, Selection→Cursor, Cursor→Grid | opus | F12-1 | pending |
+| P12-2 | Overlays dropdown (header): toggle grid, axes, origin points, light/camera icons, wireframe-on-shaded, 3D cursor; persisted | opus | F12-1 | pending |
+| P12-3 | Outliner parent hierarchy: indent children, drag-to-parent, Ctrl+P/Alt+P menu entries | opus | F12-2 | pending |
+
+### Phase 13 — Texture depth & image viewer
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F13-1 | Material map slots (normal/bump + roughness maps): fields, GPU uniforms/samplers, tracer hooks, sceneJson bump | fable | — | pending |
+| P13-1 | Bump/normal mapping in Rendered pass + tracer (tangent-space normal maps, height→normal for bump, strength slider, Material tab rows) | opus | F13-1 | pending |
+| P13-2 | Image Viewer workspace pane: view material images + last F12 render, zoom/pan, fit, pixel inspect, open-image button | opus | — | pending |
+| P13-3 | Roughness/metallic map sampling in both render paths + Material tab rows | opus | F13-1 | pending |
+
+### Phase 14 — Node-based shader editor
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F14-1 | Node graph core: data model (nodes/sockets/links, typed), TS evaluator → material sampler, bake-to-texture bridge for Rendered, sceneJson v(next), cycle guard | fable | F13-1 | pending |
+| P14-1 | Shader Editor workspace pane: canvas graph UI — drag nodes, wire sockets, box select, Shift+A add-node menu, delete, pan/zoom | opus | F14-1 | pending |
+| P14-2 | Starter node set A: Principled BSDF (output), Image Texture, Checker, Mix Color, RGB, Value | opus | F14-1 | pending |
+| P14-3 | Starter node set B: Noise, ColorRamp, Bump, Mapping/UV input, MixFloat | opus | P14-2 | pending |
+| P14-4 | Node dry run e2e: build a noise-driven donut-icing material via public entry points, F12 proof render | opus | P14-1..3 | pending |
+
+### Phase 15 — Animation
+| ID | Task | Owner | Depends | Status |
+|----|------|-------|---------|--------|
+| F15-1 | Animation core: FCurve/Keyframe model, channelPath resolver, scene time + sampler (applied pre-frame through parent hierarchy), I-key insert cmds, sceneJson | fable | F12-2 | pending |
+| P15-1 | Timeline workspace pane: playhead, scrub, frame range, keyframe diamonds per selected object, spacebar play/pause | opus | F15-1 | pending |
+| P15-2 | Interpolation: constant/linear/bezier (auto handles), per-key setting, evaluation tests | opus | F15-1 | pending |
+| P15-3 | Keyframe editing: move/delete keys in timeline, auto-key toggle, K insert menu (Location/Rotation/Scale/All) | opus | P15-1 | pending |
+| P15-4 | Animate beyond transforms: light power/color + material base color via channelPath, camera fly-through demo e2e | opus | P15-2 | pending |
+
+**Sequencing:** 12 → 13 → 14 → 15. Parenting (F12-2) is a hard prereq for animation
+sampling through hierarchies; bump/map plumbing (F13-1) is the seam node outputs
+plug into. P14 and P15 are each ~Phase-8-sized — budget-cap per phase and let the
+task registry carry resume state if credits run out mid-night.
