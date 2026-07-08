@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 3,
+  "version": 4,
   "camera": {
     "target": [
       -0.077136,
@@ -32,6 +32,12 @@
     "strength": 1,
     "hdri": null
   },
+  "cursor": [
+    0,
+    0,
+    0
+  ],
+  "pivotMode": "median",
   "collections": [],
   "materials": [
     {
@@ -132,6 +138,7 @@
       ],
       "materialId": 1,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -22636,6 +22643,7 @@
       ],
       "materialId": 0,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -35509,6 +35517,7 @@
       ],
       "materialId": 2,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -36661,6 +36670,7 @@
       ],
       "materialId": 3,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -36732,6 +36742,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           6,
@@ -36918,6 +36929,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           2.300337,
@@ -36960,6 +36972,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           4,
@@ -37008,6 +37021,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           -4,
@@ -37056,6 +37070,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,

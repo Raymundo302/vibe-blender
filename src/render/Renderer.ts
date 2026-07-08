@@ -407,6 +407,13 @@ export class Renderer {
     return { origin, scale: gizmoScreenScale(eye, origin, fovY) };
   }
 
+  /** The view-projection of whatever is on screen right now (orbit camera or
+   *  a looked-through camera object) — for DOM overlays like the 3D cursor. */
+  currentViewProj(scene: Scene, camera: OrbitCamera): Mat4 {
+    const { view, proj } = this.resolveView(scene, camera);
+    return proj.mul(view);
+  }
+
   /**
    * Pick what is under CSS-pixel position (x, y). Renders the id buffer on
    * demand: objects first, then (if visible) the gizmo handles LAST with depth

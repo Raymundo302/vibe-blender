@@ -104,6 +104,8 @@ export class AddMenu {
   /** Select the freshly added object, push ONE undo entry, close. */
   private commitAdd(name: string, obj: SceneObject): void {
     const { scene, undo, setStatus } = this.opts;
+    // Blender semantics (P12): new objects spawn at the 3D cursor.
+    obj.transform = obj.transform.withPosition(scene.cursor);
     // Any add supersedes the previous redo panel — only the latest add shows one.
     activeOpPanel?.close();
     scene.selectOnly(obj.id);

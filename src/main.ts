@@ -20,6 +20,7 @@ import { Topbar } from './ui/topbar';
 import { HelpOverlay } from './ui/helpOverlay';
 import { NPanel } from './ui/nPanel';
 import { Passepartout } from './ui/passepartout';
+import { CursorOverlay } from './ui/cursorOverlay';
 import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { Autosave } from './io/autosave';
@@ -175,6 +176,9 @@ const nPanel = new NPanel(viewportWrap, scene, undo);
 // looking through a camera. Driven from the frame loop (like the panels below).
 const passepartout = new Passepartout(viewportWrap, renderer, canvas);
 
+// 3D cursor marker (P12): DOM overlay projected from scene.cursor every frame.
+const cursorOverlay = new CursorOverlay(viewportWrap, scene, camera, renderer, canvas);
+
 new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
 
 // F12 render engine (P8-4): owns its own keydown listener + result window.
@@ -319,7 +323,7 @@ topbar.mountTabs(workspaces.createTabs());
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, workspaces, nPanel,
+  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay,
   autosave: {
     saveNow: () => autosave.saveNow(),
     clear: () => autosave.clear(),
@@ -338,6 +342,7 @@ function frame(): void {
   topbar.update();
   nPanel.update();
   passepartout.update();
+  cursorOverlay.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

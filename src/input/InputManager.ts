@@ -406,6 +406,15 @@ export class InputManager {
       return;
     }
 
+    // Shift+RightClick: place the 3D cursor (P12) — on the surface under the
+    // pointer when there is one, else on the view-facing plane through the
+    // cursor's current position (Blender's fallback).
+    if (e.button === 2 && e.shiftKey) {
+      e.preventDefault();
+      this.placeCursor3d();
+      return;
+    }
+
     if (e.button === 1) {
       // MMB: orbit, Shift+MMB: pan.
       // Locked camera view: navigation MOVES the camera (rig) instead of exiting.
@@ -462,6 +471,33 @@ export class InputManager {
         this.ctx.scene.selectOnly(hit.id);
       }
     }
+  }
+
+  /** Shift+RightClick (P12): move the 3D cursor. Surface-snaps via a CPU
+   *  raycast against the picked object's evaluated mesh in world space. */
+  private placeCursor3d(): void {
+    const scene = this.ctx.scene;
+    const { width, height } = this.ctx.viewportSize();
+    const ray = this.ctx.camera.pointerRay(this.pointer.x, this.pointer.y, width, height);
+    let placed = null as Vec3 | null;
+    const hit = this.renderer.pick(scene, this.ctx.camera, this.pointer.x, this.pointer.y);
+    if (hit && hit.kind === 'object') {
+      const obj = scene.get(hit.id);
+      if (obj && obj.kind === 'mesh') {
+        const m = scene.worldMatrix(obj);
+        const inv = m.invert();
+        const local = raycastMeshLocal(
+          obj.evaluatedMesh(scene.modifierContext(obj)),
+          inv.transformPoint(ray.origin),
+          inv.transformDir(ray.dir).normalize(),
+        );
+        if (local) placed = m.transformPoint(local.point);
+      }
+    }
+    if (!placed) placed = rayPlane(ray, scene.cursor, this.ctx.camera.forward);
+    if (!placed) return;
+    scene.cursor = placed;
+    this.ctx.setStatus(`Cursor  (${placed.x.toFixed(2)}, ${placed.y.toFixed(2)}, ${placed.z.toFixed(2)})`);
   }
 
   private onPointerMove(e: PointerEvent): void {
@@ -673,6 +709,23 @@ export class InputManager {
       e.preventDefault();
       const mode = this.renderer.cycleShadingMode();
       this.ctx.setStatus(`Shading: ${mode}`);
+      return;
+    }
+
+    // Shift+C (P12): return the 3D cursor to the world origin and frame
+    // everything (Blender's "Center Cursor and Frame All").
+    if (key === 'c' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      scene.cursor = Vec3.ZERO;
+      // Frame ALL objects: select everything for the framing call, then restore.
+      const hadSelection = [...scene.selection];
+      scene.selection.clear();
+      for (const o of scene.objects) if (scene.effectiveVisible(o)) scene.selection.add(o.id);
+      frameSelection(this.ctx);
+      scene.selection.clear();
+      for (const id of hadSelection) scene.selection.add(id);
+      this.ctx.setStatus('Cursor to origin');
       return;
     }
 

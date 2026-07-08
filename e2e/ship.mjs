@@ -14,7 +14,7 @@ runE2e(async (t) => {
 
   const parsed = JSON.parse(saved);
   t.check('format + version are correct',
-    parsed.format === 'vibe-blender-scene' && parsed.version === 3);
+    parsed.format === 'vibe-blender-scene' && parsed.version === 4);
   t.check('the default Cube is serialized',
     parsed.objects.length === 1 && parsed.objects[0].name === 'Cube');
 
@@ -457,7 +457,7 @@ runE2e(async (t) => {
 
   // v2: serialized scene reports version 2 and every object carries a modifiers array.
   const v2 = JSON.parse(await t.evaluate('window.__app.io.serialize()'));
-  t.check('scene serializes as format version 3', v2.version === 3);
+  t.check('scene serializes as format version 4', v2.version === 4);
   t.check('every object has a modifiers array',
     Array.isArray(v2.objects[0].modifiers));
 
