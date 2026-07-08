@@ -385,8 +385,16 @@ export function directLighting(
   out: [number, number, number] = [0, 0, 0],
   rng?: Rng,
   wrap = 0,
+  /** Normal used only to offset the shadow-ray origin (self-shadow bias). When
+   * the shading normal is map-perturbed the caller passes the GEOMETRIC normal
+   * here so bias stays stable; omitted → the shading normal (bit-identical to
+   * the pre-P13 path and to every existing caller/test). */
+  offN?: readonly [number, number, number],
 ): [number, number, number] {
   out[0] = 0; out[1] = 0; out[2] = 0;
+  const onx = offN ? offN[0] : nx;
+  const ony = offN ? offN[1] : ny;
+  const onz = offN ? offN[2] : nz;
   for (const l of lights) {
     const radius = l.radius ?? 0;
     const soft = rng !== undefined && radius > 0;
@@ -440,7 +448,7 @@ export function directLighting(
     const nl = wrap > 0 ? Math.max(0, (ndotl + wrap) / (1 + wrap)) : ndotl;
     if (nl <= 0) continue;
     // Shadow ray from just above the surface toward the sampled emitter point.
-    if (root && occluded(root, tris, px + nx * EPS, py + ny * EPS, pz + nz * EPS, lx, ly, lz, dist)) {
+    if (root && occluded(root, tris, px + onx * EPS, py + ony * EPS, pz + onz * EPS, lx, ly, lz, dist)) {
       continue;
     }
     const k = nl / Math.PI;
@@ -551,6 +559,105 @@ export function sampleMaterialTexture(
 }
 
 // ---------------------------------------------------------------------------
+// Normal / bump + roughness / metallic maps (P13-1). Data maps: the decoded
+// pixels are RAW 0..1 (NOT sRGB), sampled bilinearly like the base-color path.
+// The math mirrors renderedPass.ts's GLSL so the tracer visually agrees with
+// the Rendered viewport: tangent-space normal maps (xy scaled by strength),
+// bump = height map via central-difference gradient (× strength × 4), rough /
+// metal maps MULTIPLY the scalar params (rough clamped to ≥ 0.04).
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-triangle tangent frame at a hit. Builds the tangent T from the triangle's
+ * edge vectors and per-corner UV deltas, orthonormalizes it against the shading
+ * normal N, and sets the bitangent B = N × T (matching the GLSL). Returns false
+ * (perturbation skipped) when the UV mapping is degenerate (|det| < 1e-12) or T
+ * collapses after orthonormalization. p0/p1/p2 are the corner positions,
+ * uv0/uv1/uv2 their UVs, in the tris/triUV corner order.
+ */
+export function tangentFrame(
+  p0: readonly [number, number, number],
+  p1: readonly [number, number, number],
+  p2: readonly [number, number, number],
+  uv0: readonly [number, number],
+  uv1: readonly [number, number],
+  uv2: readonly [number, number],
+  N: readonly [number, number, number],
+  outT: [number, number, number],
+  outB: [number, number, number],
+): boolean {
+  const e1x = p1[0] - p0[0], e1y = p1[1] - p0[1], e1z = p1[2] - p0[2];
+  const e2x = p2[0] - p0[0], e2y = p2[1] - p0[1], e2z = p2[2] - p0[2];
+  const du1 = uv1[0] - uv0[0], dv1 = uv1[1] - uv0[1];
+  const du2 = uv2[0] - uv0[0], dv2 = uv2[1] - uv0[1];
+  const det = du1 * dv2 - du2 * dv1;
+  if (Math.abs(det) < 1e-12) return false;
+  const inv = 1 / det;
+  let tx = (e1x * dv2 - e2x * dv1) * inv;
+  let ty = (e1y * dv2 - e2y * dv1) * inv;
+  let tz = (e1z * dv2 - e2z * dv1) * inv;
+  // Orthonormalize T against N (Gram–Schmidt).
+  const d = tx * N[0] + ty * N[1] + tz * N[2];
+  tx -= N[0] * d; ty -= N[1] * d; tz -= N[2] * d;
+  const tl = Math.hypot(tx, ty, tz);
+  if (tl < 1e-12) return false;
+  const tinv = 1 / tl;
+  tx *= tinv; ty *= tinv; tz *= tinv;
+  outT[0] = tx; outT[1] = ty; outT[2] = tz;
+  // B = N × T.
+  outB[0] = N[1] * tz - N[2] * ty;
+  outB[1] = N[2] * tx - N[0] * tz;
+  outB[2] = N[0] * ty - N[1] * tx;
+  return true;
+}
+
+/**
+ * Tangent-space normal map: decode sample (raw 0..1 RGB) to [-1,1], scale xy by
+ * strength, clamp z to ≥ 0.05, transform into world by the TBN frame, normalize.
+ * Writes the perturbed shading normal into `out`.
+ */
+export function applyNormalMap(
+  sample: readonly [number, number, number],
+  strength: number,
+  T: readonly [number, number, number],
+  B: readonly [number, number, number],
+  N: readonly [number, number, number],
+  out: [number, number, number],
+): void {
+  const nx = (sample[0] * 2 - 1) * strength;
+  const ny = (sample[1] * 2 - 1) * strength;
+  const nz = Math.max(sample[2] * 2 - 1, 0.05);
+  const rx = T[0] * nx + B[0] * ny + N[0] * nz;
+  const ry = T[1] * nx + B[1] * ny + N[1] * nz;
+  const rz = T[2] * nx + B[2] * ny + N[2] * nz;
+  const inv = 1 / Math.max(1e-12, Math.hypot(rx, ry, rz));
+  out[0] = rx * inv; out[1] = ry * inv; out[2] = rz * inv;
+}
+
+/**
+ * Bump (height) map: the caller supplies the central-difference height gradient
+ * (gx = hR - hL, gy = hU - hD). We scale it by strength × 4 and tilt N along
+ * -T*gx - B*gy, then normalize — exactly the GLSL bump branch. Writes `out`.
+ */
+export function applyBumpMap(
+  gx: number,
+  gy: number,
+  strength: number,
+  T: readonly [number, number, number],
+  B: readonly [number, number, number],
+  N: readonly [number, number, number],
+  out: [number, number, number],
+): void {
+  const sx = gx * strength * 4;
+  const sy = gy * strength * 4;
+  const rx = N[0] - T[0] * sx - B[0] * sy;
+  const ry = N[1] - T[1] * sx - B[1] * sy;
+  const rz = N[2] - T[2] * sx - B[2] * sy;
+  const inv = 1 / Math.max(1e-12, Math.hypot(rx, ry, rz));
+  out[0] = rx * inv; out[1] = ry * inv; out[2] = rz * inv;
+}
+
+// ---------------------------------------------------------------------------
 // Prepared scene + full path trace.
 // ---------------------------------------------------------------------------
 
@@ -624,6 +731,18 @@ export function traceRay(
   const skyC: [number, number, number] = [0, 0, 0];
   const texC: [number, number, number] = [1, 1, 1];
   const alb: [number, number, number] = [0, 0, 0];
+  // P13 map scratch (reused per bounce; no allocation in the hot loop).
+  const gN: [number, number, number] = [0, 0, 0]; // geometric shading normal (offsets)
+  const sN: [number, number, number] = [0, 0, 0]; // map-perturbed shading normal
+  const mT: [number, number, number] = [0, 0, 0];
+  const mB: [number, number, number] = [0, 0, 0];
+  const mapSamp: [number, number, number] = [0, 0, 0];
+  const p0: [number, number, number] = [0, 0, 0];
+  const p1: [number, number, number] = [0, 0, 0];
+  const p2: [number, number, number] = [0, 0, 0];
+  const uv0: [number, number] = [0, 0];
+  const uv1: [number, number] = [0, 0];
+  const uv2: [number, number] = [0, 0];
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     const hit = scene.bvh
@@ -640,13 +759,36 @@ export function traceRay(
     // order tris/triUV were pushed in). 'none' materials multiply by [1,1,1], so
     // an untextured hit is byte-identical to the pre-P11 path.
     alb[0] = mat.baseColor[0]; alb[1] = mat.baseColor[1]; alb[2] = mat.baseColor[2];
-    if (mat.texKind && mat.texKind !== 'none' && scene.triUV) {
+    // Interpolate the hit UV once when the base-color texture OR any P13 data map
+    // needs it (barycentric: A weight = 1-u-v, B = u, C = v). With no UVs OR no
+    // texture/map, none of this runs and the hit stays byte-identical to pre-P13.
+    const hasTex = !!mat.texKind && mat.texKind !== 'none';
+    const hasNormalMap = mat.normalImage != null;
+    const hasRoughMap = mat.roughImage != null;
+    const hasMetalMap = mat.metalImage != null;
+    let uu = 0, vv = 0;
+    if (scene.triUV && (hasTex || hasNormalMap || hasRoughMap || hasMetalMap)) {
       const o = hit.tri * 6;
       const w0 = 1 - hit.u - hit.v;
-      const uu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
-      const vv = scene.triUV[o + 1] * w0 + scene.triUV[o + 3] * hit.u + scene.triUV[o + 5] * hit.v;
+      uu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
+      vv = scene.triUV[o + 1] * w0 + scene.triUV[o + 3] * hit.u + scene.triUV[o + 5] * hit.v;
+    }
+    if (hasTex && scene.triUV) {
       sampleMaterialTexture(mat, uu, vv, texC);
       alb[0] *= texC[0]; alb[1] *= texC[1]; alb[2] *= texC[2];
+    }
+    // Roughness / metallic maps MULTIPLY the scalar params (red channel), matching
+    // the GLSL: rough = clamp(rough * r, 0.04, 1); metal *= r. Only when present,
+    // so the no-map bounce below is byte-identical.
+    let matRough = mat.roughness;
+    let matMetal = mat.metallic;
+    if (hasRoughMap && scene.triUV) {
+      sampleImageBilinear(mat.roughImage!, uu, vv, mapSamp);
+      matRough = Math.min(1, Math.max(0.04, matRough * mapSamp[0]));
+    }
+    if (hasMetalMap && scene.triUV) {
+      sampleImageBilinear(mat.metalImage!, uu, vv, mapSamp);
+      matMetal = matMetal * mapSamp[0];
     }
     // Emission.
     const es = mat.emissiveStrength;
@@ -665,6 +807,38 @@ export function traceRay(
     if (!frontFace) { nx = -nx; ny = -ny; nz = -nz; }
     const hx = ox + dx * hit.t, hy = oy + dy * hit.t, hz = oz + dz * hit.t;
 
+    // Keep the (flipped) GEOMETRIC normal for ray-offset bias / interior dip —
+    // the normal map perturbs the SHADING normal only (matches the GLSL, which
+    // keeps offsets stable). With no map, sN === gN so this is byte-identical.
+    gN[0] = nx; gN[1] = ny; gN[2] = nz;
+    if (hasNormalMap && scene.triUV) {
+      const o9 = hit.tri * 9;
+      p0[0] = scene.tris[o9]; p0[1] = scene.tris[o9 + 1]; p0[2] = scene.tris[o9 + 2];
+      p1[0] = scene.tris[o9 + 3]; p1[1] = scene.tris[o9 + 4]; p1[2] = scene.tris[o9 + 5];
+      p2[0] = scene.tris[o9 + 6]; p2[1] = scene.tris[o9 + 7]; p2[2] = scene.tris[o9 + 8];
+      const o6 = hit.tri * 6;
+      uv0[0] = scene.triUV[o6]; uv0[1] = scene.triUV[o6 + 1];
+      uv1[0] = scene.triUV[o6 + 2]; uv1[1] = scene.triUV[o6 + 3];
+      uv2[0] = scene.triUV[o6 + 4]; uv2[1] = scene.triUV[o6 + 5];
+      if (tangentFrame(p0, p1, p2, uv0, uv1, uv2, gN, mT, mB)) {
+        const strength = mat.normalStrength ?? 1;
+        const img = mat.normalImage!;
+        if (mat.normalIsBump) {
+          // Central-difference height gradient (texel step = 1/size, bilinear).
+          const tx = 1 / img.width, ty = 1 / img.height;
+          sampleImageBilinear(img, uu - tx, vv, mapSamp); const hL = mapSamp[0];
+          sampleImageBilinear(img, uu + tx, vv, mapSamp); const hR = mapSamp[0];
+          sampleImageBilinear(img, uu, vv - ty, mapSamp); const hD = mapSamp[0];
+          sampleImageBilinear(img, uu, vv + ty, mapSamp); const hU = mapSamp[0];
+          applyBumpMap(hR - hL, hU - hD, strength, mT, mB, gN, sN);
+        } else {
+          sampleImageBilinear(img, uu, vv, mapSamp);
+          applyNormalMap(mapSamp, strength, mT, mB, gN, sN);
+        }
+        nx = sN[0]; ny = sN[1]; nz = sN[2];
+      }
+    }
+
     // Subsurface decision (P9-4): honest cheap approximation. On a front-face
     // hit, with probability = subsurfaceWeight this bounce is treated as SSS —
     // the direct light gets a wrapped NdotL (light bleeds around the terminator,
@@ -678,7 +852,7 @@ export function traceRay(
     // Direct lighting (soft shadows via rng; wrapped diffuse when SSS).
     directLighting(
       scene.bvh, scene.tris, hx, hy, hz, nx, ny, nz,
-      alb, scene.lights, direct, rng, isSSS ? 1 : 0,
+      alb, scene.lights, direct, rng, isSSS ? 1 : 0, gN,
     );
     rr += tr * direct[0]; rg += tg * direct[1]; rb += tb * direct[2];
 
@@ -690,11 +864,14 @@ export function traceRay(
     }
 
     // Bounce: glossy (metal) with probability = metallic, else diffuse / SSS.
-    if (rng() < mat.metallic) {
+    // matMetal/matRough fold in the metal/rough maps (== the scalar params when
+    // no map, so the no-map stream is byte-identical). Ray-offset origins bias
+    // along the GEOMETRIC normal gN; the map only steers the SHADING directions.
+    if (rng() < matMetal) {
       // Roughness-jittered mirror reflection (documented GGX-ish approximation).
       const dot = dx * nx + dy * ny + dz * nz;
       let bx = dx - 2 * dot * nx, by = dy - 2 * dot * ny, bz = dz - 2 * dot * nz;
-      const j = mat.roughness * mat.roughness;
+      const j = matRough * matRough;
       if (j > 0) {
         bx += (rng() * 2 - 1) * j; by += (rng() * 2 - 1) * j; bz += (rng() * 2 - 1) * j;
       }
@@ -703,7 +880,7 @@ export function traceRay(
       // Keep the reflection in the upper hemisphere.
       if (dx * nx + dy * ny + dz * nz < 0) { dx = -dx; dy = -dy; dz = -dz; }
       tr *= alb[0]; tg *= alb[1]; tb *= alb[2];
-      ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
+      ox = hx + gN[0] * EPS; oy = hy + gN[1] * EPS; oz = hz + gN[2] * EPS;
     } else if (isSSS) {
       // Dip the continuation origin below the surface by a random distance ~
       // subsurfaceRadius, then re-emerge with a cosine-weighted direction.
@@ -714,15 +891,15 @@ export function traceRay(
       tr *= Math.min(1, alb[0]);
       tg *= Math.min(1, alb[1]);
       tb *= Math.min(1, alb[2]);
-      ox = hx - nx * dScatter + dx * EPS;
-      oy = hy - ny * dScatter + dy * EPS;
-      oz = hz - nz * dScatter + dz * EPS;
+      ox = hx - gN[0] * dScatter + dx * EPS;
+      oy = hy - gN[1] * dScatter + dy * EPS;
+      oz = hz - gN[2] * dScatter + dz * EPS;
     } else {
       cosineHemisphere(nx, ny, nz, rng, bounceDir);
       dx = bounceDir[0]; dy = bounceDir[1]; dz = bounceDir[2];
       // Cosine-weighted pdf cancels the cosine term → throughput *= albedo.
       tr *= alb[0]; tg *= alb[1]; tb *= alb[2];
-      ox = hx + nx * EPS; oy = hy + ny * EPS; oz = hz + nz * EPS;
+      ox = hx + gN[0] * EPS; oy = hy + gN[1] * EPS; oz = hz + gN[2] * EPS;
     }
   }
   out[0] = rr; out[1] = rg; out[2] = rb;

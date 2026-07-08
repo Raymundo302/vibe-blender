@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 3,
+  "version": 5,
   "camera": {
     "target": [
       -0.080298,
@@ -32,6 +32,12 @@
     "strength": 1,
     "hdri": null
   },
+  "cursor": [
+    0,
+    0,
+    0
+  ],
+  "pivotMode": "median",
   "collections": [],
   "materials": [
     {
@@ -53,7 +59,12 @@
       "subsurfaceWeight": 0.4,
       "subsurfaceRadius": 0.05,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     },
     {
       "id": 1,
@@ -74,7 +85,12 @@
       "subsurfaceWeight": 0.6,
       "subsurfaceRadius": 0.1,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     },
     {
       "id": 2,
@@ -95,7 +111,12 @@
       "subsurfaceWeight": 0,
       "subsurfaceRadius": 0.05,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     },
     {
       "id": 3,
@@ -116,7 +137,12 @@
       "subsurfaceWeight": 0,
       "subsurfaceRadius": 0.05,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     }
   ],
   "objects": [
@@ -132,6 +158,7 @@
       ],
       "materialId": 1,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -13130,6 +13157,7 @@
       ],
       "materialId": 0,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -20694,6 +20722,7 @@
       ],
       "materialId": 2,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -21846,6 +21875,7 @@
       ],
       "materialId": 3,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,
@@ -21917,6 +21947,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           6,
@@ -22103,6 +22134,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           2.300337,
@@ -22145,6 +22177,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           4,
@@ -22193,6 +22226,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           -4,
@@ -22241,6 +22275,7 @@
       ],
       "materialId": null,
       "collection": null,
+      "parent": null,
       "transform": {
         "position": [
           0,

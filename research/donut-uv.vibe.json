@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 4,
+  "version": 5,
   "camera": {
     "target": [
       -0.077136,
@@ -59,7 +59,12 @@
       "subsurfaceWeight": 0.4,
       "subsurfaceRadius": 0.05,
       "texKind": "checker",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     },
     {
       "id": 1,
@@ -80,7 +85,12 @@
       "subsurfaceWeight": 0.6,
       "subsurfaceRadius": 0.1,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     },
     {
       "id": 2,
@@ -101,7 +111,12 @@
       "subsurfaceWeight": 0,
       "subsurfaceRadius": 0.05,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     },
     {
       "id": 3,
@@ -122,7 +137,12 @@
       "subsurfaceWeight": 0,
       "subsurfaceRadius": 0.05,
       "texKind": "none",
-      "texDataUrl": null
+      "texDataUrl": null,
+      "normalDataUrl": null,
+      "normalIsBump": false,
+      "normalStrength": 1,
+      "roughDataUrl": null,
+      "metalDataUrl": null
     }
   ],
   "objects": [

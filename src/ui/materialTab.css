@@ -72,3 +72,30 @@
   border: 1px solid rgba(255, 255, 255, 0.15);
   image-rendering: pixelated;
 }
+
+/* P13 map slots */
+.material-tab-maps-title {
+  margin-top: 8px;
+  margin-bottom: 2px;
+}
+
+.material-tab-mapfile {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-mapclear {
+  flex: none;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 6px;
+}
+
+.material-tab-field input[type='checkbox'].material-tab-normal-bump {
+  flex: none;
+}
+
+.material-tab-field input[type='range'].material-tab-normal-strength {
+  flex: 1;
+  min-width: 0;
+}

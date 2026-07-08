@@ -25,8 +25,22 @@ export interface RenderEngineControls {
   toggle(): void;
 }
 
+/** The render window of the live engine (set by initRenderEngine). */
+let activeRenderWindow: RenderWindow | null = null;
+
+/**
+ * The last completed F12 render's canvas, or null if nothing has rendered yet.
+ * The render window's canvas retains its pixels after the window closes, so the
+ * Image Viewer (P13-2) can display the last result at any time. Additive
+ * read-only accessor — the engine's behavior is unchanged.
+ */
+export function getLastRender(): HTMLCanvasElement | null {
+  return activeRenderWindow && activeRenderWindow.sample > 0 ? activeRenderWindow.canvas : null;
+}
+
 export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls {
   const win = new RenderWindow(ctx.host);
+  activeRenderWindow = win;
   let worker: Worker | null = null;
   let startTime = 0;
 

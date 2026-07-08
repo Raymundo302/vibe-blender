@@ -1,10 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Scene } from '../core/scene/Scene';
 import { makeCube } from '../core/mesh/primitives';
+import { srgbToLinear } from '../core/scene/worldData';
 import {
   AssignMaterialCommand,
   MaterialEditCommand,
   NewMaterialCommand,
+  MapImageEditCommand,
+  MapParamEditCommand,
+  decodeRawTextureDataUrl,
   hexToRgb,
   rgbToHex,
 } from './materialTab';
@@ -139,5 +143,116 @@ describe('MaterialEditCommand', () => {
     expect(mat.name).toBe('Old');
     cmd.redo();
     expect(mat.name).toBe('New');
+  });
+});
+
+// -------------------------------------------------------------- P13 map slots --
+
+/** Install minimal Image + document stubs so decodeRawTextureDataUrl can run in
+ * the node test env. Every decoded pixel is the byte `value` in all channels. */
+function stubDecode(value: number, w = 1, h = 1): void {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = value; data[i + 1] = value; data[i + 2] = value; data[i + 3] = 255;
+  }
+  class MockImage {
+    naturalWidth = w;
+    naturalHeight = h;
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    set src(_v: string) { this.onload?.(); }
+  }
+  const doc = {
+    createElement: () => ({
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        drawImage: () => {},
+        getImageData: () => ({ data }),
+      }),
+    }),
+  };
+  vi.stubGlobal('Image', MockImage);
+  vi.stubGlobal('document', doc);
+}
+
+describe('decodeRawTextureDataUrl', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('produces UNconverted 0..1 values (byte 128 → ≈0.502, not sRGB 0.216)', async () => {
+    stubDecode(128);
+    const img = await decodeRawTextureDataUrl('data:image/png;base64,xxx');
+    expect(img.width).toBe(1);
+    expect(img.height).toBe(1);
+    // Raw: 128/255 ≈ 0.50196.
+    expect(img.pixels[0]).toBeCloseTo(0.502, 3);
+    // And explicitly NOT the sRGB-linearized value the base-color decoder uses.
+    expect(srgbToLinear(128 / 255)).toBeCloseTo(0.216, 3);
+    expect(img.pixels[0]).not.toBeCloseTo(0.216, 2);
+  });
+});
+
+describe('MapImageEditCommand', () => {
+  it('round-trips a normal-map set (dataUrl + decoded cache together)', () => {
+    const { scene } = sceneWithCube();
+    const mat = scene.addMaterial('Mat');
+    const image = { width: 1, height: 1, pixels: new Float32Array([0.5, 0.5, 1]) };
+    const before = { dataUrl: mat.normalDataUrl, image: mat.normalImage };
+    mat.normalDataUrl = 'data:normal';
+    mat.normalImage = image;
+    const after = { dataUrl: mat.normalDataUrl, image: mat.normalImage };
+    const cmd = new MapImageEditCommand(mat, 'normal', before, after);
+
+    cmd.undo();
+    expect(mat.normalDataUrl).toBeNull();
+    expect(mat.normalImage).toBeUndefined();
+    cmd.redo();
+    expect(mat.normalDataUrl).toBe('data:normal');
+    expect(mat.normalImage).toBe(image);
+  });
+
+  it('round-trips a roughness-map clear', () => {
+    const { scene } = sceneWithCube();
+    const mat = scene.addMaterial('Mat');
+    const image = { width: 1, height: 1, pixels: new Float32Array([0.3, 0.3, 0.3]) };
+    mat.roughDataUrl = 'data:rough';
+    mat.roughImage = image;
+    const before = { dataUrl: mat.roughDataUrl, image: mat.roughImage };
+    mat.roughDataUrl = null;
+    mat.roughImage = undefined;
+    const cmd = new MapImageEditCommand(mat, 'rough', before, { dataUrl: null, image: undefined });
+
+    cmd.undo();
+    expect(mat.roughDataUrl).toBe('data:rough');
+    expect(mat.roughImage).toBe(image);
+    cmd.redo();
+    expect(mat.roughDataUrl).toBeNull();
+    expect(mat.roughImage).toBeUndefined();
+  });
+});
+
+describe('MapParamEditCommand', () => {
+  it('round-trips the normalStrength slider', () => {
+    const { scene } = sceneWithCube();
+    const mat = scene.addMaterial('Mat');
+    const before = mat.normalStrength; // 1
+    mat.normalStrength = 1.75;
+    const cmd = new MapParamEditCommand(mat, 'normalStrength', before, 1.75);
+    cmd.undo();
+    expect(mat.normalStrength).toBe(before);
+    cmd.redo();
+    expect(mat.normalStrength).toBe(1.75);
+  });
+
+  it('round-trips the normalIsBump toggle', () => {
+    const { scene } = sceneWithCube();
+    const mat = scene.addMaterial('Mat');
+    expect(mat.normalIsBump).toBe(false);
+    mat.normalIsBump = true;
+    const cmd = new MapParamEditCommand(mat, 'normalIsBump', false, true);
+    cmd.undo();
+    expect(mat.normalIsBump).toBe(false);
+    cmd.redo();
+    expect(mat.normalIsBump).toBe(true);
   });
 });

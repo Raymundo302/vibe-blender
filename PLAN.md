@@ -219,24 +219,24 @@ New architecture decisions:
 ### Phase 12 — Cursor, pies, overlays & parenting
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| F12-1 | 3D cursor core: scene state, Shift+RightClick place (raycast to surface/grid), overlay crosshair, Add-at-cursor, pivot option, sceneJson | fable | — | pending |
-| F12-2 | Parenting core: parentIndex, world-matrix inheritance, cycle guard, Ctrl+P (keep transform) / Alt+P (clear, keep transform), undo cmds, serialization | fable | — | pending |
-| P12-1 | Radial pie-menu component (generic, keyboard+mouse) + Shift+S snap pie: Cursor→Selected, Cursor→Origin, Selection→Cursor, Cursor→Grid | opus | F12-1 | built |
-| P12-2 | Overlays dropdown (header): toggle grid, axes, origin points, light/camera icons, wireframe-on-shaded, 3D cursor; persisted | opus | F12-1 | built |
-| P12-3 | Outliner parent hierarchy: indent children, drag-to-parent, Ctrl+P/Alt+P menu entries | opus | F12-2 | built |
+| F12-1 | 3D cursor core: scene state, Shift+RightClick place (raycast to surface/grid), overlay crosshair, Add-at-cursor, pivot option, sceneJson | fable | — | verified |
+| F12-2 | Parenting core: parentIndex, world-matrix inheritance, cycle guard, Ctrl+P (keep transform) / Alt+P (clear, keep transform), undo cmds, serialization | fable | — | verified |
+| P12-1 | Radial pie-menu component (generic, keyboard+mouse) + Shift+S snap pie: Cursor→Selected, Cursor→Origin, Selection→Cursor, Cursor→Grid | opus | F12-1 | verified |
+| P12-2 | Overlays dropdown (header): toggle grid, axes, origin points, light/camera icons, wireframe-on-shaded, 3D cursor; persisted | opus | F12-1 | verified |
+| P12-3 | Outliner parent hierarchy: indent children, drag-to-parent, Ctrl+P/Alt+P menu entries | opus | F12-2 | verified |
 
 ### Phase 13 — Texture depth & image viewer
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| F13-1 | Material map slots (normal/bump + roughness maps): fields, GPU uniforms/samplers, tracer hooks, sceneJson bump | fable | — | pending |
-| P13-1 | Bump/normal mapping in Rendered pass + tracer (tangent-space normal maps, height→normal for bump, strength slider, Material tab rows) | opus | F13-1 | pending |
-| P13-2 | Image Viewer workspace pane: view material images + last F12 render, zoom/pan, fit, pixel inspect, open-image button | opus | — | pending |
-| P13-3 | Roughness/metallic map sampling in both render paths + Material tab rows | opus | F13-1 | pending |
+| F13-1 | Material map slots (normal/bump + roughness maps): fields, GPU uniforms/samplers, tracer hooks, sceneJson bump | fable | — | verified |
+| P13-1 | Bump/normal mapping in Rendered pass + tracer (tangent-space normal maps, height→normal for bump, strength slider, Material tab rows) | opus | F13-1 | verified |
+| P13-2 | Image Viewer workspace pane: view material images + last F12 render, zoom/pan, fit, pixel inspect, open-image button | opus | — | verified |
+| P13-3 | Material tab map-slot UI (normal/bump/rough/metal file inputs, strength, raw decode caches) | opus | F13-1 | verified |
 
 ### Phase 14 — Node-based shader editor
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| F14-1 | Node graph core: data model (nodes/sockets/links, typed), TS evaluator → material sampler, bake-to-texture bridge for Rendered, sceneJson v(next), cycle guard | fable | F13-1 | pending |
+| F14-1 | Node graph core: data model (nodes/sockets/links, typed), TS evaluator → material sampler, bake-to-texture bridge for Rendered, sceneJson v(next), cycle guard | fable | F13-1 | verified |
 | P14-1 | Shader Editor workspace pane: canvas graph UI — drag nodes, wire sockets, box select, Shift+A add-node menu, delete, pan/zoom | opus | F14-1 | pending |
 | P14-2 | Starter node set A: Principled BSDF (output), Image Texture, Checker, Mix Color, RGB, Value | opus | F14-1 | pending |
 | P14-3 | Starter node set B: Noise, ColorRamp, Bump, Mapping/UV input, MixFloat | opus | P14-2 | pending |
@@ -245,7 +245,7 @@ New architecture decisions:
 ### Phase 15 — Animation
 | ID | Task | Owner | Depends | Status |
 |----|------|-------|---------|--------|
-| F15-1 | Animation core: FCurve/Keyframe model, channelPath resolver, scene time + sampler (applied pre-frame through parent hierarchy), I-key insert cmds, sceneJson | fable | F12-2 | pending |
+| F15-1 | Animation core: FCurve/Keyframe model, channelPath resolver, scene time + sampler (applied pre-frame through parent hierarchy), I-key insert cmds, sceneJson | fable | F12-2 | verified |
 | P15-1 | Timeline workspace pane: playhead, scrub, frame range, keyframe diamonds per selected object, spacebar play/pause | opus | F15-1 | pending |
 | P15-2 | Interpolation: constant/linear/bezier (auto handles), per-key setting, evaluation tests | opus | F15-1 | pending |
 | P15-3 | Keyframe editing: move/delete keys in timeline, auto-key toggle, K insert menu (Location/Rotation/Scale/All) | opus | P15-1 | pending |

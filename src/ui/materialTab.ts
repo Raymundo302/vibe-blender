@@ -41,6 +41,39 @@ export function decodeTextureDataUrl(dataUrl: string): Promise<TexImage> {
 }
 
 /**
+ * Decode a packed image data URL into RAW 0..1 pixels — NO sRGB→linear
+ * conversion (P13). Normal/bump, roughness and metallic maps store DATA, not
+ * color, so a channel byte of 128 must round-trip to ≈0.502, not the
+ * sRGB-linearized 0.216. The path tracer reads these caches straight off the
+ * material. Row 0 = top, same layout as decodeTextureDataUrl.
+ */
+export function decodeRawTextureDataUrl(dataUrl: string): Promise<TexImage> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth, h = img.naturalHeight;
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('2d context unavailable')); return; }
+        ctx.drawImage(img, 0, 0);
+        const rgba = ctx.getImageData(0, 0, w, h).data;
+        const pixels = new Float32Array(w * h * 3);
+        for (let p = 0, q = 0; p < rgba.length; p += 4, q += 3) {
+          pixels[q] = rgba[p] / 255;
+          pixels[q + 1] = rgba[p + 1] / 255;
+          pixels[q + 2] = rgba[p + 2] / 255;
+        }
+        resolve({ width: w, height: h, pixels });
+      } catch (e) { reject(e as Error); }
+    };
+    img.onerror = () => reject(new Error('failed to decode map image'));
+    img.src = dataUrl;
+  });
+}
+
+/**
  * Material properties tab (P8-3) — Blender's material sphere. Manages the scene
  * material library and the active mesh object's slot assignment. The rendered
  * viewport already draws mesh objects with scene.materialOf(obj); this tab is the
@@ -186,6 +219,77 @@ export class TextureEditCommand implements Command {
   redo(): void { this.write(this.after); }
 }
 
+// ------------------------------------------------------------- map commands --
+
+/** The three P13 image-map slots (base-color texture is handled separately). */
+export type MapSlot = 'normal' | 'rough' | 'metal';
+
+/** Material data-url field for each map slot. */
+const MAP_URL_FIELD: Record<MapSlot, 'normalDataUrl' | 'roughDataUrl' | 'metalDataUrl'> = {
+  normal: 'normalDataUrl',
+  rough: 'roughDataUrl',
+  metal: 'metalDataUrl',
+};
+
+/** Material decoded-cache field for each map slot. */
+const MAP_IMG_FIELD: Record<MapSlot, 'normalImage' | 'roughImage' | 'metalImage'> = {
+  normal: 'normalImage',
+  rough: 'roughImage',
+  metal: 'metalImage',
+};
+
+/** Snapshot of one map slot: the data url AND its decoded cache. */
+interface MapImgState {
+  dataUrl: string | null;
+  image: TexImage | undefined;
+}
+
+/**
+ * Set or clear one image-map slot (normal/rough/metal) in ONE undo step. Stores
+ * the data url AND the decoded cache in each snapshot so undo restores BOTH —
+ * the tracer never sees a url without its pixels. Convention: caller has already
+ * written `after` onto the material before pushing.
+ */
+export class MapImageEditCommand implements Command {
+  readonly name = 'Edit Map';
+
+  constructor(
+    private readonly material: Material,
+    private readonly slot: MapSlot,
+    private readonly before: MapImgState,
+    private readonly after: MapImgState,
+  ) {}
+
+  private write(s: MapImgState): void {
+    this.material[MAP_URL_FIELD[this.slot]] = s.dataUrl;
+    this.material[MAP_IMG_FIELD[this.slot]] = s.image;
+  }
+
+  undo(): void { this.write(this.before); }
+  redo(): void { this.write(this.after); }
+}
+
+/** Edit a scalar/boolean normal-map parameter (strength or bump toggle) in one
+ * undo step. Convention: caller already wrote `after` before pushing. */
+export class MapParamEditCommand implements Command {
+  readonly name = 'Edit Map Param';
+
+  constructor(
+    private readonly material: Material,
+    private readonly field: 'normalStrength' | 'normalIsBump',
+    private readonly before: number | boolean,
+    private readonly after: number | boolean,
+  ) {}
+
+  private write(v: number | boolean): void {
+    if (this.field === 'normalIsBump') this.material.normalIsBump = v as boolean;
+    else this.material.normalStrength = v as number;
+  }
+
+  undo(): void { this.write(this.before); }
+  redo(): void { this.write(this.after); }
+}
+
 // ------------------------------------------------------------- color helpers --
 
 /** 0..1 RGB floats → lowercase "#rrggbb". */
@@ -223,6 +327,20 @@ class MaterialTab {
   private texImageRow!: HTMLElement;
   private texFileInput!: HTMLInputElement;
   private texThumb!: HTMLImageElement;
+
+  // P13 map slots.
+  private normalThumb!: HTMLImageElement;
+  private normalBumpCheck!: HTMLInputElement;
+  private normalStrengthInput!: HTMLInputElement;
+  private normalStrengthNum!: HTMLSpanElement;
+  private roughThumb!: HTMLImageElement;
+  private metalThumb!: HTMLImageElement;
+
+  /** Value captured when the normal-strength slider gained focus. */
+  private strengthBefore: number | null = null;
+
+  /** Guards concurrent decode-on-select of the same map (keyed matId:slot:len). */
+  private readonly pendingDecode = new Set<string>();
 
   /** Value captured when an input gained focus — the undo `before`. */
   private editBefore: MaterialFieldValue | null = null;
@@ -269,6 +387,8 @@ class MaterialTab {
     (window as unknown as Record<string, unknown>).__materialTab = {
       material: () => this.material(),
       loadTexture: (dataUrl: string) => this.loadTextureFromDataUrl(dataUrl),
+      setMap: (slot: MapSlot, dataUrl: string) => this.loadMapFromDataUrl(slot, dataUrl),
+      clearMap: (slot: MapSlot) => this.onMapClear(slot),
     };
 
     this.update();
@@ -378,6 +498,174 @@ class MaterialTab {
     this.texThumb.alt = 'texture';
     this.texImageRow = this.fieldRow('Image', this.texFileInput, this.texThumb);
     this.fields.append(this.texImageRow);
+
+    this.buildMapFields();
+  }
+
+  /** P13 map-slot UI: Normal Map (file + Bump toggle + Strength), Roughness Map,
+   * Metallic Map. All rows follow the existing fieldRow pattern. */
+  private buildMapFields(): void {
+    const heading = document.createElement('div');
+    heading.className = 'material-tab-maps-title properties-group-title';
+    heading.textContent = 'Maps';
+    this.fields.append(heading);
+
+    // --- Normal Map: file + thumb + clear ---
+    const normal = this.mapRow('Normal', 'normal');
+    this.normalThumb = normal.thumb;
+
+    // Bump (height) checkbox → normalIsBump.
+    this.normalBumpCheck = document.createElement('input');
+    this.normalBumpCheck.type = 'checkbox';
+    this.normalBumpCheck.className = 'material-tab-normal-bump';
+    this.normalBumpCheck.addEventListener('change', () => this.onBumpToggle());
+    this.fields.append(this.fieldRow('Bump (height)', this.normalBumpCheck));
+
+    // Strength slider 0..2 step 0.05 → normalStrength, with numeric readout.
+    this.normalStrengthNum = document.createElement('span');
+    this.normalStrengthNum.className = 'material-tab-num';
+    this.normalStrengthInput = document.createElement('input');
+    this.normalStrengthInput.type = 'range';
+    this.normalStrengthInput.className = 'material-tab-normal-strength';
+    this.normalStrengthInput.min = '0';
+    this.normalStrengthInput.max = '2';
+    this.normalStrengthInput.step = '0.05';
+    this.wireStrength();
+    this.fields.append(this.fieldRow('Strength', this.normalStrengthInput, this.normalStrengthNum));
+
+    // --- Roughness Map: file + thumb + clear ---
+    const rough = this.mapRow('Roughness', 'rough');
+    this.roughThumb = rough.thumb;
+
+    // --- Metallic Map: file + thumb + clear ---
+    const metal = this.mapRow('Metallic', 'metal');
+    this.metalThumb = metal.thumb;
+  }
+
+  /** Build a file-input + thumbnail + clear-✕ row for a map slot, wire its
+   * handlers and append it. Returns the controls for value binding in rebuild. */
+  private mapRow(label: string, slot: MapSlot): { file: HTMLInputElement; thumb: HTMLImageElement } {
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.accept = 'image/*';
+    file.className = `material-tab-mapfile material-tab-${slot}file`;
+    file.addEventListener('change', () => this.onMapFile(slot, file));
+
+    const thumb = document.createElement('img');
+    thumb.className = `material-tab-texthumb material-tab-mapthumb material-tab-${slot}thumb`;
+    thumb.alt = label;
+
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = `material-tab-mapclear material-tab-${slot}clear`;
+    clear.textContent = '✕';
+    clear.title = `Clear ${label} map`;
+    clear.addEventListener('click', () => this.onMapClear(slot));
+
+    this.fields.append(this.fieldRow(label, file, thumb, clear));
+    return { file, thumb };
+  }
+
+  /** Live-preview + single-command wiring for the normal-strength slider. */
+  private wireStrength(): void {
+    this.normalStrengthInput.addEventListener('focus', () => {
+      this.strengthBefore = this.material()?.normalStrength ?? null;
+    });
+    this.normalStrengthInput.addEventListener('input', () => {
+      const mat = this.material();
+      if (!mat) return;
+      if (this.strengthBefore === null) this.strengthBefore = mat.normalStrength;
+      mat.normalStrength = parseFloat(this.normalStrengthInput.value);
+      this.normalStrengthNum.textContent = Number(this.normalStrengthInput.value).toFixed(2);
+    });
+    this.normalStrengthInput.addEventListener('change', () => {
+      const mat = this.material();
+      if (!mat) { this.strengthBefore = null; return; }
+      const after = parseFloat(this.normalStrengthInput.value);
+      const before = this.strengthBefore ?? after;
+      this.strengthBefore = null;
+      if (!Number.isFinite(after)) { this.lastSig = null; return; }
+      mat.normalStrength = after;
+      if (before === after) { this.lastSig = null; return; }
+      this.undo.push(new MapParamEditCommand(mat, 'normalStrength', before, after));
+      this.lastSig = null;
+    });
+  }
+
+  private onBumpToggle(): void {
+    const mat = this.material();
+    if (!mat) return;
+    const before = mat.normalIsBump;
+    const after = this.normalBumpCheck.checked;
+    if (before === after) return;
+    mat.normalIsBump = after;
+    this.undo.push(new MapParamEditCommand(mat, 'normalIsBump', before, after));
+    this.lastSig = null;
+  }
+
+  private onMapFile(slot: MapSlot, input: HTMLInputElement): void {
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { void this.loadMapFromDataUrl(slot, String(reader.result)); };
+    reader.readAsDataURL(file);
+  }
+
+  private onMapClear(slot: MapSlot): void {
+    const mat = this.material();
+    if (!mat) return;
+    if (mat[MAP_URL_FIELD[slot]] === null && mat[MAP_IMG_FIELD[slot]] === undefined) return;
+    const before = this.mapState(mat, slot);
+    mat[MAP_URL_FIELD[slot]] = null;
+    mat[MAP_IMG_FIELD[slot]] = undefined;
+    this.undo.push(new MapImageEditCommand(mat, slot, before, this.mapState(mat, slot)));
+    this.lastSig = null;
+  }
+
+  /** Snapshot the current data url + decoded cache of a map slot. */
+  private mapState(mat: Material, slot: MapSlot): MapImgState {
+    return { dataUrl: mat[MAP_URL_FIELD[slot]], image: mat[MAP_IMG_FIELD[slot]] };
+  }
+
+  /**
+   * Decode a packed image RAW (no sRGB) and set it on a map slot in one undo
+   * step (both url and decoded cache captured). Exposed via __materialTab for
+   * e2e. No-op when no material is active.
+   */
+  async loadMapFromDataUrl(slot: MapSlot, dataUrl: string): Promise<void> {
+    const mat = this.material();
+    if (!mat) return;
+    const image = await decodeRawTextureDataUrl(dataUrl);
+    // The active material may have changed while decoding; re-fetch and bail if so.
+    if (this.material() !== mat) return;
+    const before = this.mapState(mat, slot);
+    mat[MAP_URL_FIELD[slot]] = dataUrl;
+    mat[MAP_IMG_FIELD[slot]] = image;
+    this.undo.push(new MapImageEditCommand(mat, slot, before, this.mapState(mat, slot)));
+    this.lastSig = null;
+  }
+
+  /**
+   * Decode-on-select: for each present-but-uncached map, decode its data url
+   * RAW into the material cache asynchronously so the tracer sees it (e.g. after
+   * a scene load or when a map's cache was nulled by undo). Idempotent + guarded
+   * against duplicate concurrent decodes.
+   */
+  private ensureMapsDecoded(mat: Material): void {
+    for (const slot of ['normal', 'rough', 'metal'] as MapSlot[]) {
+      const url = mat[MAP_URL_FIELD[slot]];
+      if (!url || mat[MAP_IMG_FIELD[slot]]) continue;
+      const key = `${mat.id}:${slot}:${url.length}`;
+      if (this.pendingDecode.has(key)) continue;
+      this.pendingDecode.add(key);
+      decodeRawTextureDataUrl(url)
+        .then((decoded) => {
+          if (mat[MAP_URL_FIELD[slot]] === url) mat[MAP_IMG_FIELD[slot]] = decoded;
+          this.pendingDecode.delete(key);
+          this.lastSig = null;
+        })
+        .catch(() => { this.pendingDecode.delete(key); });
+    }
   }
 
   private slider(cls: string): HTMLInputElement {
@@ -568,12 +856,15 @@ class MaterialTab {
     if (this.isPanelFocused()) return;
 
     const mat = this.material();
+    // Decode-on-select: fill any present-but-uncached map caches for the tracer.
+    if (mat) this.ensureMapsDecoded(mat);
     const sig = [
       obj!.id,
       obj!.materialId,
       this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
       mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
       mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}` : '-',
+      mat ? `${mat.normalDataUrl ? mat.normalDataUrl.length : 0}:${mat.normalIsBump}:${mat.normalStrength}:${mat.roughDataUrl ? mat.roughDataUrl.length : 0}:${mat.metalDataUrl ? mat.metalDataUrl.length : 0}` : '-',
     ].join('#');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -628,6 +919,25 @@ class MaterialTab {
     } else {
       this.texThumb.removeAttribute('src');
       this.texThumb.style.display = 'none';
+    }
+
+    // P13 map slots.
+    this.setMapThumb(this.normalThumb, mat.normalDataUrl);
+    this.normalBumpCheck.checked = mat.normalIsBump;
+    this.normalStrengthInput.value = String(mat.normalStrength);
+    this.normalStrengthNum.textContent = mat.normalStrength.toFixed(2);
+    this.setMapThumb(this.roughThumb, mat.roughDataUrl);
+    this.setMapThumb(this.metalThumb, mat.metalDataUrl);
+  }
+
+  /** Show a map thumbnail when a data url is present, else hide it. */
+  private setMapThumb(thumb: HTMLImageElement, dataUrl: string | null): void {
+    if (dataUrl) {
+      thumb.src = dataUrl;
+      thumb.style.display = '';
+    } else {
+      thumb.removeAttribute('src');
+      thumb.style.display = 'none';
     }
   }
 }

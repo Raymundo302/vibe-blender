@@ -9,6 +9,7 @@ import { WorkspaceManager, type EditorFactory, type WorkspaceConfig } from './ui
 import { OutlinerPanel } from './ui/outliner';
 import { PropertiesEditor } from './ui/propertiesEditor';
 import { UVEditor } from './ui/uvEditor';
+import { ImageViewer } from './ui/imageViewer';
 import './ui/modifierTab'; // side-effect: registers the Modifiers properties tab
 import './ui/materialTab'; // side-effect: registers the Material properties tab (P8-3)
 import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
@@ -283,6 +284,11 @@ const editorFactories: EditorFactory[] = [
     type: 'uv',
     title: 'UV Editor',
     create: () => new UVEditor({ scene, undo }),
+  },
+  {
+    type: 'image',
+    title: 'Image Viewer',
+    create: () => new ImageViewer({ scene }),
   },
 ];
 
