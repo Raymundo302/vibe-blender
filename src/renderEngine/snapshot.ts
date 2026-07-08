@@ -180,7 +180,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     if (obj.kind !== 'mesh' || !scene.effectiveVisible(obj)) continue;
     const mesh = obj.evaluatedMesh(scene.modifierContext(obj));
     if (mesh.faces.size === 0) continue;
-    const model = obj.transform.matrix();
+    const model = scene.worldMatrix(obj);
     const mi =
       obj.materialId !== null && matIndex.has(obj.materialId)
         ? matIndex.get(obj.materialId)!
@@ -232,8 +232,9 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   for (const obj of scene.objects) {
     if (obj.kind !== 'light' || !scene.effectiveVisible(obj) || !obj.light) continue;
     const l = obj.light;
-    const p = obj.transform.position;
-    const d = objectForward(obj.transform);
+    const pose = scene.worldTransformOf(obj);
+    const p = pose.position;
+    const d = objectForward(pose);
     const scale = l.type === 'sun' ? 1 : 1 / (4 * Math.PI);
     const outer = l.spotAngle / 2;
     const inner = outer * (1 - l.spotBlend);
@@ -302,7 +303,7 @@ function focusDistanceForBounds(tris: Float32Array, cam: SnapCamera): number {
 function buildCamera(scene: Scene, orbit: OrbitCamera): SnapCamera {
   const active = scene.activeCamera;
   if (active && active.camera) {
-    const t = active.transform;
+    const t = scene.worldTransformOf(active);
     const fwd = objectForward(t); // local -Z
     const up = t.rotation.rotate(Vec3.Y);
     const right = t.rotation.rotate(Vec3.X);

@@ -1,10 +1,9 @@
 import type { Operator, OperatorContext, PointerState } from '../core/operator/Operator';
-import type { SceneObject } from '../core/scene/Scene';
-import type { Transform } from '../core/math/transform';
 import { Vec3 } from '../core/math/vec3';
 import { rayPlane } from '../core/math/ray';
 import { TransformCommand } from '../core/undo/commands';
 import { snapActive, snapVec, SNAP_STEP } from '../core/snap';
+import { captureWorldTargets, writeWorldPosition, type WorldTarget } from './worldTargets';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
 
@@ -16,7 +15,7 @@ type AxisLock = 'x' | 'y' | 'z' | null;
 export class TranslateOperator implements Operator {
   readonly name = 'Move';
 
-  private targets: { object: SceneObject; before: Transform }[] = [];
+  private targets: WorldTarget[] = [];
   private pivot = Vec3.ZERO;
   private startHit = Vec3.ZERO;
   private delta = Vec3.ZERO;
@@ -34,9 +33,9 @@ export class TranslateOperator implements Operator {
     const selected = ctx.scene.selectedObjects;
     if (selected.length === 0) return false;
 
-    this.targets = selected.map((object) => ({ object, before: object.transform }));
+    this.targets = captureWorldTargets(ctx.scene, selected);
     let sum = Vec3.ZERO;
-    for (const t of this.targets) sum = sum.add(t.object.transform.position);
+    for (const t of this.targets) sum = sum.add(t.beforeWorld.position);
     this.pivot = sum.scale(1 / this.targets.length);
 
     const hit = this.planeHit(ctx, pointer);
@@ -77,9 +76,9 @@ export class TranslateOperator implements Operator {
   private applyPositions(ctx: OperatorContext): void {
     const snap = snapActive(this.ctrlHeld);
     for (const t of this.targets) {
-      let pos = t.before.position.add(this.delta);
+      let pos = t.beforeWorld.position.add(this.delta);
       if (snap) pos = snapVec(pos, SNAP_STEP);
-      t.object.transform = t.before.withPosition(pos);
+      writeWorldPosition(t, pos);
     }
     this.updateStatus(ctx);
   }

@@ -1,5 +1,7 @@
 import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
+import { Mat4 } from '../math/mat4';
+import { Vec3 } from '../math/vec3';
 import { EditModeState } from './EditMode';
 import { defaultWorld, type World } from './worldData';
 import type { Modifier, ModifierContext } from '../modifiers/Modifier';
@@ -45,6 +47,9 @@ export class SceneObject {
   materialId: number | null = null;
   /** Owning collection id (scene.collections), or null → scene root. */
   collectionId: number | null = null;
+  /** Parent object id (P12 parenting), or null → world root. World transform =
+   *  parent chain × local. Cycle-guarded in Scene.worldMatrix. */
+  parentId: number | null = null;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -98,6 +103,10 @@ export class Scene {
   /** Environment (background + image-based lighting). Default reproduces the
    *  path tracer's original hardcoded sky, so pre-World scenes are unchanged. */
   world: World = defaultWorld();
+  /** 3D cursor position, world space (P12). Shift+RightClick places it. */
+  cursor: Vec3 = Vec3.ZERO;
+  /** R/S pivot: selection median (default) or the 3D cursor (P12). */
+  pivotMode: 'median' | 'cursor' = 'median';
   private nextId = 0;
   private nextMaterialId = 0;
   private nextCollectionId = 0;
@@ -223,7 +232,7 @@ export class Scene {
   modifierContext(host: SceneObject, visited: Set<number> = new Set()): ModifierContext {
     visited.add(host.id);
     return {
-      hostMatrix: host.transform.matrix(),
+      hostMatrix: this.worldMatrix(host),
       target: (objectId: number) => {
         if (visited.has(objectId)) return null;
         const obj = this.get(objectId);
@@ -232,7 +241,7 @@ export class Scene {
         const mesh = obj.evaluatedMesh(childCtx);
         return {
           mesh,
-          matrix: obj.transform.matrix(),
+          matrix: this.worldMatrix(obj),
           version: `${objectId}:${mesh.version}:${obj.modifiersVersion}`,
         };
       },
@@ -241,6 +250,74 @@ export class Scene {
 
   get(id: number): SceneObject | undefined {
     return this.objects.find((o) => o.id === id);
+  }
+
+  // --- Parenting (P12) -------------------------------------------------------
+
+  /** The parent object, or null (root, or a dangling/removed parent id). */
+  parentOf(obj: SceneObject): SceneObject | null {
+    return obj.parentId === null ? null : this.get(obj.parentId) ?? null;
+  }
+
+  /** Direct children (objects whose parentId is obj.id). */
+  childrenOf(obj: SceneObject): SceneObject[] {
+    return this.objects.filter((o) => o.parentId === obj.id);
+  }
+
+  /** True if `ancestor` appears anywhere up `obj`'s parent chain. */
+  isAncestor(ancestor: SceneObject, obj: SceneObject): boolean {
+    const seen = new Set<number>([obj.id]);
+    for (let p = this.parentOf(obj); p; p = this.parentOf(p)) {
+      if (p.id === ancestor.id) return true;
+      if (seen.has(p.id)) return false; // corrupt cycle — treat as root
+      seen.add(p.id);
+    }
+    return false;
+  }
+
+  /** World matrix of the parent chain ABOVE obj (identity for roots). */
+  parentWorldMatrix(obj: SceneObject): Mat4 {
+    const parent = this.parentOf(obj);
+    return parent ? this.worldMatrix(parent) : Mat4.identity();
+  }
+
+  /** Full world matrix: parent chain × local TRS. Cycles act as roots. */
+  worldMatrix(obj: SceneObject): Mat4 {
+    let m = obj.transform.matrix();
+    const seen = new Set<number>([obj.id]);
+    for (let p = this.parentOf(obj); p; p = this.parentOf(p)) {
+      if (seen.has(p.id)) break; // corrupt cycle guard
+      seen.add(p.id);
+      m = p.transform.matrix().mul(m);
+    }
+    return m;
+  }
+
+  /** World-space TRS of an object. Roots return the transform itself. */
+  worldTransformOf(obj: SceneObject): Transform {
+    if (obj.parentId === null) return obj.transform;
+    return Transform.fromMat4(this.worldMatrix(obj));
+  }
+
+  /** Re-express a world-space transform in obj's CURRENT parent space. */
+  localFromWorld(obj: SceneObject, world: Transform): Transform {
+    if (obj.parentId === null) return world;
+    return Transform.fromMat4(this.parentWorldMatrix(obj).invert().mul(world.matrix()));
+  }
+
+  /**
+   * Set (or clear, parent=null) an object's parent, keeping its world
+   * transform (Blender's Ctrl+P / Alt+P "Keep Transform"). Refuses self- and
+   * descendant-parenting (returns false) so the graph stays a forest.
+   */
+  setParentKeepTransform(child: SceneObject, parent: SceneObject | null): boolean {
+    if (parent && (parent.id === child.id || this.isAncestor(child, parent))) return false;
+    const world = this.worldTransformOf(child);
+    child.parentId = parent ? parent.id : null;
+    child.transform = parent
+      ? Transform.fromMat4(this.worldMatrix(parent).invert().mul(world.matrix()))
+      : world;
+    return true;
   }
 
   /**
@@ -259,6 +336,7 @@ export class Scene {
     obj.color = [...src.color];
     obj.materialId = src.materialId;
     obj.collectionId = src.collectionId;
+    obj.parentId = src.parentId; // duplicate of a child stays a child
     this.objects.push(obj);
     return obj;
   }
@@ -292,11 +370,18 @@ export class Scene {
     this.activeId = null;
   }
 
-  /** Remove an object from the scene (drops it from the selection too). */
+  /** Remove an object from the scene (drops it from the selection too).
+   *  Children survive: they reparent to the removed object's parent, keeping
+   *  their world transform (no visual jump). */
   remove(id: number): void {
     const i = this.objects.findIndex((o) => o.id === id);
     if (i < 0) return;
     if (this.editMode?.objectId === id) this.exitEditMode();
+    const doomed = this.objects[i];
+    const grandparent = this.parentOf(doomed);
+    for (const child of this.childrenOf(doomed)) {
+      this.setParentKeepTransform(child, grandparent);
+    }
     this.objects.splice(i, 1);
     this.selection.delete(id);
     if (this.activeId === id) this.activeId = [...this.selection].pop() ?? null;

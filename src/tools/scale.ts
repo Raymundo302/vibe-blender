@@ -1,9 +1,8 @@
 import type { Operator, OperatorContext, PointerState } from '../core/operator/Operator';
-import type { SceneObject } from '../core/scene/Scene';
-import type { Transform } from '../core/math/transform';
 import { Vec3 } from '../core/math/vec3';
 import { TransformCommand } from '../core/undo/commands';
 import { NumericInput } from './numericInput';
+import { captureWorldTargets, transformPivot, writeWorldPosScale, type WorldTarget } from './worldTargets';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
 
@@ -17,7 +16,7 @@ type AxisLock = 'x' | 'y' | 'z' | null;
 export class ScaleOperator implements Operator {
   readonly name = 'Scale';
 
-  private targets: { object: SceneObject; before: Transform }[] = [];
+  private targets: WorldTarget[] = [];
   private pivot = Vec3.ZERO;
   private pivotScreen = { x: 0, y: 0 };
   private startDist = 1;
@@ -30,10 +29,8 @@ export class ScaleOperator implements Operator {
     const selected = ctx.scene.selectedObjects;
     if (selected.length === 0) return false;
 
-    this.targets = selected.map((object) => ({ object, before: object.transform }));
-    let sum = Vec3.ZERO;
-    for (const t of this.targets) sum = sum.add(t.object.transform.position);
-    this.pivot = sum.scale(1 / this.targets.length);
+    this.targets = captureWorldTargets(ctx.scene, selected);
+    this.pivot = transformPivot(ctx.scene, this.targets);
 
     this.pivotScreen = this.projectPivot(ctx);
     // Guard the denominator: a start distance under 2px would blow up the factor.
@@ -85,10 +82,9 @@ export class ScaleOperator implements Operator {
     const sz = !this.axis || this.axis === 'z' ? f : 1;
 
     for (const t of this.targets) {
-      const off = t.before.position.sub(this.pivot);
+      const off = t.beforeWorld.position.sub(this.pivot);
       const pos = this.pivot.add(new Vec3(off.x * sx, off.y * sy, off.z * sz));
-      const scale = new Vec3(t.before.scale.x * sx, t.before.scale.y * sy, t.before.scale.z * sz);
-      t.object.transform = t.before.withPosition(pos).withScale(scale);
+      writeWorldPosScale(t, pos, sx, sy, sz);
     }
     this.updateStatus(ctx, f);
   }

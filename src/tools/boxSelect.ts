@@ -197,7 +197,7 @@ export class BoxSelectOperator implements Operator {
     const mvp = ctx.camera
       .projMatrix(width / height)
       .mul(ctx.camera.viewMatrix())
-      .mul(obj.transform.matrix());
+      .mul(ctx.scene.worldMatrix(obj));
     const hits = elementsInRect(obj.mesh, sel.elementMode, mvp, width, height, this.rect());
 
     if (sel.elementMode === 'vert') {

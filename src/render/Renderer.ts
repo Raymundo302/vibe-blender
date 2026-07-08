@@ -272,10 +272,11 @@ export class Renderer {
       if (!camObj || camObj.kind !== 'camera') {
         this.cameraViewId = null; // object gone: fall through to the user camera
       } else if (camObj.visible && camObj.camera) {
+        const pose = scene.worldTransformOf(camObj);
         return {
-          view: cameraViewMatrix(camObj),
+          view: cameraViewMatrix(camObj, pose),
           proj: cameraProjMatrix(camObj.camera, aspect),
-          eye: camObj.transform.position,
+          eye: pose.position,
           fovY: cameraFovY(camObj.camera),
         };
       }
@@ -308,13 +309,13 @@ export class Renderer {
     if (this.shadingMode === 'wireframe') {
       this.wirePass.begin(view, proj);
       for (const obj of visible) {
-        this.wirePass.setObject(obj.transform.matrix());
+        this.wirePass.setObject(scene.worldMatrix(obj));
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
     } else if (this.shadingMode === 'studio') {
       this.studioPass.begin(view, proj);
       for (const obj of visible) {
-        this.studioPass.setObject(obj.transform.matrix(), view, obj.color);
+        this.studioPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else if (this.shadingMode === 'rendered') {
@@ -330,14 +331,14 @@ export class Renderer {
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
         const mat = scene.materialOf(obj);
-        this.renderedPass.setObject(obj.transform.matrix(), mat);
+        this.renderedPass.setObject(scene.worldMatrix(obj), mat);
         this.renderedPass.bindTexture(this.materialTexture(mat));
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else {
       this.meshPass.begin(view, proj);
       for (const obj of visible) {
-        this.meshPass.setObject(obj.transform.matrix(), view, obj.color);
+        this.meshPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     }
@@ -352,7 +353,7 @@ export class Renderer {
       const viewProj = proj.mul(view);
       this.cameraFrustumPass.begin();
       for (const obj of frustums) {
-        this.cameraFrustumPass.draw(viewProj, obj, selectionColor(scene, obj));
+        this.cameraFrustumPass.draw(viewProj, obj, selectionColor(scene, obj), scene.worldTransformOf(obj));
       }
     }
 
@@ -362,7 +363,7 @@ export class Renderer {
     if (icons.length > 0) {
       this.iconPass.begin(proj.mul(view), canvas.width, canvas.height);
       for (const obj of icons) {
-        this.iconPass.draw(obj.transform.position, iconShape(obj), selectionColor(scene, obj));
+        this.iconPass.draw(scene.worldTransformOf(obj).position, iconShape(obj), selectionColor(scene, obj));
       }
     }
 
@@ -373,7 +374,7 @@ export class Renderer {
       const viewProj = proj.mul(view);
       this.outlinePass.beginMask();
       for (const obj of selected) {
-        this.outlinePass.maskObject(viewProj.mul(obj.transform.matrix()));
+        this.outlinePass.maskObject(viewProj.mul(scene.worldMatrix(obj)));
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
       this.outlinePass.endMask(canvas.width, canvas.height);
@@ -382,7 +383,7 @@ export class Renderer {
 
     // Edit-mode cage (verts/edges/selected-face fill)
     if (editObj && scene.effectiveVisible(editObj) && scene.editMode) {
-      const mvp = proj.mul(view).mul(editObj.transform.matrix());
+      const mvp = proj.mul(view).mul(scene.worldMatrix(editObj));
       this.editOverlayPass.render(mvp, editObj.mesh, scene.editMode);
       if (this.editPreviewLines) this.editOverlayPass.renderPreview(mvp, this.editPreviewLines);
     }
@@ -402,7 +403,7 @@ export class Renderer {
     if (scene.editMode) return null; // object gizmo has no meaning in edit mode (P2-3 may add an element gizmo)
     const active = scene.activeObject;
     if (!active || !active.visible) return null;
-    const origin = active.transform.position;
+    const origin = scene.worldTransformOf(active).position;
     return { origin, scale: gizmoScreenScale(eye, origin, fovY) };
   }
 
@@ -419,7 +420,7 @@ export class Renderer {
     this.pickingPass.begin();
     for (const obj of scene.objects) {
       if (!scene.effectiveVisible(obj)) continue;
-      this.pickingPass.drawObject(viewProj.mul(obj.transform.matrix()), obj.id + 1);
+      this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
       this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
     }
     const gz = this.gizmoTransform(scene, eye, fovY);
@@ -433,7 +434,7 @@ export class Renderer {
     const iconObjs = scene.objects.filter((o) => scene.effectiveVisible(o) && o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (iconObjs.length > 0) {
       this.iconPass.begin(viewProj, canvas.width, canvas.height);
-      for (const obj of iconObjs) this.iconPass.drawPick(obj.transform.position, obj.id + 1);
+      for (const obj of iconObjs) this.iconPass.drawPick(scene.worldTransformOf(obj).position, obj.id + 1);
     }
     this.pickingPass.end(canvas.width, canvas.height);
 
@@ -464,7 +465,7 @@ export class Renderer {
 
     const view = camera.viewMatrix();
     const proj = camera.projMatrix(canvas.width / canvas.height);
-    const mvp = proj.mul(view).mul(editObj.transform.matrix());
+    const mvp = proj.mul(view).mul(scene.worldMatrix(editObj));
     this.elementPickPass.render(mvp, editObj.mesh, kindOverride ?? sel.elementMode);
 
     // Center a clamped 9×9 window on the cursor (device pixels, GL bottom-up).

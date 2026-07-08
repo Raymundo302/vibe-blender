@@ -31,7 +31,7 @@ export function exportObj(scene: Scene): string {
     if (obj.kind !== 'mesh') continue; // lights/cameras carry no geometry (P8-5)
     lines.push(`o ${obj.name}`);
 
-    const mat = obj.transform.matrix();
+    const mat = scene.worldMatrix(obj);
     const local = new Map<number, number>(); // vertId → 0-based within this object
     let k = 0;
     for (const v of obj.mesh.verts.values()) {

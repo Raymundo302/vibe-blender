@@ -1,10 +1,9 @@
 import type { Operator, OperatorContext, PointerState } from '../core/operator/Operator';
-import type { SceneObject } from '../core/scene/Scene';
-import type { Transform } from '../core/math/transform';
 import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { TransformCommand } from '../core/undo/commands';
 import { NumericInput } from './numericInput';
+import { captureWorldTargets, transformPivot, writeWorldPosRot, type WorldTarget } from './worldTargets';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
 
@@ -18,7 +17,7 @@ type AxisLock = 'x' | 'y' | 'z' | null;
 export class RotateOperator implements Operator {
   readonly name = 'Rotate';
 
-  private targets: { object: SceneObject; before: Transform }[] = [];
+  private targets: WorldTarget[] = [];
   private pivot = Vec3.ZERO;
   private pivotScreen = { x: 0, y: 0 };
   private axis: AxisLock = null;
@@ -32,10 +31,8 @@ export class RotateOperator implements Operator {
     const selected = ctx.scene.selectedObjects;
     if (selected.length === 0) return false;
 
-    this.targets = selected.map((object) => ({ object, before: object.transform }));
-    let sum = Vec3.ZERO;
-    for (const t of this.targets) sum = sum.add(t.object.transform.position);
-    this.pivot = sum.scale(1 / this.targets.length);
+    this.targets = captureWorldTargets(ctx.scene, selected);
+    this.pivot = transformPivot(ctx.scene, this.targets);
 
     this.pivotScreen = this.projectPivot(ctx);
     this.lastRaw = this.rawAngle(pointer);
@@ -90,10 +87,10 @@ export class RotateOperator implements Operator {
     const q = Quat.fromAxisAngle(axisDir, angle);
 
     for (const t of this.targets) {
-      const offset = t.before.position.sub(this.pivot);
+      const offset = t.beforeWorld.position.sub(this.pivot);
       const pos = this.pivot.add(q.rotate(offset));
-      const rot = q.mul(t.before.rotation);
-      t.object.transform = t.before.withPosition(pos).withRotation(rot);
+      const rot = q.mul(t.beforeWorld.rotation);
+      writeWorldPosRot(t, pos, rot);
     }
     this.updateStatus(ctx, angle);
   }

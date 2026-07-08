@@ -63,6 +63,33 @@ export class Quat {
     };
   }
 
+  /**
+   * Rotation from an orthonormal 3x3 matrix given as row-major entries
+   * (Shepperd's method — branches on the largest diagonal term for stability).
+   * Columns must be unit-length and right-handed; Transform.fromMat4 ensures that.
+   */
+  static fromRotationMatrix(
+    r00: number, r01: number, r02: number,
+    r10: number, r11: number, r12: number,
+    r20: number, r21: number, r22: number,
+  ): Quat {
+    const trace = r00 + r11 + r22;
+    if (trace > 0) {
+      const s = Math.sqrt(trace + 1) * 2;
+      return new Quat((r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s, s / 4).normalize();
+    }
+    if (r00 > r11 && r00 > r22) {
+      const s = Math.sqrt(1 + r00 - r11 - r22) * 2;
+      return new Quat(s / 4, (r01 + r10) / s, (r02 + r20) / s, (r21 - r12) / s).normalize();
+    }
+    if (r11 > r22) {
+      const s = Math.sqrt(1 + r11 - r00 - r22) * 2;
+      return new Quat((r01 + r10) / s, s / 4, (r12 + r21) / s, (r02 - r20) / s).normalize();
+    }
+    const s = Math.sqrt(1 + r22 - r00 - r11) * 2;
+    return new Quat((r02 + r20) / s, (r12 + r21) / s, s / 4, (r10 - r01) / s).normalize();
+  }
+
   /** Returns this * other (applies `other`'s rotation first, then this). */
   mul(o: Quat): Quat {
     return new Quat(

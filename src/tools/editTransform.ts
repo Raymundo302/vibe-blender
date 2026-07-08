@@ -139,7 +139,7 @@ export abstract class EditTransformBase implements Operator {
     this.mesh = obj.mesh;
     this.selectedSet = new Set(selectedIds);
     this.proportionalOn = proportional.enabled;
-    const m = obj.transform.matrix();
+    const m = ctx.scene.worldMatrix(obj);
     this.invMatrix = m.invert();
 
     // Pivot = world centroid of the SELECTED verts (unselected verts only ride

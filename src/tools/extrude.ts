@@ -62,7 +62,7 @@ export class ExtrudeOperator implements Operator {
     this.capVerts = [...sel.selectedVertIds(this.mesh)];
     for (const id of this.capVerts) this.capStartCo.set(id, this.mesh.verts.get(id)!.co);
 
-    const matrix = obj.transform.matrix();
+    const matrix = ctx.scene.worldMatrix(obj);
     this.invMatrix = matrix.invert();
 
     // Average of the cap face normals (local), pushed to world for the drag axis.

@@ -1,5 +1,5 @@
 import type { EditModeState } from '../core/scene/EditMode';
-import type { SceneObject } from '../core/scene/Scene';
+import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import { MeshEditCommand } from '../core/undo/meshCommands';
@@ -44,14 +44,14 @@ export function runSmartProject(
 }
 
 export function runProjectFromView(
-  obj: SceneObject, sel: EditModeState, undo: UndoStack,
+  scene: Scene, obj: SceneObject, sel: EditModeState, undo: UndoStack,
   camera: OrbitCamera, viewport: { width: number; height: number },
   setStatus: (t: string) => void,
 ): void {
   const faceIds = faceDomain(obj, sel);
   if (faceIds.length === 0) { setStatus('Project From View: no faces'); return; }
   const aspect = viewport.width / Math.max(1, viewport.height);
-  const mvp = camera.projMatrix(aspect).mul(camera.viewMatrix()).mul(obj.transform.matrix());
+  const mvp = camera.projMatrix(aspect).mul(camera.viewMatrix()).mul(scene.worldMatrix(obj));
   undo.push(MeshEditCommand.capture('Project From View', obj.mesh,
     () => projectFromView(obj.mesh, faceIds, mvp, aspect)));
   sel.touch();
@@ -62,6 +62,7 @@ export interface UvMenuOptions {
   parent: HTMLElement;
   x: number;
   y: number;
+  scene: Scene;
   obj: SceneObject;
   sel: EditModeState;
   undo: UndoStack;
@@ -84,11 +85,11 @@ export class UvMenu {
     heading.textContent = 'UV Mapping';
     this.root.appendChild(heading);
 
-    const { obj, sel, undo, camera, setStatus } = opts;
+    const { scene, obj, sel, undo, camera, setStatus } = opts;
     this.addItem('Unwrap', () => runUnwrap(obj, sel, undo, setStatus));
     this.addItem('Smart UV Project', () => runSmartProject(obj, sel, undo, setStatus));
     this.addItem('Project From View',
-      () => runProjectFromView(obj, sel, undo, camera, opts.viewportSize(), setStatus));
+      () => runProjectFromView(scene, obj, sel, undo, camera, opts.viewportSize(), setStatus));
 
     this.root.style.left = `${opts.x}px`;
     this.root.style.top = `${opts.y}px`;

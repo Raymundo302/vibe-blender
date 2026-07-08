@@ -51,9 +51,9 @@ export class JoinObjectsCommand implements Command {
 
     const meshBefore = active.mesh.clone();
 
-    const activeInv = active.transform.matrix().invert();
+    const activeInv = scene.worldMatrix(active).invert();
     for (const s of sources) {
-      appendBaked(active.mesh, s.object.mesh, activeInv.mul(s.object.transform.matrix()));
+      appendBaked(active.mesh, s.object.mesh, activeInv.mul(scene.worldMatrix(s.object)));
     }
     const meshAfter = active.mesh.clone();
 

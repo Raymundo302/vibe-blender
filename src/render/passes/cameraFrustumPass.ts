@@ -3,6 +3,7 @@ import { VertexArray } from '../gl/VertexArray';
 import { Mat4 } from '../../core/math/mat4';
 import { cameraFovY, type CameraData } from '../../core/scene/objectData';
 import type { SceneObject } from '../../core/scene/Scene';
+import type { Transform } from '../../core/math/transform';
 
 /**
  * Camera-object viewport display (P8-2): the wireframe frustum drawn for every
@@ -15,15 +16,16 @@ import type { SceneObject } from '../../core/scene/Scene';
  * only). So the model matrix is translation × rotation, never × scale.
  */
 
-/** Camera's translation×rotation as a matrix (scale ignored). */
-export function cameraModelMatrix(obj: SceneObject): Mat4 {
-  const t = obj.transform;
-  return Mat4.translation(t.position).mul(Mat4.fromQuat(t.rotation));
+/** Camera's translation×rotation as a matrix (scale ignored). Pass the WORLD
+ *  pose (scene.worldTransformOf) for parented cameras; defaults to the local
+ *  transform, which is identical for roots. */
+export function cameraModelMatrix(obj: SceneObject, pose: Transform = obj.transform): Mat4 {
+  return Mat4.translation(pose.position).mul(Mat4.fromQuat(pose.rotation));
 }
 
 /** World→camera view matrix: inverse of the camera's posed (scale-free) transform. */
-export function cameraViewMatrix(obj: SceneObject): Mat4 {
-  return cameraModelMatrix(obj).invert();
+export function cameraViewMatrix(obj: SceneObject, pose: Transform = obj.transform): Mat4 {
+  return cameraModelMatrix(obj, pose).invert();
 }
 
 /** Projection matrix for a camera's data at a given viewport aspect. */
@@ -86,9 +88,9 @@ export class CameraFrustumPass {
 
   /** Draw one camera's frustum. `viewProj` is the SCENE view/proj; the camera's
    *  own scale-free model matrix places the wireframe. Call begin() first. */
-  draw(viewProj: Mat4, obj: SceneObject, color: readonly [number, number, number]): void {
+  draw(viewProj: Mat4, obj: SceneObject, color: readonly [number, number, number], pose: Transform = obj.transform): void {
     if (!obj.camera) return;
-    const mvp = viewProj.mul(cameraModelMatrix(obj));
+    const mvp = viewProj.mul(cameraModelMatrix(obj, pose));
     this.shader.setMat4('u_mvp', mvp);
     this.shader.setVec4('u_color', color[0], color[1], color[2], 1);
     this.vao(obj.camera.focalLength).draw(this.gl.LINES);

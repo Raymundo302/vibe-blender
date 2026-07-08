@@ -42,7 +42,7 @@ import { CollectionMenu } from '../ui/collectionMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { EdgeMenu } from '../ui/edgeMenu';
 import { UvMenu } from '../ui/uvMenu';
-import { AddObjectsCommand, DeleteObjectsCommand } from '../core/undo/objectCommands';
+import { AddObjectsCommand, DeleteObjectsCommand, SetParentCommand } from '../core/undo/objectCommands';
 import { TransformCommand } from '../core/undo/commands';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
@@ -217,7 +217,7 @@ class SculptStrokeOperator implements Operator {
     if (!sel || !obj || obj.mesh.verts.size === 0) return false;
     this.sel = sel;
     this.mesh = obj.mesh;
-    this.matrix = obj.transform.matrix();
+    this.matrix = ctx.scene.worldMatrix(obj);
     this.invMatrix = this.matrix.invert();
 
     const hit = this.raycast(ctx, pointer);
@@ -494,7 +494,7 @@ export class InputManager {
   private updateBrushCursor(): void {
     const obj = this.ctx.scene.editObject;
     if (!obj || obj.mesh.verts.size === 0) { this.renderer.editPreviewLines = null; return; }
-    const inv = obj.transform.matrix().invert();
+    const inv = this.ctx.scene.worldMatrix(obj).invert();
     const { width, height } = this.ctx.viewportSize();
     const ray = this.ctx.camera.pointerRay(this.pointer.x, this.pointer.y, width, height);
     const oLocal = inv.transformPoint(ray.origin);
@@ -802,6 +802,35 @@ export class InputManager {
       this.ctx.setStatus(`Joined ${count} objects`);
       return;
     }
+    // Ctrl+P: parent every other selected object to the ACTIVE one, keeping
+    // world transforms (Blender's Object > Parent > Keep Transform). Alt+P
+    // clears the parent, also keeping the world transform. Object mode only.
+    if (key === 'p' && e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      const parent = scene.activeObject;
+      const children = scene.selectedObjects.filter((o) => o.id !== parent?.id);
+      if (!parent || children.length === 0) {
+        this.ctx.setStatus('Ctrl+P: select children, then the parent (active) last');
+        return;
+      }
+      const cmd = SetParentCommand.perform('Parent', scene, children, parent);
+      if (!cmd) { this.ctx.setStatus('Parent: would create a cycle'); return; }
+      this.ctx.undo.push(cmd);
+      this.ctx.setStatus(`Parented ${children.length} object(s) to ${parent.name}`);
+      return;
+    }
+    if (key === 'p' && e.altKey && !e.ctrlKey && !e.shiftKey) {
+      e.preventDefault();
+      const scene = this.ctx.scene;
+      const targets = scene.selectedObjects.filter((o) => o.parentId !== null);
+      if (targets.length === 0) { this.ctx.setStatus('Alt+P: no parented objects selected'); return; }
+      const cmd = SetParentCommand.perform('Clear Parent', scene, targets, null);
+      if (!cmd) return;
+      this.ctx.undo.push(cmd);
+      this.ctx.setStatus(`Cleared parent on ${targets.length} object(s)`);
+      return;
+    }
     // M: Move to Collection (object mode). Opens a popup at the pointer listing
     // collections + New Collection + Scene Root; each assigns every selected
     // object's collectionId through the undo stack. (Edit-mode M merges — the
@@ -899,7 +928,7 @@ export class InputManager {
     const f = obj.mesh.faces.get(faceId);
     if (!f) return null;
     const { width, height } = this.ctx.viewportSize();
-    const mvp = this.ctx.camera.projMatrix(width / height).mul(this.ctx.camera.viewMatrix()).mul(obj.transform.matrix());
+    const mvp = this.ctx.camera.projMatrix(width / height).mul(this.ctx.camera.viewMatrix()).mul(this.ctx.scene.worldMatrix(obj));
     let best: string | null = null;
     let bestD = Infinity;
     const vs = f.verts;
@@ -1162,6 +1191,7 @@ export class InputManager {
         parent: this.canvas.parentElement as HTMLElement,
         x: this.pointer.x,
         y: this.pointer.y,
+        scene,
         obj,
         sel: edit,
         undo: this.ctx.undo,

@@ -49,8 +49,9 @@ export function collectLights(scene: Scene): LightSet {
     if (set.count >= MAX_LIGHTS) break;
     const i = set.count++;
     const l = obj.light;
-    const p = obj.transform.position;
-    const d = objectForward(obj.transform);
+    const pose = scene.worldTransformOf(obj);
+    const p = pose.position;
+    const d = objectForward(pose);
     const scale = l.type === 'sun' ? 1 : 1 / (4 * Math.PI);
     set.positions.set([p.x, p.y, p.z], i * 3);
     set.directions.set([d.x, d.y, d.z], i * 3);

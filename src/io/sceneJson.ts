@@ -38,8 +38,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 3;
-const SUPPORTED_VERSIONS = [1, 2, 3];
+const VERSION = 4;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -120,6 +120,14 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
         ? null
         : (() => {
             const i = scene.collections.findIndex((c) => c.id === obj.collectionId);
+            return i < 0 ? null : i;
+          })(),
+    // Parent as an objects INDEX (v4) — same id-free rule as activeCamera.
+    parent:
+      obj.parentId === null
+        ? null
+        : (() => {
+            const i = scene.objects.findIndex((o) => o.id === obj.parentId);
             return i < 0 ? null : i;
           })(),
     transform: {
@@ -206,6 +214,9 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       strength: num(scene.world.strength),
       hdri: scene.world.hdri,
     },
+    // 3D cursor + transform pivot mode (v4/P12).
+    cursor: vec(scene.cursor),
+    pivotMode: scene.pivotMode,
     collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
     materials: scene.materials.map((m) => ({
       id: m.id,
@@ -266,6 +277,8 @@ interface ObjectData {
   kind: ObjectKind;
   /** Index into collections, or null (scene root). */
   collection: number | null;
+  /** Parent as an objects index (v4), or null. */
+  parent: number | null;
   name: string;
   visible: boolean;
   shadeSmooth?: boolean;
@@ -288,6 +301,10 @@ interface SceneData {
   collections: CollectionData[];
   materials: MaterialData[];
   objects: ObjectData[];
+  /** 3D cursor position (absent pre-v4 → origin). */
+  cursor: [number, number, number];
+  /** R/S pivot mode (absent pre-v4 → median). */
+  pivotMode: 'median' | 'cursor';
 }
 
 /** Default viewport color for files saved before per-object color existed. */
@@ -375,7 +392,33 @@ function parseScene(json: string): SceneData {
       fail(`objects[${oi}].collection index ${od.collection} is out of range`);
     }
   }
-  return { camera, activeCamera, world, collections, materials, objects };
+  // Parent indices (v4): in range, not self, and acyclic.
+  for (const [oi, od] of objects.entries()) {
+    if (od.parent === null) continue;
+    if (od.parent < 0 || od.parent >= objects.length) {
+      fail(`objects[${oi}].parent index ${od.parent} is out of range`);
+    }
+    if (od.parent === oi) fail(`objects[${oi}].parent is itself`);
+  }
+  for (const [oi] of objects.entries()) {
+    const seen = new Set<number>([oi]);
+    for (let p = objects[oi].parent; p !== null; p = objects[p].parent) {
+      if (seen.has(p)) fail(`objects[${oi}].parent chain forms a cycle`);
+      seen.add(p);
+    }
+  }
+  // Cursor + pivot mode (absent pre-v4 → defaults).
+  const cursor = (root.cursor === undefined
+    ? [0, 0, 0]
+    : numArray(root.cursor, 3, 'cursor')) as [number, number, number];
+  let pivotMode: 'median' | 'cursor' = 'median';
+  if (root.pivotMode !== undefined) {
+    if (root.pivotMode !== 'median' && root.pivotMode !== 'cursor') {
+      fail('pivotMode must be median or cursor');
+    }
+    pivotMode = root.pivotMode;
+  }
+  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode };
 }
 
 /**
@@ -511,6 +554,15 @@ function parseObject(o: unknown, i: number): ObjectData {
     collection = idx;
   }
 
+  // parent: absent (pre-v4) or null → root; else an objects index
+  // (range/cycle-checked once all objects are parsed).
+  let parent: number | null = null;
+  if (obj.parent !== undefined && obj.parent !== null) {
+    const idx = numField(obj.parent, `objects[${i}].parent`);
+    if (!Number.isInteger(idx)) fail(`objects[${i}].parent must be an integer index`);
+    parent = idx;
+  }
+
   const tf = obj.transform as Record<string, unknown> | undefined;
   if (typeof tf !== 'object' || tf === null) fail(`objects[${i}].transform is missing`);
   const m = obj.mesh as Record<string, unknown> | undefined;
@@ -591,6 +643,7 @@ function parseObject(o: unknown, i: number): ObjectData {
     color: parseColor(obj.color, i), // absent in older files → default grey
     materialId,
     collection,
+    parent,
     position: numArray(tf.position, 3, `objects[${i}].transform.position`) as [number, number, number],
     rotation: numArray(tf.rotation, 4, `objects[${i}].transform.rotation`) as [number, number, number, number],
     scale: numArray(tf.scale, 3, `objects[${i}].transform.scale`) as [number, number, number],
@@ -771,6 +824,15 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   // addCamera auto-activates the first camera; override with the saved choice
   // (an objects index — already validated to point at a camera).
   scene.activeCameraId = data.activeCamera === null ? null : rebuilt[data.activeCamera].id;
+
+  // Parent indices (v4, already validated acyclic) → fresh ids.
+  for (const [i, { od }] of built.entries()) {
+    rebuilt[i].parentId = od.parent === null ? null : rebuilt[od.parent].id;
+  }
+
+  // 3D cursor + pivot mode (P12).
+  scene.cursor = Vec3.fromArray(data.cursor);
+  scene.pivotMode = data.pivotMode;
 
   // 'object'-kind modifier params were saved as objects INDICES — remap them
   // onto the rebuilt objects' fresh ids (-1 stays "none", as does out-of-range).

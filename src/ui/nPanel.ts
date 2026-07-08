@@ -156,7 +156,7 @@ export class NPanel {
       this.editBody.style.display = 'none';
       this.objectBody.style.display = '';
       this.transformFields.update();
-      this.writeVec(this.dimEls, worldDimensions(obj));
+      this.writeVec(this.dimEls, worldDimensions(this.scene, obj));
     }
   }
 
@@ -183,9 +183,9 @@ export class NPanel {
 }
 
 /** World-space bounding-box size of an object's evaluated (modified) mesh. */
-function worldDimensions(obj: SceneObject): Vec3 {
+function worldDimensions(scene: Scene, obj: SceneObject): Vec3 {
   const mesh = obj.evaluatedMesh();
-  const mat = obj.transform.matrix();
+  const mat = scene.worldMatrix(obj);
   let min: Vec3 | null = null;
   let max: Vec3 | null = null;
   for (const vert of mesh.verts.values()) {

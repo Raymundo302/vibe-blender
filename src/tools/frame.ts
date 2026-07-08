@@ -45,7 +45,7 @@ function gatherWorldPoints(scene: OperatorContext['scene']): Vec3[] {
 
   if (scene.editMode && scene.editObject) {
     const obj = scene.editObject;
-    const m = obj.transform.matrix();
+    const m = scene.worldMatrix(obj);
     const sel = scene.editMode.selectedVertIds(obj.mesh);
     const ids = sel.size > 0 ? [...sel] : [...obj.mesh.verts.keys()];
     for (const id of ids) {
@@ -59,7 +59,7 @@ function gatherWorldPoints(scene: OperatorContext['scene']): Vec3[] {
     ? scene.selectedObjects
     : scene.activeObject ? [scene.activeObject] : [];
   for (const obj of objs) {
-    const m = obj.transform.matrix();
+    const m = scene.worldMatrix(obj);
     for (const v of obj.evaluatedMesh().verts.values()) out.push(m.transformPoint(v.co)); // ctx-less: framing tolerates a stale/no-op scatter
   }
   return out;
