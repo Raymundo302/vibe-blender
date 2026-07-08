@@ -19,6 +19,8 @@ import { RenderedPass, WorldBackgroundPass, collectLights } from './passes/rende
 import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
+import { ensureBaked } from '../core/nodes/bake';
+import { nodeImageCache } from '../core/nodes/imageCache';
 import { cameraFovY, type Material } from '../core/scene/objectData';
 import { overlays } from './overlayPrefs';
 import { createMatcapTexture } from './matcap';
@@ -367,13 +369,34 @@ export class Renderer {
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
         const mat = scene.materialOf(obj);
-        this.renderedPass.setObject(scene.worldMatrix(obj), mat);
-        this.renderedPass.bindTexture(this.materialTexture(mat));
+        // P14 shader nodes: bake the graph (idempotent per version) and view
+        // the material THROUGH the bake — texture slots point at the baked
+        // maps, scalars forced to 1 so the map-multiply becomes replacement.
+        let effMat = mat;
+        if (mat.useNodes && mat.nodeGraph) {
+          ensureBaked(mat, nodeImageCache());
+          if (mat.baked) {
+            effMat = {
+              ...mat,
+              baseColor: [1, 1, 1],
+              roughness: 1,
+              metallic: 1,
+              texKind: 'image',
+              texDataUrl: mat.baked.baseUrl,
+              roughDataUrl: mat.baked.roughUrl,
+              metalDataUrl: mat.baked.metalUrl,
+            };
+          }
+        }
+        this.renderedPass.setObject(scene.worldMatrix(obj), effMat);
+        this.renderedPass.bindTexture(
+          effMat === mat ? this.materialTexture(mat) : this.textureFor(effMat.texDataUrl, true),
+        );
         this.renderedPass.bindMaps(
-          mat,
-          this.textureFor(mat.normalDataUrl, false),
-          this.textureFor(mat.roughDataUrl, false),
-          this.textureFor(mat.metalDataUrl, false),
+          effMat,
+          this.textureFor(effMat.normalDataUrl, false),
+          this.textureFor(effMat.roughDataUrl, false),
+          this.textureFor(effMat.metalDataUrl, false),
         );
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }

@@ -1,3 +1,6 @@
+import { getNodeDef } from '../core/nodes/nodeGraph';
+import { nodeImageCache } from '../core/nodes/imageCache';
+import '../core/nodes/builtins';
 import { Vec3 } from '../core/math/vec3';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
@@ -41,6 +44,13 @@ export interface SnapMaterial {
   normalStrength?: number;
   roughImage?: { width: number; height: number; pixels: Float32Array } | null;
   metalImage?: { width: number; height: number; pixels: Float32Array } | null;
+  /** P14 shader nodes: when set (useNodes), the tracer evaluates this graph
+   *  per hit and OVERRIDES baseColor/metallic/roughness/emissive. Plain JSON;
+   *  survives the worker postMessage structured clone. */
+  nodeGraph?: import('../core/nodes/nodeGraph').NodeGraph | null;
+  /** Decoded images for the graph's 'image' params, keyed by data URL
+   *  (Map + Float32Array both structured-clone fine). */
+  nodeImages?: Map<string, { width: number; height: number; pixels: Float32Array }> | null;
 }
 
 /** 0 = point, 1 = sun, 2 = spot (matches renderedPass type codes). */
@@ -149,6 +159,8 @@ function toMat(m: {
   normalStrength?: number;
   roughImage?: { width: number; height: number; pixels: Float32Array };
   metalImage?: { width: number; height: number; pixels: Float32Array };
+  nodeGraph?: import('../core/nodes/nodeGraph').NodeGraph | null;
+  useNodes?: boolean;
 }): SnapMaterial {
   const texKind = m.texKind ?? 'none';
   return {
@@ -168,7 +180,30 @@ function toMat(m: {
     normalStrength: m.normalStrength ?? 1,
     roughImage: m.roughImage ?? null,
     metalImage: m.metalImage ?? null,
+    nodeGraph: m.useNodes && m.nodeGraph ? m.nodeGraph : null,
+    nodeImages: m.useNodes && m.nodeGraph ? collectNodeImages(m.nodeGraph) : null,
   };
+}
+
+/** Decoded images for every 'image' param in the graph, from the UI-filled
+ *  cache (missing decodes just sample as white — same as the map slots). */
+function collectNodeImages(
+  graph: import('../core/nodes/nodeGraph').NodeGraph,
+): Map<string, { width: number; height: number; pixels: Float32Array }> | null {
+  const cache = nodeImageCache();
+  const out = new Map<string, { width: number; height: number; pixels: Float32Array }>();
+  for (const node of graph.nodes) {
+    const def = getNodeDef(node.type);
+    if (!def) continue;
+    for (const pd of def.params) {
+      if (pd.kind !== 'image') continue;
+      const url = node.params[pd.key];
+      if (typeof url !== 'string') continue;
+      const dec = cache.get(url);
+      if (dec) out.set(url, dec);
+    }
+  }
+  return out.size ? out : null;
 }
 
 /**

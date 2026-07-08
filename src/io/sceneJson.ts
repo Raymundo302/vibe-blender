@@ -1,6 +1,7 @@
 import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { Transform } from '../core/math/transform';
+import { sanitizeGraph, type NodeGraph } from '../core/nodes/nodeGraph';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
@@ -38,8 +39,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 5;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5];
+const VERSION = 6;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -235,6 +236,9 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       normalStrength: num(m.normalStrength),
       roughDataUrl: m.roughDataUrl,
       metalDataUrl: m.metalDataUrl,
+      // Shader nodes (v6/P14): the graph is JSON-pure by construction.
+      nodeGraph: m.nodeGraph,
+      useNodes: m.useNodes,
     })),
     objects: scene.objects.map((o) => serializeObject(o, scene)),
   };
@@ -278,6 +282,8 @@ interface MaterialData {
   normalStrength: number;
   roughDataUrl: string | null;
   metalDataUrl: string | null;
+  nodeGraph: NodeGraph | null;
+  useNodes: boolean;
 }
 interface CollectionData {
   name: string;
@@ -499,6 +505,19 @@ function parseMaterials(v: unknown): MaterialData[] {
       normalStrength: mat.normalStrength === undefined ? 1 : numField(mat.normalStrength, `materials[${mi}].normalStrength`),
       roughDataUrl: optionalUrl(mat.roughDataUrl, `materials[${mi}].roughDataUrl`),
       metalDataUrl: optionalUrl(mat.metalDataUrl, `materials[${mi}].metalDataUrl`),
+      // Node graph (v6): sanitizeGraph validates types/links/acyclicity and
+      // throws the standard readable error BEFORE any scene mutation.
+      nodeGraph:
+        mat.nodeGraph === undefined || mat.nodeGraph === null
+          ? null
+          : (() => {
+              try {
+                return sanitizeGraph(mat.nodeGraph as NodeGraph);
+              } catch (e) {
+                return fail(`materials[${mi}].nodeGraph: ${(e as Error).message}`);
+              }
+            })(),
+      useNodes: mat.useNodes === true,
     };
   });
 }
@@ -808,6 +827,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       normalStrength: md.normalStrength,
       roughDataUrl: md.roughDataUrl,
       metalDataUrl: md.metalDataUrl,
+      nodeGraph: md.nodeGraph,
+      useNodes: md.useNodes,
     };
     scene.materials.push(mat);
     if (md.id > maxMaterialId) maxMaterialId = md.id;

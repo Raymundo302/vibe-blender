@@ -110,6 +110,16 @@ export interface Material {
   roughDataUrl: string | null;
   /** Grayscale metallic map — MULTIPLIES `metallic`. null = off. */
   metalDataUrl: string | null;
+  /** Shader node graph (P14, A14). null = no graph created yet. */
+  nodeGraph: import('../nodes/nodeGraph').NodeGraph | null;
+  /** When true (and nodeGraph exists), shading comes from the graph: the
+   *  tracer evaluates it per hit; the Rendered viewport uses baked textures. */
+  useNodes: boolean;
+  /** Runtime node-bake cache (Rendered viewport, NOT serialized): the graph
+   *  baked to textures at `version` (a counter the shader editor bumps). */
+  baked?: { version: number; baseUrl: string; roughUrl: string; metalUrl: string };
+  /** Bumped by the shader editor on ANY graph mutation → re-bake + re-trace. */
+  nodeGraphVersion?: number;
   /** Runtime decoded pixels cache — NOT serialized (rebuilt on load/select). */
   texImage?: { width: number; height: number; pixels: Float32Array };
   /** Runtime decoded map caches (P13) — NOT serialized. Raw 0..1 values (no
@@ -137,6 +147,8 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   normalStrength: 1,
   roughDataUrl: null,
   metalDataUrl: null,
+  nodeGraph: null,
+  useNodes: false,
 });
 
 /** Fresh mutable material with default params (scene assigns the id). */
@@ -158,5 +170,7 @@ export function makeMaterial(id: number, name: string): Material {
     normalStrength: 1,
     roughDataUrl: null,
     metalDataUrl: null,
+    nodeGraph: null,
+    useNodes: false,
   };
 }

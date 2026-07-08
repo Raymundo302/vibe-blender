@@ -126,3 +126,55 @@ describe('evaluator', () => {
     expect(evals).toBe(1);
   });
 });
+
+describe('sceneJson v6 node graphs', () => {
+  it('round-trips a material node graph byte-identically', async () => {
+    const { Scene } = await import('../scene/Scene');
+    const { makeCube } = await import('../mesh/primitives');
+    const { serializeScene, applySceneJson } = await import('../../io/sceneJson');
+    const { OrbitCamera } = await import('../../camera/OrbitCamera');
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Nodey');
+    const g = emptyGraph();
+    const val = addNode(g, 'value', 10, 20);
+    val.params.value = 0.7;
+    addLink(g, val.id, 'value', outputNode(g)!.id, 'roughness');
+    mat.nodeGraph = g;
+    mat.useNodes = true;
+    const cam = new OrbitCamera();
+    const json = serializeScene(scene, cam);
+    const scene2 = new Scene();
+    applySceneJson(json, scene2, new OrbitCamera());
+    const m2 = scene2.materials[0];
+    expect(m2.useNodes).toBe(true);
+    expect(m2.nodeGraph?.nodes.length).toBe(2);
+    const { evaluateGraph: ev } = await import('./evaluate');
+    expect(ev(m2.nodeGraph!, { u: 0, v: 0 })!.roughness).toBeCloseTo(0.7);
+    expect(serializeScene(scene2, cam)).toBe(json);
+  });
+
+  it('rejects a cyclic node graph in a file before mutating the scene', async () => {
+    const { Scene } = await import('../scene/Scene');
+    const { makeCube } = await import('../mesh/primitives');
+    const { serializeScene, applySceneJson } = await import('../../io/sceneJson');
+    const { OrbitCamera } = await import('../../camera/OrbitCamera');
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Bad');
+    mat.nodeGraph = emptyGraph();
+    mat.useNodes = true;
+    const data = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    data.materials[0].nodeGraph.nodes.push(
+      { id: 50, type: 'value', x: 0, y: 0, params: { value: 0.5 } },
+      { id: 51, type: 'value', x: 0, y: 0, params: { value: 0.5 } },
+    );
+    data.materials[0].nodeGraph.links.push(
+      { fromNode: 50, fromSocket: 'value', toNode: 51, toSocket: 'value' },
+    );
+    const target = new Scene();
+    target.add('Keep', makeCube());
+    expect(() => applySceneJson(JSON.stringify(data), target, new OrbitCamera())).toThrow();
+    expect(target.objects.length).toBe(1);
+  });
+});
