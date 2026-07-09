@@ -65,8 +65,12 @@ void main() {
 // output-dithered to hide the 8-bit write on wide soft gradients.
 const GTAO_FRAG = /* glsl */ `#version 300 es
 precision highp float;
-uniform sampler2D u_depth;     // depth prepass (0..1 window depth)
-uniform sampler2D u_normal;    // view-space normals (normal*0.5+0.5)
+// highp samplers are ESSENTIAL: sampler2D defaults to lowp in ES fragment
+// shaders and AMD drivers honor it — depth read through fp16 reconstructs
+// points centimetres off a flat surface (row-banded streaks on real GPUs;
+// SwiftShader samples fp32 regardless, so the e2e rig can't catch it).
+uniform highp sampler2D u_depth;     // depth prepass (0..1 window depth)
+uniform highp sampler2D u_normal;    // view-space normals (normal*0.5+0.5)
 uniform mat4 u_proj;
 uniform mat4 u_invProj;
 uniform vec2 u_texel;          // 1 / canvas size
@@ -236,9 +240,9 @@ void main() {
 // still preserves silhouettes and creases.
 const BLUR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
-uniform sampler2D u_src;
-uniform sampler2D u_depth;
-uniform sampler2D u_normal;
+uniform highp sampler2D u_src;
+uniform highp sampler2D u_depth;   // highp: see GTAO_FRAG — lowp default = fp16 depth on AMD
+uniform highp sampler2D u_normal;
 uniform mat4 u_invProj;
 uniform vec2 u_texel;
 out vec4 outColor;

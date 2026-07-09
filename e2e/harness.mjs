@@ -21,8 +21,14 @@ export function runE2e(testFn, { url = process.argv[2] ?? 'http://localhost:5199
 }
 
 async function main(testFn, url) {
+  // Default: SwiftShader for deterministic pixels. E2E_GPU=1 runs on the real
+  // GPU instead — REQUIRED for driver-sensitive features (the AO lowp-sampler
+  // bug was invisible on SwiftShader; see research/ notes 2026-07-08).
+  const gpuFlags = process.env.E2E_GPU
+    ? ['--headless=new', '--enable-gpu']
+    : ['--headless=new', '--disable-gpu', '--use-angle=swiftshader'];
   const chrome = spawn(process.env.CHROME_BIN ?? 'google-chrome-stable', [
-    '--headless=new', '--disable-gpu', '--use-angle=swiftshader',
+    ...gpuFlags,
     `--remote-debugging-port=${PORT}`, '--window-size=1280,800',
     `--user-data-dir=/tmp/vibe-blender-e2e-profile-${process.pid}`, 'about:blank',
   ], { stdio: 'ignore' });
