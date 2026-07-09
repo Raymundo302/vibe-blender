@@ -543,7 +543,7 @@ runE2e(async (t) => {
   const objOpenOff = sumRGB(await pixelAt(...OBJ_OPEN));
   await t.evaluate(`(() => {
     const p = window.__app.shadePrefs;
-    p.ao = true; p.aoMode = 'object'; p.aoMethod = 2; p.aoRadius = 1.2; p.aoStrength = 0.9;
+    p.ao = true; p.aoMode = 'object'; p.aoMethod = 0; p.aoRadius = 1.2; p.aoStrength = 0.9;
   })()`);
   await t.sleep(60);
   const objCreaseOn = sumRGB(await pixelAt(...OBJ_CREASE));
@@ -569,23 +569,37 @@ runE2e(async (t) => {
   t.check('Object AO crease is stable across yaws (camera-independent)',
     yawSpread < 40, `readings=[${yawReadings.join(',')}] spread=${yawSpread}`);
 
-  // (3) All six estimator methods (0..5) at the fixed framing: no GL error and
-  // each still occludes the crease below the ao-off baseline.
+  // (3) All three estimator methods (0..2 — Baseline/Hemisphere/Exp-weighted;
+  // menu trimmed + gain-calibrated 2026-07-09) at the fixed framing: no GL
+  // error and each still occludes the crease below the ao-off baseline.
   await objFrame(0.785);
   await t.sleep(40);
-  for (let m = 0; m < 6; m++) {
+  const methodCrease = [];
+  for (let m = 0; m < 3; m++) {
     await t.evaluate(`window.__app.shadePrefs.aoMethod = ${m}`);
     await t.sleep(40);
     const v = sumRGB(await pixelAt(...OBJ_CREASE));
+    methodCrease.push(v);
     const err = await t.evaluate(`window.__app.renderer.ctx.gl.getError()`);
     t.check(`Object AO method ${m}: clean render + occludes crease`,
       err === 0 && v < objCreaseOff - 8, `crease=${v} baseline=${objCreaseOff} err=${err}`);
+  }
+  // Gain calibration pin: the three methods AND Screen (GTAO) anchor the
+  // contact crease at the same darkness for identical slider settings.
+  await t.evaluate(`window.__app.shadePrefs.aoMode = 'screen'`);
+  await t.sleep(40);
+  methodCrease.push(sumRGB(await pixelAt(...OBJ_CREASE)));
+  await t.evaluate(`window.__app.shadePrefs.aoMode = 'object'`);
+  {
+    const spread = Math.max(...methodCrease) - Math.min(...methodCrease);
+    t.check('Object AO methods + GTAO agree at the crease (calibrated gains)',
+      spread < 30, `crease=[${methodCrease.join(',')}] spread=${spread}`);
   }
 
   // (4) UI — parallel worker's contract: Mode + Method selects in the shading
   // menu; the Method row hides for 'screen' and shows for 'object'. Reset aoMode
   // to 'screen' first so the menu opens with the Method row hidden.
-  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.aoMode = 'screen'; p.aoMethod = 2; })()`);
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.aoMode = 'screen'; p.aoMethod = 0; })()`);
   await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
   await t.sleep(80);
   const ui = await t.evaluate(`(() => {
@@ -611,7 +625,7 @@ runE2e(async (t) => {
     ui.present, `hasMode=${ui.hasMode} hasMethod=${ui.hasMethod}`);
   if (ui.present) {
     t.check('UI: Mode select offers screen + object', ui.modeOptions === 'screen,object', `got ${ui.modeOptions}`);
-    t.check('UI: Method select has 6 options', ui.methodCount === 6, `got ${ui.methodCount}`);
+    t.check('UI: Method select has 3 options', ui.methodCount === 3, `got ${ui.methodCount}`);
     t.check('UI: Method row hidden when aoMode = screen', ui.hiddenWhenScreen);
     t.check('UI: Method row visible after switching Mode to object', ui.visibleWhenObject);
     t.check('UI: shadePrefs.aoMode tracks the Mode select',
@@ -626,7 +640,7 @@ runE2e(async (t) => {
     const methodSel = document.querySelector('select[data-shade-method]');
     if (modeSel && methodSel) {
       modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
-      methodSel.value = '4'; methodSel.dispatchEvent(new Event('change'));
+      methodSel.value = '2'; methodSel.dispatchEvent(new Event('change'));
     }
     return localStorage.getItem('vibe-shading-v2') || '';
   })()`);
@@ -642,7 +656,7 @@ runE2e(async (t) => {
   await t.key('Escape', 'Escape', 0);
   await t.evaluate(`(() => {
     const p = window.__app.shadePrefs;
-    p.ao = false; p.aoMode = 'screen'; p.aoMethod = 2; p.aoRadius = 0.55; p.aoStrength = 1;
+    p.ao = false; p.aoMode = 'screen'; p.aoMethod = 0; p.aoRadius = 0.55; p.aoStrength = 1;
     window.__app.renderer.shadingMode = 'matcap';
   })()`);
 });

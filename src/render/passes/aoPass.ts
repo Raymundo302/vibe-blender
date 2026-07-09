@@ -423,6 +423,13 @@ export function objectAoTaps(samples: number): number {
   return Math.max(3, Math.min(16, Math.round(samples / 6)));
 }
 
+// Per-method calibration gains: raw estimator occlusion × gain, tuned on the
+// cube-on-floor reference so the three methods and GTAO agree at the default
+// sliders (see the Object AO entry in CLAUDE.md for the probe numbers).
+const GAIN_BASE = 1.0;
+const GAIN_HEMI = 0.57;
+const GAIN_EXP = 1.44;
+
 // Object AO (Ray's AO-Prototype technique, ported from ao-hybrid.html): instead
 // of hunting occluders in the depth buffer, march a WORLD-SPACE distance field
 // of the scene — per-object voxel SDFs in a 3D atlas (sdfAtlas.ts). The field
@@ -452,6 +459,9 @@ out vec4 outColor;
 
 const vec3 ATLAS = vec3(${SDF_ATLAS_W}.0, ${SDF_ATLAS_H}.0, ${SDF_ATLAS_D}.0);
 #define MAX_TAPS 16
+#define GAIN_BASE ${GAIN_BASE.toFixed(3)}
+#define GAIN_HEMI ${GAIN_HEMI.toFixed(3)}
+#define GAIN_EXP ${GAIN_EXP.toFixed(3)}
 
 vec3 viewPos(vec2 uv, float d) {
   vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -496,35 +506,20 @@ void basis(vec3 n, out vec3 t, out vec3 b) {
   b = cross(n, t);
 }
 
-// ---- the prototype's six estimators (aoLive), verbatim math ----
-float aoBase(vec3 p, vec3 n) {                 // 0 — linear march (bands; kept as reference)
+// ---- the prototype's estimators (aoLive), trimmed to the keepers ----
+// (Dithered / Cone cut on looks, Supersample x4 on perf, 2026-07-09.)
+// Each method's raw occlusion is scaled by a calibration GAIN so that at the
+// same Radius/Strength sliders all three read the same as each other AND as
+// the Screen (GTAO) mode on the reference cube-on-floor scene.
+float aoBase(vec3 p, vec3 n) {                 // 0 — linear march along the normal
   float occ = 0.0, sca = 1.0;
   for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
     float h = u_bias + u_radius * float(i) / float(u_taps - 1);
     occ += (h - map(p + n * h)) * sca; sca *= 0.6;
   }
-  return clamp(1.0 - u_strength * occ, 0.0, 1.0);
+  return clamp(1.0 - u_strength * GAIN_BASE * occ, 0.0, 1.0);
 }
-float aoDither(vec3 p, vec3 n) {               // 1 — IGN offset: bands → fine grain
-  float r = ign(gl_FragCoord.xy), occ = 0.0, sca = 1.0;
-  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
-    float h = u_bias + u_radius * (float(i) + r) / float(u_taps);
-    occ += (h - map(p + n * h)) * sca; sca *= 0.82;
-  }
-  return clamp(1.0 - u_strength * occ, 0.0, 1.0);
-}
-float aoCone(vec3 p, vec3 n) {                 // 2 — continuous openness ratio, no taps
-  float res = 1.0, t = u_bias;
-  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
-    float d = map(p + n * t);
-    res = min(res, 6.0 * d / t);
-    t += clamp(d, 0.01, 0.10);
-    if (t > u_radius) break;
-  }
-  res = clamp(res, 0.0, 1.0);
-  return clamp(1.0 - u_strength * (1.0 - res), 0.0, 1.0);
-}
-float aoHemi(vec3 p, vec3 n) {                 // 3 — golden-angle hemisphere spread
+float aoHemi(vec3 p, vec3 n) {                 // 1 — golden-angle hemisphere spread
   vec3 t, b; basis(n, t, b);
   float a0 = ign(gl_FragCoord.xy) * 6.2831853, occ = 0.0, N = float(u_taps);
   for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
@@ -533,9 +528,9 @@ float aoHemi(vec3 p, vec3 n) {                 // 3 — golden-angle hemisphere 
     float h = u_radius;
     occ += clamp((h - map(p + dir * h)) / h, 0.0, 1.0);
   }
-  return clamp(1.0 - u_strength * occ / N, 0.0, 1.0);
+  return clamp(1.0 - u_strength * GAIN_HEMI * occ / N, 0.0, 1.0);
 }
-float aoExp(vec3 p, vec3 n) {                  // 4 — taps dense near surface, smooth weights
+float aoExp(vec3 p, vec3 n) {                  // 2 — taps dense near surface, smooth weights
   float occ = 0.0, w = 0.0;
   for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
     float fi = float(i) / float(u_taps - 1);
@@ -543,28 +538,13 @@ float aoExp(vec3 p, vec3 n) {                  // 4 — taps dense near surface,
     float wi = exp(-2.5 * fi);
     occ += clamp((h - map(p + n * h)) / max(h, 1e-3), 0.0, 1.0) * wi; w += wi;
   }
-  return clamp(1.0 - u_strength * occ / max(w, 1e-3), 0.0, 1.0);
-}
-float aoSuper(vec3 p, vec3 n) {                // 5 — 4 noisy estimates averaged
-  float sum = 0.0;
-  for (int s = 0; s < 4; s++) {
-    float r = ign(gl_FragCoord.xy + vec2(float(s) * 23.0, float(s) * 41.0)), occ = 0.0, sca = 1.0;
-    for (int i = 0; i < 4; i++) {
-      float h = u_bias + u_radius * (float(i) + r) / 4.0;
-      occ += (h - map(p + n * h)) * sca; sca *= 0.7;
-    }
-    sum += clamp(1.0 - u_strength * occ, 0.0, 1.0);
-  }
-  return sum * 0.25;
+  return clamp(1.0 - u_strength * GAIN_EXP * occ / max(w, 1e-3), 0.0, 1.0);
 }
 
 float aoLive(vec3 p, vec3 n) {
   if (u_method == 0)      return aoBase(p, n);
-  else if (u_method == 1) return aoDither(p, n);
-  else if (u_method == 2) return aoCone(p, n);
-  else if (u_method == 3) return aoHemi(p, n);
-  else if (u_method == 4) return aoExp(p, n);
-  return aoSuper(p, n);
+  else if (u_method == 1) return aoHemi(p, n);
+  return aoExp(p, n);
 }
 
 void main() {

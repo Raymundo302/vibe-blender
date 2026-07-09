@@ -9,14 +9,14 @@
  *  world space, camera-independent by construction. */
 export type AoMode = 'screen' | 'object';
 
-/** The Object-AO estimator menu, ported 1:1 from AO-Prototype/ao-hybrid.html. */
+/** The Object-AO estimator menu (from AO-Prototype/ao-hybrid.html; trimmed
+ *  2026-07-09 — Dithered/Cone cut on looks, Supersample ×4 on perf; the
+ *  keepers are gain-calibrated to match each other and the GTAO look at the
+ *  same slider settings). */
 export const AO_METHODS: { label: string; desc: string }[] = [
-  { label: 'Baseline', desc: '5-tap linear march along the normal — the reference (this is what bands)' },
-  { label: 'Dithered', desc: 'Same march, IGN-jittered per pixel — trades bands for fine grain' },
-  { label: 'Cone', desc: 'Sphere-traces a cone, takes the min openness ratio — continuous, cheap, smooth' },
+  { label: 'Baseline', desc: 'Linear march along the normal — simple and even' },
   { label: 'Hemisphere', desc: 'Golden-angle directions across the hemisphere — smoother and directional' },
   { label: 'Exp-weighted', desc: 'Taps packed near the surface with exponential weights — soft contact falloff' },
-  { label: 'Supersample ×4', desc: '4 noisy marches averaged — brute force, smoothest' },
 ];
 
 export interface ShadePrefs {
@@ -52,7 +52,7 @@ export function defaultShadePrefs(): ShadePrefs {
   return {
     ao: false,
     aoMode: 'screen',
-    aoMethod: 2,   // Cone — the prototype's cheap + smooth default
+    aoMethod: 0,   // Baseline — Ray's preferred estimator from the prototype
     aoRadius: AO_RADIUS_RANGE.default,
     aoStrength: AO_STRENGTH_RANGE.default,
     aoSamples: AO_SAMPLES_RANGE.default,
