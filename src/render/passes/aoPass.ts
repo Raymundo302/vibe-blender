@@ -122,7 +122,13 @@ const float AO_BIAS = 0.02;
 // heavy occlusion stripes at grazing angles, whereas the ray-relative ratio k
 // stays ~1 for a coplanar tap at ANY view angle. Real occluders (a cube wall, a
 // torus rim) sit well off the plane (k far from 1) and still register.
-const float AO_COPLANAR = 0.04;
+// Band width note: 0.04 was tuned when the depth prepass was read through a
+// driver fp16 path (pre-highp fix) and needed to swallow centimetre-scale
+// reconstruction noise. With true fp32 depth the noise is tiny, and a wide
+// band eats REAL mutual occlusion near creases — the floor strip closest to a
+// wall is what shades the wall's base; rejecting it left walls bright to the
+// contact line ("the cube glows underneath").
+const float AO_COPLANAR = 0.015;
 
 // Gate + score one candidate occluder position (already reconstructed).
 // Returns its horizon cosine, or -1.0 if it is self, coplanar with the center
@@ -150,8 +156,16 @@ float scoreTap(vec3 sP, vec3 P, vec3 N, vec3 V, float invRadius) {
   if (above <= AO_BIAS) return -1.0;          // below / level with the plane
   float r = sqrt(d2) * invRadius;
   if (r >= 1.0) return -1.0;                  // beyond the AO radius
-  float falloff = 1.0 - smoothstep(0.5, 1.0, r);
-  return mix(-1.0, dot(dv, V) * invd, falloff);
+  // Radius-edge softening must NOT touch the cosine domain: the old
+  // mix(-1, cos, falloff) pushed near-perpendicular horizons (cos ~ 0 — a
+  // wall towering over a pixel AT the contact crease) toward -1, deleting
+  // exactly the strongest occlusion. The crease rendered BRIGHTER than the
+  // floor half a radius out: a detached shadow with a glow line under every
+  // object. Soften in ANGLE space instead: pull the horizon angle toward
+  // open (PI) by the falloff amount.
+  float t = acos(clamp(dot(dv, V) * invd, -1.0, 1.0));
+  float soft = smoothstep(0.5, 1.0, r);
+  return cos(mix(t, PI, soft));
 }
 
 // One marched tap: score the visible surface at the tap pixel. Deliberately
@@ -164,6 +178,10 @@ float scoreTap(vec3 sP, vec3 P, vec3 N, vec3 V, float invRadius) {
 // (a cube's far wall at extreme grazing) fade — the classic screen-space AO
 // information limit, shared by EEVEE-class viewports.
 float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
+  // Off-screen: unknown, NOT occluding. Sampling the edge-clamped depth there
+  // conjured occlusion that swam as geometry crossed the frame edge — one of
+  // the "shadow changes when I orbit" sources.
+  if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) return -1.0;
   float sd = texture(u_depth, suv).r;
   if (sd >= 1.0) return -1.0;                 // background
   return scoreTap(viewPos(suv, sd), P, N, V, invRadius);
@@ -310,11 +328,19 @@ void main() {
     float g = exp(-float(i * i) * 0.08);       // gaussian falloff, sigma ~2.5
     for (float side = -1.0; side <= 1.0; side += 2.0) {
       vec2 o = u_dir * (float(i) * side);
-      float sd = texture(u_depth, uv + o).r;
+      vec2 tuv = uv + o;
+      if (tuv.x < 0.0 || tuv.x > 1.0 || tuv.y < 0.0 || tuv.y > 1.0) continue;
+      float sd = texture(u_depth, tuv).r;
       if (sd >= 1.0) continue;
       vec3 sP = viewPos(uv + o, sd);
       float planeDist = abs(dot(sP - cP, cN));
-      float w = g * exp(-planeDist / tol);
+      // Normal agreement: at a 90-degree crease the OTHER surface's points sit
+      // arbitrarily close to this plane (the planes MEET there) — the plane
+      // test alone lets the wall's bright AO bleed over the floor's contact
+      // shadow, erasing it for a full blur radius past the crease line.
+      vec3 sN = normalize(texture(u_normal, tuv).xyz * 2.0 - 1.0);
+      float nw = abs(dot(cN, sN));
+      float w = g * exp(-planeDist / tol) * nw * nw;
       sum += texture(u_src, uv + o).r * w;
       wsum += w;
     }
@@ -359,26 +385,35 @@ void main() {
   vec2 f = st - base;
   float sum = 0.0;
   float wsum = 0.0;
+  float bestW = -1.0;
+  float bestV = 1.0;
   for (int j = 0; j <= 1; j++) {
     for (int i = 0; i <= 1; i++) {
       vec2 suv = (base + vec2(float(i), float(j)) + 0.5) / u_srcSize;
       float bilin = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
       // Consistency: compare against the FULL-res surface under that texel.
       float sd = texture(u_depth, suv).r;
-      float w;
-      if (sd >= 1.0) {
-        w = 0.0;
-      } else {
+      float planeW = 0.0;
+      if (sd < 1.0) {
         vec3 sP = viewPos(suv, sd);
         float planeDist = abs(dot(sP - cP, cN));
-        w = bilin * exp(-planeDist / tol);
+        // Same normal-agreement term as the denoise: the plane test cannot
+        // separate the two surfaces of a crease near their meeting line.
+        vec3 sN = normalize(texture(u_normal, suv).xyz * 2.0 - 1.0);
+        float nw = abs(dot(cN, sN));
+        planeW = exp(-planeDist / tol) * nw * nw;
       }
-      sum += texture(u_src, suv).r * w;
+      float v = texture(u_src, suv).r;
+      float w = bilin * planeW;
+      sum += v * w;
       wsum += w;
+      if (planeW > bestW) { bestW = planeW; bestV = v; }
     }
   }
-  // No consistent neighbour → plain bilinear beats black halos.
-  outColor = vec4(vec3(wsum > 1e-4 ? sum / wsum : texture(u_src, uv).r), 1.0);
+  // Weak everywhere (3-plane corners, deep creases): take the SINGLE most
+  // plane-consistent texel. A plain-bilinear fallback smeared the dark corner
+  // value outward into a blob and left a bright "glow" line at contact creases.
+  outColor = vec4(vec3(wsum > 1e-3 ? sum / wsum : bestV), 1.0);
 }`;
 
 export class AoPass {
