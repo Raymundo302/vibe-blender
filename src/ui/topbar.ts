@@ -1,5 +1,4 @@
 import type { Scene } from '../core/scene/Scene';
-import type { Renderer } from '../render/Renderer';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
 import { sculptState } from '../tools/sculptBrushes';
@@ -38,7 +37,6 @@ export interface TopbarActions {
 export class Topbar {
   private readonly statusEl: HTMLSpanElement;
   private readonly chipEl: HTMLSpanElement;
-  private readonly shadingEl: HTMLButtonElement;
   private readonly snapEl: HTMLButtonElement;
   private readonly xrayEl: HTMLButtonElement;
   private readonly pivotEl: HTMLButtonElement;
@@ -48,7 +46,6 @@ export class Topbar {
 
   constructor(
     private readonly scene: Scene,
-    private readonly renderer: Renderer,
     actions: TopbarActions,
     private readonly cursorOverlay: CursorOverlay,
   ) {
@@ -62,13 +59,6 @@ export class Topbar {
     const chip = document.createElement('span');
     chip.className = 'topbar-chip';
     this.chipEl = chip;
-
-    // Shading-mode chip: clickable, cycles matcap → wireframe → studio like Z.
-    const shading = Topbar.makeButton('Matcap', 'shading-mode', () => {
-      this.renderer.cycleShadingMode();
-      this.update();
-    });
-    this.shadingEl = shading;
 
     // Snap chip: 🧲 magnet toggling grid snapping (also Shift+Tab). Clickable;
     // its highlighted state mirrors snapState.enabled (updated every frame).
@@ -149,8 +139,7 @@ export class Topbar {
     this.statusEl.className = 'topbar-status';
 
     // Action chips sit on the RIGHT, before the status span (P3 conventions).
-    // The shading chip sits next to the mode chip on the left.
-    root.append(title, chip, shading, snap, xray, overlaysBtn, pivot, lights, autoKey, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, renderAnimBtn, themeBtn, helpBtn, this.statusEl);
+    root.append(title, chip, snap, xray, overlaysBtn, pivot, lights, autoKey, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, renderAnimBtn, themeBtn, helpBtn, this.statusEl);
     this.update();
   }
 
@@ -290,11 +279,10 @@ export class Topbar {
     const mode = edit
       ? sculpt ? `Sculpt · ${sculpt}` : `Edit Mode · ${edit.elementMode}`
       : 'Object Mode';
-    const shading = this.renderer.shadingMode;
     const pivot = this.scene.pivotMode;
     const lights = this.scene.objects.filter((o) => o.kind === 'light');
     const lightsOn = lights.some((l) => l.visible);
-    const sig = `${active ? active.name : ''}#${count}#${mode}#${shading}#${snapState.enabled}#${xrayState.enabled}#${pivot}#${lightsOn}#${autoKeyState.enabled}`;
+    const sig = `${active ? active.name : ''}#${count}#${mode}#${snapState.enabled}#${xrayState.enabled}#${pivot}#${lightsOn}#${autoKeyState.enabled}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
@@ -313,8 +301,6 @@ export class Topbar {
     this.snapEl.setAttribute('aria-pressed', String(snapState.enabled));
     this.xrayEl.classList.toggle('topbar-btn-on', xrayState.enabled);
     this.xrayEl.setAttribute('aria-pressed', String(xrayState.enabled));
-    // Capitalize the shading label for display (matcap → Matcap).
-    this.shadingEl.textContent = shading.charAt(0).toUpperCase() + shading.slice(1);
     const noun = count === 1 ? 'object' : 'objects';
     this.statusEl.textContent = active
       ? `${active.name} — ${count} ${noun}`

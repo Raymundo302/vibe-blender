@@ -15,6 +15,9 @@
 export interface EditorInstance {
   element: HTMLElement;
   update(): void;
+  /** Optional right-aligned control cluster for the area header (e.g. the 3D
+   *  viewport's shading dropdown). Re-parented with the editor. */
+  headerExtra?: HTMLElement;
   /** Non-singleton editors are destroyed when switched away from. */
   destroy?(): void;
 }
@@ -37,6 +40,12 @@ class Area {
   readonly root = document.createElement('section');
   private readonly body = document.createElement('div');
   private readonly select = document.createElement('select');
+  /** Right-aligned host for the editor's headerExtra controls. */
+  private readonly headerSlot = (() => {
+    const d = document.createElement('div');
+    d.className = 'wsp-area-header-extra';
+    return d;
+  })();
   private instance: EditorInstance | null = null;
   editorType = '';
 
@@ -62,7 +71,7 @@ class Area {
     fullBtn.title = 'Toggle fullscreen (Ctrl+Space over the area)';
     fullBtn.addEventListener('click', () => manager.toggleFullscreen(this));
 
-    header.append(this.select, fullBtn);
+    header.append(this.select, this.headerSlot, fullBtn);
     this.body.className = 'wsp-area-body';
     this.root.append(header, this.body);
     this.setEditor(editor);
@@ -75,6 +84,7 @@ class Area {
     if (oldFactory?.singleton) this.manager.parkSingleton(this.editorType, this.instance);
     else this.instance.destroy?.();
     this.instance.element.remove();
+    this.instance.headerExtra?.remove();
     this.instance = null;
     this.editorType = '';
   }
@@ -86,6 +96,7 @@ class Area {
     this.select.value = type;
     this.instance = this.manager.instanceFor(type);
     this.body.append(this.instance.element);
+    if (this.instance.headerExtra) this.headerSlot.append(this.instance.headerExtra);
   }
 
   update(): void {

@@ -30,6 +30,14 @@ export class VertexArray {
     gl.bindVertexArray(null);
   }
 
+  /** Re-upload one attribute's buffer (same layout). For tiny dynamic
+   *  geometry like the axis-guide line — not for mesh-sized data. */
+  update(attrIndex: number, data: Float32Array): void {
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers[attrIndex]);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  }
+
   draw(mode: number, count = this.vertexCount): void {
     this.gl.bindVertexArray(this.vao);
     this.gl.drawArrays(mode, 0, count);

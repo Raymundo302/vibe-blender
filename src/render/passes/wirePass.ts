@@ -6,8 +6,12 @@ layout(location = 0) in vec3 a_position;
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
+uniform float u_zBias; // NDC pull toward the camera, so wires win the depth
+                       // fight against the faces they sit on (overlay /
+                       // hidden-line modes); 0 for the classic wireframe.
 void main() {
   gl_Position = u_proj * u_view * u_model * vec4(a_position, 1.0);
+  gl_Position.z -= u_zBias * gl_Position.w;
 }`;
 
 // Solid dark lines, no fill. Depth test is on so nearer wires occlude the grid,
@@ -32,11 +36,13 @@ export class WirePass {
     this.shader = new Shader(gl, VERT, FRAG, 'mesh-wire');
   }
 
-  /** Bind per-frame state; per-object uniforms are set by the caller. */
-  begin(view: Mat4, proj: Mat4): void {
+  /** Bind per-frame state; per-object uniforms are set by the caller.
+   *  `zBias` > 0 pulls lines toward the camera (see u_zBias). */
+  begin(view: Mat4, proj: Mat4, zBias = 0): void {
     this.shader.use();
     this.shader.setMat4('u_view', view);
     this.shader.setMat4('u_proj', proj);
+    this.shader.setFloat('u_zBias', zBias);
   }
 
   setObject(model: Mat4): void {

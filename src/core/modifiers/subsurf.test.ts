@@ -109,12 +109,12 @@ describe('Subdivision Surface modifier — boundary (plane)', () => {
 
   it('edge-point verts sit at the boundary edge midpoints', () => {
     // Edge points are ids 4..7 (added after the 4 vert points). Each boundary
-    // edge point equals its endpoint midpoint — check the (-1,0,-1)-(1,0,-1)
-    // edge midpoint (0,0,-1) is present among the edge points.
+    // edge point equals its endpoint midpoint — check the (-1,1,0)-(1,1,0)
+    // edge midpoint (0,1,0) is present among the edge points.
     const out = createModifier('subsurf', { levels: 1 }).apply(makePlane(2));
     const edgePts: Vec3[] = [];
     for (let id = 4; id < 8; id++) edgePts.push(out.verts.get(id)!.co);
-    const hasMidpoint = edgePts.some((p) => p.equalsApprox(new Vec3(0, 0, -1)));
+    const hasMidpoint = edgePts.some((p) => p.equalsApprox(new Vec3(0, 1, 0)));
     expect(hasMidpoint).toBe(true);
   });
 

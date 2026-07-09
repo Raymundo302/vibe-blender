@@ -15,20 +15,24 @@ import {
   type ElementPickResult,
 } from './passes/elementPickPass';
 import { elementIndexMaps } from '../core/mesh/editOverlayData';
-import { RenderedPass, WorldBackgroundPass, collectLights } from './passes/renderedPass';
+import { RenderedPass, WorldBackgroundPass, collectLights, shadowCasterIndices, cubeCasterIndices, type LightSet } from './passes/renderedPass';
+import { ShadowPass, sunShadowMatrix, spotShadowMatrix, cubeFaceView, SHADOW_SLOTS, CUBE_SHADOW_SLOTS } from './passes/shadowPass';
 import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
+import { LightDirPass, hasAimArrow } from './passes/lightDirPass';
 import { ensureBaked } from '../core/nodes/bake';
 import { nodeImageCache } from '../core/nodes/imageCache';
 import { cameraFovY, type Material } from '../core/scene/objectData';
 import { overlays } from './overlayPrefs';
+import { shadePrefs } from './shadePrefs';
+import { AoPass } from './passes/aoPass';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
-import type { Mat4 } from '../core/math/mat4';
+import { Mat4 } from '../core/math/mat4';
 import { Vec3 } from '../core/math/vec3';
 
 interface GpuMesh {
@@ -37,6 +41,9 @@ interface GpuMesh {
   edges: VertexArray;
   /** Composite cache key: which mesh (base vs evaluated) + its versions. */
   version: string;
+  /** Local-space AABB of the triangles (null for empty meshes) — frames the
+   *  sun shadow map's ortho box without re-touching vertex data per frame. */
+  bounds: { min: Vec3; max: Vec3 } | null;
 }
 
 /** Viewport solid-shading mode; Z cycles matcap → wireframe → studio → rendered. */
@@ -86,9 +93,12 @@ export class Renderer {
   private readonly editOverlayPass: EditOverlayPass;
   private readonly elementPickPass: ElementPickPass;
   private readonly renderedPass: RenderedPass;
+  private readonly shadowPass: ShadowPass;
+  private readonly aoPass: AoPass;
   private readonly worldBgPass: WorldBackgroundPass;
   private readonly iconPass: IconPass;
   private readonly cameraFrustumPass: CameraFrustumPass;
+  private readonly lightDirPass: LightDirPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
   /** Equirect HDRI texture for the Rendered-mode background, or null. */
@@ -112,6 +122,14 @@ export class Renderer {
    * active object, so nothing is drawn on an empty selection either.
    */
   gizmoVisible = true;
+
+  /**
+   * Modal axis-lock indicator: while a G/R/S runs with an X/Y/Z constraint,
+   * InputManager mirrors the operator's lock here and render() draws just that
+   * axis's arrow + guide line at the operator's pivot (the full gizmo stays
+   * hidden). Null when no modal or no lock.
+   */
+  axisIndicator: { axis: GizmoAxis; pivot: Vec3 } | null = null;
 
   /**
    * Current viewport solid-shading mode. Z (or the topbar chip) cycles it via
@@ -147,9 +165,12 @@ export class Renderer {
     this.editOverlayPass = new EditOverlayPass(gl);
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     this.renderedPass = new RenderedPass(gl);
+    this.shadowPass = new ShadowPass(gl);
+    this.aoPass = new AoPass(gl, canvas.width, canvas.height);
     this.worldBgPass = new WorldBackgroundPass(gl);
     this.iconPass = new IconPass(gl);
     this.cameraFrustumPass = new CameraFrustumPass(gl);
+    this.lightDirPass = new LightDirPass(gl);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -170,6 +191,19 @@ export class Renderer {
     cached?.edges.dispose();
 
     const data = meshToRenderData(mesh, obj.shadeSmooth);
+    let bounds: GpuMesh['bounds'] = null;
+    const pos = data.trianglePositions;
+    if (pos.length >= 3) {
+      const min = [pos[0], pos[1], pos[2]];
+      const max = [pos[0], pos[1], pos[2]];
+      for (let i = 3; i < pos.length; i += 3) {
+        for (let a = 0; a < 3; a++) {
+          if (pos[i + a] < min[a]) min[a] = pos[i + a];
+          if (pos[i + a] > max[a]) max[a] = pos[i + a];
+        }
+      }
+      bounds = { min: new Vec3(min[0], min[1], min[2]), max: new Vec3(max[0], max[1], max[2]) };
+    }
     const entry: GpuMesh = {
       triangles: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.trianglePositions },
@@ -181,6 +215,7 @@ export class Renderer {
         { location: 0, size: 3, data: data.edgePositions },
       ]),
       version,
+      bounds,
     };
     this.gpuMeshes.set(obj.id, entry);
     return entry;
@@ -283,6 +318,105 @@ export class Renderer {
   }
 
   /**
+   * Render this frame's shadow maps (Rendered mode only): every sun and spot
+   * (up to SHADOW_SLOTS, scene order) gets one depth-only render of the
+   * visible meshes — suns through an ortho box fitted around the world-space
+   * bounds, spots through a perspective frustum matching their cone. Returns
+   * casters[slot] = { light-space matrix, light index } for the RenderedPass;
+   * empty when there is nothing to cast or no shadowing light. Fixed 1024²
+   * maps, redrawn per frame — cheap depth-only rasterization.
+   */
+  private renderShadows(
+    scene: Scene,
+    meshes: SceneObject[],
+    lights: LightSet,
+  ): {
+    casters: { viewProj: Mat4; lightIndex: number }[];
+    cubeCasters: { lightIndex: number; near: number; far: number }[];
+  } {
+    const casterIdx = shadowCasterIndices(lights, SHADOW_SLOTS);
+    const cubeIdx = cubeCasterIndices(lights, CUBE_SHADOW_SLOTS);
+    if ((casterIdx.length === 0 && cubeIdx.length === 0) || meshes.length === 0) {
+      return { casters: [], cubeCasters: [] };
+    }
+
+    // World-space AABB of everything that will cast/receive: transform each
+    // mesh's cached local AABB corners by its world matrix.
+    let min: Vec3 | null = null;
+    let max: Vec3 | null = null;
+    for (const obj of meshes) {
+      const b = this.gpuMesh(obj, scene).bounds;
+      if (!b) continue;
+      const world = scene.worldMatrix(obj);
+      for (let c = 0; c < 8; c++) {
+        const p = world.transformPoint(new Vec3(
+          c & 1 ? b.max.x : b.min.x,
+          c & 2 ? b.max.y : b.min.y,
+          c & 4 ? b.max.z : b.min.z,
+        ));
+        min = min ? new Vec3(Math.min(min.x, p.x), Math.min(min.y, p.y), Math.min(min.z, p.z)) : p;
+        max = max ? new Vec3(Math.max(max.x, p.x), Math.max(max.y, p.y), Math.max(max.z, p.z)) : p;
+      }
+    }
+    if (!min || !max) return { casters: [], cubeCasters: [] };
+    const center = min.add(max).scale(0.5);
+    const radius = max.sub(min).length() * 0.5;
+
+    const { gl, canvas } = this.ctx;
+    const casters: { viewProj: Mat4; lightIndex: number }[] = [];
+    for (const lightIndex of casterIdx) {
+      const dir = new Vec3(
+        lights.directions[lightIndex * 3],
+        lights.directions[lightIndex * 3 + 1],
+        lights.directions[lightIndex * 3 + 2],
+      ).normalize();
+      let viewProj: Mat4;
+      if (lights.types[lightIndex] === 1) {
+        viewProj = sunShadowMatrix(dir, center, radius);
+      } else {
+        const pos = new Vec3(
+          lights.positions[lightIndex * 3],
+          lights.positions[lightIndex * 3 + 1],
+          lights.positions[lightIndex * 3 + 2],
+        );
+        // Full apex angle back from the stored cos(outer half-angle).
+        const spotAngle = 2 * Math.acos(Math.min(1, Math.max(-1, lights.spots[lightIndex * 2 + 1])));
+        const far = pos.distanceTo(center) + radius * 1.5;
+        viewProj = spotShadowMatrix(pos, dir, spotAngle, far);
+      }
+      this.shadowPass.begin(casters.length, viewProj);
+      for (const obj of meshes) {
+        this.shadowPass.setObject(scene.worldMatrix(obj));
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+      }
+      casters.push({ viewProj, lightIndex });
+    }
+
+    // Point lights: 6 depth renders into the slot's cube map (90° fov faces).
+    const cubeCasters: { lightIndex: number; near: number; far: number }[] = [];
+    for (const lightIndex of cubeIdx) {
+      const pos = new Vec3(
+        lights.positions[lightIndex * 3],
+        lights.positions[lightIndex * 3 + 1],
+        lights.positions[lightIndex * 3 + 2],
+      );
+      const near = 0.05;
+      const far = Math.max(pos.distanceTo(center) + radius * 1.5, 1);
+      const proj = Mat4.perspective(Math.PI / 2, 1, near, far);
+      for (let face = 0; face < 6; face++) {
+        this.shadowPass.beginCubeFace(cubeCasters.length, face, proj.mul(cubeFaceView(pos, face)));
+        for (const obj of meshes) {
+          this.shadowPass.setObject(scene.worldMatrix(obj));
+          this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+        }
+      }
+      cubeCasters.push({ lightIndex, near, far });
+    }
+    this.shadowPass.end(canvas.width, canvas.height);
+    return { casters, cubeCasters };
+  }
+
+  /**
    * Advance the shading mode one step (matcap → wireframe → studio → matcap)
    * and return the new mode. Called by the Z keybind and the topbar chip.
    */
@@ -333,6 +467,7 @@ export class Renderer {
       this.outlinePass.resize(canvas.width, canvas.height);
       this.pickingPass.resize(canvas.width, canvas.height);
       this.elementPickPass.resize(canvas.width, canvas.height);
+      this.aoPass.resize(canvas.width, canvas.height);
     }
     gl.viewport(0, 0, canvas.width, canvas.height);
     const bg = themeViewport.background;
@@ -342,16 +477,43 @@ export class Renderer {
     const { view, proj, eye, fovY } = this.resolveView(scene, camera);
     const visible = scene.objects.filter((o) => scene.effectiveVisible(o));
 
+    // SSAO (shading-dropdown "Ambient Occlusion", solid modes only): depth
+    // prepass of the visible meshes, then SSAO+blur into aoPass.texture. The
+    // solid passes below multiply it in; when off they bind the 1×1 white.
+    const aoOn = shadePrefs.ao && this.shadingMode !== 'wireframe';
+    if (aoOn) {
+      this.aoPass.beginDepth(view, proj);
+      for (const obj of visible) {
+        if (obj.kind !== 'mesh') continue;
+        this.aoPass.setObject(scene.worldMatrix(obj), view);
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+      }
+      this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength);
+    }
+    const aoTex = aoOn ? this.aoPass.texture : this.aoPass.white;
+
     // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
     // no fill; matcap/studio fill triangles with their respective shaders.
     if (this.shadingMode === 'wireframe') {
-      this.wirePass.begin(view, proj);
+      // Hidden-line option: prime the depth buffer with the solid faces
+      // (color untouched) so backfacing wires and wires behind other geometry
+      // fail the depth test; the biased lines then only survive where visible.
+      if (shadePrefs.wireHiddenLine) {
+        this.wirePass.begin(view, proj);
+        gl.colorMask(false, false, false, false);
+        for (const obj of visible) {
+          this.wirePass.setObject(scene.worldMatrix(obj));
+          this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+        }
+        gl.colorMask(true, true, true, true);
+      }
+      this.wirePass.begin(view, proj, shadePrefs.wireHiddenLine ? 0.002 : 0);
       for (const obj of visible) {
         this.wirePass.setObject(scene.worldMatrix(obj));
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
     } else if (this.shadingMode === 'studio') {
-      this.studioPass.begin(view, proj);
+      this.studioPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
         this.studioPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
@@ -360,14 +522,17 @@ export class Renderer {
       // World environment as the backdrop (flat / gradient / HDRI), then the
       // meshes over it. Other shading modes keep the theme clear color.
       this.syncHdriTexture(scene);
+      const meshes = visible.filter((o) => o.kind === 'mesh');
+      const lights = collectLights(scene);
+      const { casters, cubeCasters } = this.renderShadows(scene, meshes, lights);
       const invViewProj = proj.mul(view).invert();
       this.worldBgPass.render(invViewProj, eye, scene.world, this.hdriTexture);
       const amb = averageWorldColor(scene.world);
       const k = scene.world.strength * 0.3;
-      this.renderedPass.begin(view, proj, eye, collectLights(scene),
-        new Vec3(amb[0] * k, amb[1] * k, amb[2] * k));
-      for (const obj of visible) {
-        if (obj.kind !== 'mesh') continue;
+      this.renderedPass.begin(view, proj, eye, lights,
+        new Vec3(amb[0] * k, amb[1] * k, amb[2] * k), this.shadowPass.textures, casters,
+        this.shadowPass.cubeTextures, cubeCasters, aoTex, canvas.width, canvas.height);
+      for (const obj of meshes) {
         const mat = scene.materialOf(obj);
         // P14 shader nodes: bake the graph (idempotent per version) and view
         // the material THROUGH the bake — texture slots point at the baked
@@ -401,10 +566,21 @@ export class Renderer {
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
     } else {
-      this.meshPass.begin(view, proj);
+      this.meshPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
         this.meshPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+      }
+    }
+
+    // Wireframe overlay (shading-dropdown option): the edge wires drawn over
+    // the shaded result, depth-tested against it with a small bias so lines on
+    // the surface win. Occlusion comes free from the solid pass's depth buffer.
+    if (shadePrefs.wireOverlay && this.shadingMode !== 'wireframe') {
+      this.wirePass.begin(view, proj, 0.002);
+      for (const obj of visible) {
+        this.wirePass.setObject(scene.worldMatrix(obj));
+        this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
     }
 
@@ -419,6 +595,17 @@ export class Renderer {
       this.cameraFrustumPass.begin();
       for (const obj of frustums) {
         this.cameraFrustumPass.draw(viewProj, obj, selectionColor(scene, obj), scene.worldTransformOf(obj));
+      }
+    }
+
+    // Aim arrows for directional lights (sun/spot) — rides the icons toggle,
+    // same selection tint as the icon so they read as one object.
+    const aimed = visible.filter((o) => overlays.icons && hasAimArrow(o));
+    if (aimed.length > 0) {
+      const viewProj = proj.mul(view);
+      this.lightDirPass.begin();
+      for (const obj of aimed) {
+        this.lightDirPass.draw(viewProj, scene.worldTransformOf(obj), selectionColor(scene, obj));
       }
     }
 
@@ -458,6 +645,18 @@ export class Renderer {
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT);
       this.gizmoPass.render(proj.mul(view), gz.origin, gz.scale);
+    }
+
+    // Locked-axis indicator — the one gizmo arrow + guide line that stays on
+    // while a modal G/R/S is constrained to an axis.
+    if (this.axisIndicator) {
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      const { axis, pivot } = this.axisIndicator;
+      // World-space view direction = -(third row of the view matrix).
+      const forward = new Vec3(-view.m[2], -view.m[6], -view.m[10]);
+      this.gizmoPass.renderAxis(
+        proj.mul(view), pivot, gizmoScreenScale(eye, pivot, fovY), axis, eye, forward,
+      );
     }
   }
 

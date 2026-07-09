@@ -2,7 +2,7 @@
  * The six 90s themes from Ray's reference sheet (P10-3). Each registers a
  * ThemeSpec: the 11 CSS tokens (bg, panel, panel2, input, border, text,
  * text-dim, accent, accent-contrast, hover, chip) plus the viewport palette
- * (background/grid/axisX/axisZ/selection) read by the GL passes every frame.
+ * (background/grid/axisX/axisY/selection) read by the GL passes every frame.
  *
  * Starting palettes come from the spec; a few hexes were malformed there and
  * sanitized to the obvious intent (see the P10-3 Result for the list). Where the
@@ -35,7 +35,7 @@ registerTheme({
     background: [0.03, 0.05, 0.03],
     grid: [0.10, 0.22, 0.10],
     axisX: [0.35, 0.6, 0.2],
-    axisZ: [0.2, 0.5, 0.15],
+    axisY: [0.2, 0.5, 0.15],
     selection: [0.2, 1, 0.2],
   },
 });
@@ -61,7 +61,7 @@ registerTheme({
     background: [0.08, 0.02, 0.12],
     grid: [0.25, 0.10, 0.35],
     axisX: [0.85, 0.25, 0.45],
-    axisZ: [0.95, 0.5, 0.15],
+    axisY: [0.95, 0.5, 0.15],
     selection: [1, 0.48, 0.1],
   },
 });
@@ -87,7 +87,7 @@ registerTheme({
     background: [0.07, 0.10, 0.11],
     grid: [0.16, 0.24, 0.26],
     axisX: [0.55, 0.30, 0.32], // muted red
-    axisZ: [0.30, 0.48, 0.30], // muted green
+    axisY: [0.30, 0.48, 0.30], // muted green
     selection: [0.18, 0.85, 0.78],
   },
 });
@@ -113,7 +113,7 @@ registerTheme({
     background: [0.07, 0.07, 0.05],
     grid: [0.18, 0.17, 0.11],
     axisX: [0.55, 0.38, 0.22], // muted olive-red
-    axisZ: [0.42, 0.46, 0.22], // muted olive-green
+    axisY: [0.42, 0.46, 0.22], // muted olive-green
     selection: [0.85, 0.78, 0.24],
   },
 });
@@ -139,7 +139,7 @@ registerTheme({
     background: [0.82, 0.86, 0.90],
     grid: [0.62, 0.67, 0.73],
     axisX: [0.80, 0.35, 0.40],
-    axisZ: [0.35, 0.62, 0.30],
+    axisY: [0.35, 0.62, 0.30],
     selection: [0.29, 0.56, 0.89],
   },
 });
@@ -165,7 +165,7 @@ registerTheme({
     background: [0.04, 0.04, 0.05],
     grid: [0.14, 0.14, 0.16],
     axisX: [0.55, 0.22, 0.28], // muted red
-    axisZ: [0.28, 0.42, 0.25], // muted green
+    axisY: [0.28, 0.42, 0.25], // muted green
     selection: [1, 0.18, 0.33],
   },
 });

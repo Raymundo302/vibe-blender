@@ -125,7 +125,7 @@ class ScatterModifier implements Modifier {
       const co = f.verts.map((id) => mesh.verts.get(id)!.co);
       if (co.length < 3) continue;
       const normal = mesh.faceNormal(f.id);
-      if (this.upOnly && normal.y <= 0) continue;
+      if (this.upOnly && normal.z <= 0) continue;
       const triCum: number[] = [];
       let area = 0;
       for (let i = 1; i < co.length - 1; i++) {

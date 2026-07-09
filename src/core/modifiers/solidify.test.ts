@@ -14,17 +14,17 @@ describe('Solidify modifier — single quad', () => {
   it('outer shell displaced +thickness along the normal, inner shell at 0', () => {
     const thickness = 0.1;
     const out = createModifier('solidify', { thickness, offset: 1 }).apply(makePlane(2));
-    // Outer verts (ids 0..3) are the originals pushed +thickness along +Y;
+    // Outer verts (ids 0..3) are the originals pushed +thickness along +Z;
     // inner verts (ids 4..7) stay on the source surface (y = 0).
-    for (let id = 0; id < 4; id++) expect(out.verts.get(id)!.co.y).toBeCloseTo(thickness, 6);
-    for (let id = 4; id < 8; id++) expect(out.verts.get(id)!.co.y).toBeCloseTo(0, 6);
+    for (let id = 0; id < 4; id++) expect(out.verts.get(id)!.co.z).toBeCloseTo(thickness, 6);
+    for (let id = 4; id < 8; id++) expect(out.verts.get(id)!.co.z).toBeCloseTo(0, 6);
   });
 
   it('inner shell winding is flipped (its normal ≈ −outer normal)', () => {
     const out = createModifier('solidify', { thickness: 0.1, offset: 1 }).apply(makePlane(2));
     const outerN = out.faceNormal(0); // first face = outer shell
     const innerN = out.faceNormal(1); // second face = inner shell
-    expect(outerN.dot(new Vec3(0, 1, 0))).toBeGreaterThan(0.99);
+    expect(outerN.dot(new Vec3(0, 0, 1))).toBeGreaterThan(0.99);
     expect(outerN.dot(innerN)).toBeLessThan(-0.99);
   });
 
@@ -96,7 +96,7 @@ describe('Solidify modifier — offset mapping', () => {
   it('offset 0 splits the shells symmetrically about the surface', () => {
     const thickness = 0.2;
     const out = createModifier('solidify', { thickness, offset: 0 }).apply(makePlane(2));
-    for (let id = 0; id < 4; id++) expect(out.verts.get(id)!.co.y).toBeCloseTo(thickness / 2, 6);
-    for (let id = 4; id < 8; id++) expect(out.verts.get(id)!.co.y).toBeCloseTo(-thickness / 2, 6);
+    for (let id = 0; id < 4; id++) expect(out.verts.get(id)!.co.z).toBeCloseTo(thickness / 2, 6);
+    for (let id = 4; id < 8; id++) expect(out.verts.get(id)!.co.z).toBeCloseTo(-thickness / 2, 6);
   });
 });

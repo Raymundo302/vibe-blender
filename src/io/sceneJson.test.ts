@@ -136,7 +136,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(7);
+    expect(parsed.version).toBe(8);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -501,5 +501,104 @@ describe('determinism with id gaps (P8-5 fix)', () => {
     });
     expect(() => applySceneJson(bad, scene, new OrbitCamera())).toThrow(/not a camera/i);
     expect(scene.objects.map((o) => o.name)).toEqual(['Keep']);
+  });
+});
+
+describe('v8 migration: Y-up files load rotated into the Z-up world', () => {
+  /** Serialize the current (v8) scene, then stamp an older version onto the
+   *  JSON so the loader treats the content as Y-up authored. */
+  function asV7(scene: Scene, mutate?: (root: Record<string, unknown>) => void): string {
+    const root = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    root.version = 7;
+    mutate?.(root);
+    return JSON.stringify(root);
+  }
+
+  it('rotates a root object +90° about X (old +Y up → new +Z up)', () => {
+    const src = new Scene();
+    const cube = src.add('Cube', makeCube());
+    cube.transform = cube.transform.withPosition(new Vec3(2, 5, -3));
+    const scene = new Scene();
+    applySceneJson(asV7(src), scene, new OrbitCamera());
+    const t = scene.objects[0].transform;
+    // Position: (x, y, z) → (x, -z, y).
+    expect(t.position.equalsApprox(new Vec3(2, 3, 5))).toBe(true);
+    // Rotation: identity → Rx(+90°).
+    const q = Quat.fromAxisAngle(Vec3.X, Math.PI / 2);
+    const d = t.rotation.x * q.x + t.rotation.y * q.y + t.rotation.z * q.z + t.rotation.w * q.w;
+    expect(Math.abs(d)).toBeGreaterThan(1 - 1e-9);
+  });
+
+  it('does NOT touch children (they ride the parent frame)', () => {
+    const src = new Scene();
+    const parent = src.add('Parent', makeCube());
+    const child = src.add('Child', makeCube());
+    child.parentId = parent.id;
+    child.transform = child.transform.withPosition(new Vec3(1, 2, 3));
+    const scene = new Scene();
+    applySceneJson(asV7(src), scene, new OrbitCamera());
+    expect(scene.objects[1].transform.position.equalsApprox(new Vec3(1, 2, 3))).toBe(true);
+  });
+
+  it('remaps root location fcurves: old y → z verbatim, old z → y negated', () => {
+    const src = new Scene();
+    const cube = src.add('Cube', makeCube());
+    cube.anim = {
+      fcurves: [
+        { channelPath: 'location.y', keys: [{ frame: 1, value: 4, interp: 'linear' as const }] },
+        { channelPath: 'location.z', keys: [{ frame: 1, value: 7, interp: 'linear' as const }] },
+      ],
+    };
+    const scene = new Scene();
+    applySceneJson(asV7(src), scene, new OrbitCamera());
+    const anim = scene.objects[0].anim!;
+    const at = (p: string) => anim.fcurves.find((c) => c.channelPath === p)!.keys[0].value;
+    expect(at('location.z')).toBeCloseTo(4, 9);  // old y, verbatim
+    expect(at('location.y')).toBeCloseTo(-7, 9); // old z, negated
+  });
+
+  it('a v8 file loads without any rotation', () => {
+    const src = new Scene();
+    const cube = src.add('Cube', makeCube());
+    cube.transform = cube.transform.withPosition(new Vec3(2, 5, -3));
+    const scene = new Scene();
+    applySceneJson(serializeScene(src, new OrbitCamera()), scene, new OrbitCamera());
+    expect(scene.objects[0].transform.position.equalsApprox(new Vec3(2, 5, -3))).toBe(true);
+  });
+
+  it('v8 serialize→apply→serialize stays byte-identical (no double migration)', () => {
+    const src = new Scene();
+    const cube = src.add('Cube', makeCube());
+    cube.transform = cube.transform.withPosition(new Vec3(1, 2, 3));
+    const s1 = serializeScene(src, new OrbitCamera());
+    const scene = new Scene();
+    const cam = new OrbitCamera();
+    applySceneJson(s1, scene, cam);
+    expect(serializeScene(scene, cam)).toBe(s1);
+  });
+});
+
+describe('v8 migration on a real historical file', () => {
+  it('loads the frozen v3 donut fixture, roots rotated into Z-up', async () => {
+    await import('../core/modifiers/builtins'); // register real modifier types
+    await import('../core/modifiers/scatter');
+    await import('../core/modifiers/shrinkwrap');
+    // @ts-expect-error -- node:fs is untyped in this browser-target tsconfig
+    // (no @types/node); vitest executes in Node where the import is real.
+    const { readFileSync } = await import('node:fs');
+    const json = readFileSync(
+      new URL('../../e2e/fixtures/donut-p9-frozen.vibe.json', import.meta.url), 'utf8');
+    const scene = new Scene();
+    const cam = new OrbitCamera();
+    applySceneJson(json, scene, cam);
+    expect(scene.objects.length).toBe(9);
+    // Every root object's rotation carries the Rx90 world rotation: the local
+    // +Y axis (old up) must now map to world +Z (new up).
+    for (const obj of scene.objects) {
+      if (obj.parentId !== null) continue;
+      const m = scene.worldMatrix(obj);
+      const up = m.transformDir(new Vec3(0, 1, 0)).normalize();
+      expect(up.z).toBeGreaterThan(0.5);
+    }
   });
 });

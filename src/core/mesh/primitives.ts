@@ -26,20 +26,20 @@ export function makeCube(halfExtent = 1): EditableMesh {
  */
 export function makePlane(size = 2): EditableMesh {
   const h = size / 2;
-  // Order chosen so Newell's normal comes out +Y (CCW seen from above).
+  // Order chosen so Newell's normal comes out +Z (CCW seen from above).
   return EditableMesh.fromData(
     [
-      [-h, 0, -h], // 0
-      [h, 0, -h],  // 1
-      [h, 0, h],   // 2
-      [-h, 0, h],  // 3
+      [-h, h, 0],  // 0
+      [h, h, 0],   // 1
+      [h, -h, 0],  // 2
+      [-h, -h, 0], // 3
     ],
     [[0, 3, 2, 1]],
   );
 }
 
 /**
- * UV sphere: poles on the Y axis. Latitude is split into `rings` bands
+ * UV sphere: poles on the Z axis (up). Latitude is split into `rings` bands
  * (giving `rings - 1` interior circles + 2 poles) and longitude into
  * `segments`. Interior bands are quads; the two polar bands are triangle fans.
  */
@@ -49,23 +49,23 @@ export function makeUvSphere(radius = 1, segments = 32, rings = 16): EditableMes
 
   // North pole (index 0).
   const north = positions.length;
-  positions.push([0, radius, 0]);
+  positions.push([0, 0, radius]);
 
-  // Interior latitude circles, i = 1 .. rings-1 (phi increasing = y decreasing).
+  // Interior latitude circles, i = 1 .. rings-1 (phi increasing = z decreasing).
   const ringBase = (i: number) => 1 + (i - 1) * segments;
   for (let i = 1; i < rings; i++) {
     const phi = (Math.PI * i) / rings;
-    const y = Math.cos(phi) * radius;
+    const z = Math.cos(phi) * radius;
     const r = Math.sin(phi) * radius;
     for (let j = 0; j < segments; j++) {
       const theta = (2 * Math.PI * j) / segments;
-      positions.push([r * Math.cos(theta), y, r * Math.sin(theta)]);
+      positions.push([r * Math.cos(theta), -r * Math.sin(theta), z]);
     }
   }
 
   // South pole (last index).
   const south = positions.length;
-  positions.push([0, -radius, 0]);
+  positions.push([0, 0, -radius]);
 
   // Top fan: pole + first interior ring.
   for (let j = 0; j < segments; j++) {
@@ -95,23 +95,23 @@ export function makeUvSphere(radius = 1, segments = 32, rings = 16): EditableMes
 }
 
 /**
- * Cylinder with its axis along Y. `depth` is the full height (top at +depth/2,
- * bottom at -depth/2). Sides are quads; each cap is a single n-gon face
+ * Cylinder with its axis along Z (up). `depth` is the full height (top at
+ * +depth/2, bottom at -depth/2). Sides are quads; each cap is a single n-gon face
  * (EditableMesh supports polygon faces).
  */
 export function makeCylinder(radius = 1, depth = 2, segments = 32): EditableMesh {
   const positions: [number, number, number][] = [];
   const faces: number[][] = [];
-  const hy = depth / 2;
+  const hz = depth / 2;
 
   // Top ring [0 .. segments), then bottom ring [segments .. 2*segments).
   for (let j = 0; j < segments; j++) {
     const theta = (2 * Math.PI * j) / segments;
-    positions.push([radius * Math.cos(theta), hy, radius * Math.sin(theta)]);
+    positions.push([radius * Math.cos(theta), -radius * Math.sin(theta), hz]);
   }
   for (let j = 0; j < segments; j++) {
     const theta = (2 * Math.PI * j) / segments;
-    positions.push([radius * Math.cos(theta), -hy, radius * Math.sin(theta)]);
+    positions.push([radius * Math.cos(theta), -radius * Math.sin(theta), -hz]);
   }
 
   const top = (j: number) => j;
@@ -123,12 +123,12 @@ export function makeCylinder(radius = 1, depth = 2, segments = 32): EditableMesh
     faces.push([top(j), top(j1), bot(j1), bot(j)]);
   }
 
-  // Top cap (+Y): reversed ring order so the normal points up.
+  // Top cap (+Z): reversed ring order so the normal points up.
   const topCap: number[] = [];
   for (let j = segments - 1; j >= 0; j--) topCap.push(top(j));
   faces.push(topCap);
 
-  // Bottom cap (-Y): forward ring order so the normal points down.
+  // Bottom cap (-Z): forward ring order so the normal points down.
   const botCap: number[] = [];
   for (let j = 0; j < segments; j++) botCap.push(bot(j));
   faces.push(botCap);
@@ -137,7 +137,7 @@ export function makeCylinder(radius = 1, depth = 2, segments = 32): EditableMesh
 }
 
 /**
- * Torus lying flat in the XZ plane (hole up the Y axis). `majorRadius` is the
+ * Torus lying flat in the XY plane (hole up the Z axis). `majorRadius` is the
  * ring radius, `minorRadius` the tube radius. All faces are quads.
  */
 export function makeTorus(
@@ -156,7 +156,7 @@ export function makeTorus(
       const v = (2 * Math.PI * j) / minorSegments;
       const cv = Math.cos(v), sv = Math.sin(v);
       const r = majorRadius + minorRadius * cv;
-      positions.push([r * cu, minorRadius * sv, r * su]);
+      positions.push([r * cu, -r * su, minorRadius * sv]);
     }
   }
 
@@ -223,7 +223,7 @@ export function makeIcoSphere(radius = 1, subdivisions = 2): EditableMesh {
 }
 
 /**
- * A flat circle in the XZ plane (normal +Y, matching makePlane), centered at
+ * A flat circle in the XY plane (normal +Z, matching makePlane), centered at
  * origin. `vertices` verts sit on the ring. When `fillNgon` is true the ring is
  * capped by a single n-gon face; when false the mesh is just the ring of verts
  * with NO face — and, because edges in EditableMesh derive from faces, no edges
@@ -235,9 +235,9 @@ export function makeCircle(radius = 1, vertices = 32, fillNgon = true): Editable
   const positions: [number, number, number][] = [];
   for (let j = 0; j < n; j++) {
     const theta = (2 * Math.PI * j) / n;
-    positions.push([radius * Math.cos(theta), 0, radius * Math.sin(theta)]);
+    positions.push([radius * Math.cos(theta), -radius * Math.sin(theta), 0]);
   }
-  // Reversed winding so Newell's normal comes out +Y (as makePlane does).
+  // Reversed winding so Newell's normal comes out +Z (as makePlane does).
   const faces: number[][] = fillNgon
     ? [Array.from({ length: n }, (_, j) => n - 1 - j)]
     : [];

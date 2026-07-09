@@ -16,15 +16,15 @@ void main() {
   gl_Position = u_proj * u_view * vec4(a_position, 1.0);
 }`;
 
-// Antialiased 1-unit grid on the XZ ground plane, axis lines tinted
-// (X red, Z green — Blender's floor axis colors), fading with distance.
+// Antialiased 1-unit grid on the XY ground plane (Z-up world), axis lines
+// tinted (X red, Y green — Blender's floor axis colors), fading with distance.
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_worldPos;
 uniform vec3 u_eye;
 uniform vec3 u_gridColor;
 uniform vec3 u_axisXColor;
-uniform vec3 u_axisZColor;
+uniform vec3 u_axisYColor;
 out vec4 outColor;
 
 float gridLine(vec2 coord) {
@@ -33,7 +33,7 @@ float gridLine(vec2 coord) {
 }
 
 void main() {
-  vec2 coord = v_worldPos.xz;
+  vec2 coord = v_worldPos.xy;
   float minor = gridLine(coord);
   float major = gridLine(coord / 10.0);
 
@@ -42,12 +42,12 @@ void main() {
 
   // Axis lines through the origin
   vec2 axisDist = abs(coord) / fwidth(coord);
-  if (axisDist.y < 1.0) { // along X (z ≈ 0)
+  if (axisDist.y < 1.0) { // along X (y ≈ 0)
     color = u_axisXColor;
     alpha = max(alpha, 1.0 - axisDist.y);
   }
-  if (axisDist.x < 1.0) { // along Z (x ≈ 0)
-    color = u_axisZColor;
+  if (axisDist.x < 1.0) { // along Y (x ≈ 0)
+    color = u_axisYColor;
     alpha = max(alpha, 1.0 - axisDist.x);
   }
 
@@ -69,8 +69,8 @@ export class GridPass {
         location: 0,
         size: 3,
         data: new Float32Array([
-          -e, 0, -e, e, 0, -e, e, 0, e,
-          -e, 0, -e, e, 0, e, -e, 0, e,
+          -e, -e, 0, e, -e, 0, e, e, 0,
+          -e, -e, 0, e, e, 0, -e, e, 0,
         ]),
       },
     ]);
@@ -86,7 +86,7 @@ export class GridPass {
     const tv = themeViewport;
     this.shader.setVec3('u_gridColor', new Vec3(tv.grid[0], tv.grid[1], tv.grid[2]));
     this.shader.setVec3('u_axisXColor', new Vec3(tv.axisX[0], tv.axisX[1], tv.axisX[2]));
-    this.shader.setVec3('u_axisZColor', new Vec3(tv.axisZ[0], tv.axisZ[1], tv.axisZ[2]));
+    this.shader.setVec3('u_axisYColor', new Vec3(tv.axisY[0], tv.axisY[1], tv.axisY[2]));
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);

@@ -24,11 +24,14 @@ in vec3 v_viewNormal;
 in vec3 v_tint;
 uniform sampler2D u_matcap;
 uniform vec3 u_color; // per-object viewport tint (0..1)
+uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
+uniform vec2 u_aoTexel;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
   vec2 uv = n.xy * 0.495 + 0.5;
-  outColor = vec4(texture(u_matcap, uv).rgb * 2.0 * u_color * v_tint, 1.0);
+  float ao = texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
+  outColor = vec4(texture(u_matcap, uv).rgb * 2.0 * u_color * v_tint * ao, 1.0);
 }`;
 
 /** Matcap-shaded solid mesh pass. */
@@ -41,8 +44,9 @@ export class MeshPass {
   }
   private readonly gl: WebGL2RenderingContext;
 
-  /** Bind per-frame state; per-object uniforms are set by the caller. */
-  begin(view: Mat4, proj: Mat4): void {
+  /** Bind per-frame state; per-object uniforms are set by the caller.
+   *  `ao` is the SSAO texture, or the AoPass 1×1 white when AO is off. */
+  begin(view: Mat4, proj: Mat4, ao: WebGLTexture, aoW: number, aoH: number): void {
     const gl = this.gl;
     this.shader.use();
     this.shader.setMat4('u_view', view);
@@ -50,6 +54,11 @@ export class MeshPass {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.matcap);
     this.shader.setInt('u_matcap', 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, ao);
+    gl.activeTexture(gl.TEXTURE0);
+    this.shader.setInt('u_ao', 1);
+    this.shader.setVec2('u_aoTexel', 1 / aoW, 1 / aoH);
   }
 
   setObject(model: Mat4, view: Mat4, color: readonly [number, number, number]): void {

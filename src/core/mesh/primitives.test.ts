@@ -34,10 +34,10 @@ describe('makePlane', () => {
     for (const e of edges) expect(e.faces.length).toBe(1);
   });
 
-  it('face normal is +Y', () => {
+  it('face normal is +Z (up)', () => {
     const faceId = [...plane.faces.keys()][0];
     const n = plane.faceNormal(faceId);
-    expect(n.equalsApprox(Vec3.Y)).toBe(true);
+    expect(n.equalsApprox(Vec3.Z)).toBe(true);
   });
 });
 
@@ -113,16 +113,16 @@ describe('makeTorus (defaults)', () => {
   it('normals point outward (dot with centroid - nearest ring-circle point > 0)', () => {
     for (const f of torus.faces.keys()) {
       const c = faceCentroid(torus, f);
-      const u = Math.atan2(c.z, c.x);
-      const ringPoint = new Vec3(majorR * Math.cos(u), 0, majorR * Math.sin(u));
+      const u = Math.atan2(c.y, c.x);
+      const ringPoint = new Vec3(majorR * Math.cos(u), majorR * Math.sin(u), 0);
       expect(torus.faceNormal(f).dot(c.sub(ringPoint))).toBeGreaterThan(0);
     }
   });
 
   it('all verts lie at minorRadius from the ring circle', () => {
     for (const v of torus.verts.values()) {
-      const u = Math.atan2(v.co.z, v.co.x);
-      const ringPoint = new Vec3(majorR * Math.cos(u), 0, majorR * Math.sin(u));
+      const u = Math.atan2(v.co.y, v.co.x);
+      const ringPoint = new Vec3(majorR * Math.cos(u), majorR * Math.sin(u), 0);
       expect(Math.abs(v.co.distanceTo(ringPoint) - minorR)).toBeLessThan(1e-6);
     }
   });
@@ -174,10 +174,10 @@ describe('makeCircle', () => {
     }
   });
 
-  it('face normal is +Y (matches the plane)', () => {
+  it('face normal is +Z (matches the plane)', () => {
     const c = makeCircle();
     const f = [...c.faces.keys()][0];
-    expect(c.faceNormal(f).equalsApprox(Vec3.Y)).toBe(true);
+    expect(c.faceNormal(f).equalsApprox(Vec3.Z)).toBe(true);
   });
 
   it('without fill: `vertices` verts and NO face', () => {

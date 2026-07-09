@@ -26,6 +26,8 @@ precision highp float;
 in vec3 v_viewNormal;
 in vec3 v_tint;
 uniform vec3 u_color; // per-object base albedo (0..1)
+uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
+uniform vec2 u_aoTexel;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
@@ -38,22 +40,29 @@ void main() {
   float f = max(dot(n, fillDir), 0.0);
   vec3 lit = vec3(0.12) + keyCol * k + fillCol * f;
   vec3 base = u_color * v_tint;
-  outColor = vec4(base * lit, 1.0);
+  float ao = texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
+  outColor = vec4(base * lit * ao, 1.0);
 }`;
 
 /** Flat lambert solid pass with a fixed two-light view-space studio rig. */
 export class StudioPass {
   readonly shader: Shader;
 
-  constructor(gl: WebGL2RenderingContext) {
+  constructor(private readonly gl: WebGL2RenderingContext) {
     this.shader = new Shader(gl, VERT, FRAG, 'mesh-studio');
   }
 
-  /** Bind per-frame state; per-object uniforms are set by the caller. */
-  begin(view: Mat4, proj: Mat4): void {
+  /** Bind per-frame state; per-object uniforms are set by the caller.
+   *  `ao` is the SSAO texture, or the AoPass 1×1 white when AO is off. */
+  begin(view: Mat4, proj: Mat4, ao: WebGLTexture, aoW: number, aoH: number): void {
     this.shader.use();
     this.shader.setMat4('u_view', view);
     this.shader.setMat4('u_proj', proj);
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, ao);
+    this.shader.setInt('u_ao', 0);
+    this.shader.setVec2('u_aoTexel', 1 / aoW, 1 / aoH);
   }
 
   setObject(model: Mat4, view: Mat4, color: readonly [number, number, number]): void {

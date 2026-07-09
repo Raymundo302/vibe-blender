@@ -5,7 +5,7 @@
 import { runE2e } from './harness.mjs';
 
 // Bumped whenever sceneJson VERSION bumps — single spot for the whole suite.
-const CURRENT_FORMAT_VERSION = 7;
+const CURRENT_FORMAT_VERSION = 8;
 
 runE2e(async (t) => {
   // --- P3-2: scene save / load (JSON) ---
@@ -152,13 +152,15 @@ runE2e(async (t) => {
   await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
   await t.sleep(60);
 
+  // The shading control moved to the 3D viewport's area header (right side):
+  // a dropdown button labeled with the current mode.
   const shadingChipText = () =>
-    t.evaluate(`document.querySelector('.topbar-btn[data-action="shading-mode"]').textContent`);
+    t.evaluate(`document.querySelector('.shading-menu-btn').textContent`);
 
   t.check('starts in matcap',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'matcap');
-  t.check('shading chip present + labeled Matcap',
-    (await shadingChipText()) === 'Matcap');
+  t.check('viewport-header shading button present + labeled Matcap',
+    (await shadingChipText()).includes('Matcap'));
 
   // Capture a matcap screenshot for human review.
   const matcapPng = await t.screenshot('/tmp/p3-3-matcap.png');
@@ -167,7 +169,7 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 0);
   t.check('Z cycles matcap → wireframe',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'wireframe');
-  t.check('chip follows to Wireframe', (await shadingChipText()) === 'Wireframe');
+  t.check('button follows to Wireframe', (await shadingChipText()).includes('Wireframe'));
   await t.sleep(60);
   const wirePng = await t.screenshot('/tmp/p3-3-wireframe.png');
 
@@ -175,7 +177,7 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 0);
   t.check('Z cycles wireframe → studio',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'studio');
-  t.check('chip follows to Studio', (await shadingChipText()) === 'Studio');
+  t.check('button follows to Studio', (await shadingChipText()).includes('Studio'));
   await t.sleep(60);
   const studioPng = await t.screenshot('/tmp/p3-3-studio.png');
 
@@ -183,17 +185,20 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 0);
   t.check('Z cycles studio → rendered',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'rendered');
-  t.check('chip follows to Rendered', (await shadingChipText()) === 'Rendered');
+  t.check('button follows to Rendered', (await shadingChipText()).includes('Rendered'));
 
   // Z → back to matcap (full cycle).
   await t.key('z', 'KeyZ', 0);
   t.check('Z cycles rendered → matcap (wraps)',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'matcap');
 
-  // Clicking the chip cycles too.
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="shading-mode"]').click()`);
+  // Clicking the button opens the dropdown; picking a mode row switches to it.
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
   await t.sleep(60);
-  t.check('clicking the chip cycles to wireframe',
+  t.check('shading dropdown opens', await t.evaluate(`!!document.querySelector('.shading-menu-pop')`));
+  await t.evaluate(`document.querySelector('.shading-menu-mode[data-mode="wireframe"]').click()`);
+  await t.sleep(60);
+  t.check('picking Wireframe in the dropdown switches the mode',
     (await t.evaluate('window.__app.renderer.shadingMode')) === 'wireframe');
 
   // The three renders must actually differ — compare saved PNG byte lengths as a

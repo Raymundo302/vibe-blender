@@ -92,13 +92,14 @@ export function configureRigFromCamera(rig: OrbitCamera, t: Transform, preferred
   // OrbitCamera reconstructs eye = target + dir(yaw,pitch)*distance, where the
   // offset direction is (eye - target)/d = -forward. Invert that to yaw/pitch.
   const n = forward.scale(-1);
-  rig.pitch = Math.asin(Math.max(-1, Math.min(1, n.y)));
-  rig.yaw = Math.atan2(n.x, n.z);
+  // Z-up: offset dir = (sin yaw·cosP, -cos yaw·cosP, sin pitch).
+  rig.pitch = Math.asin(Math.max(-1, Math.min(1, n.z)));
+  rig.yaw = Math.atan2(n.x, -n.y);
 }
 
 /** Write a rig's current pose back to a camera Transform (position + look-at). */
 export function cameraPoseFromRig(rig: OrbitCamera): Transform {
-  return cameraTransformFromView(rig.eye, rig.forward, Vec3.Y);
+  return cameraTransformFromView(rig.eye, rig.forward, Vec3.Z);
 }
 
 /** True if two poses differ in position or rotation beyond `eps` (quat double
@@ -388,11 +389,18 @@ export class InputManager {
     return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
+  /** Mirror the active operator's axis lock onto the renderer, so the locked
+   *  axis keeps its gizmo arrow while the rest of the gizmo is hidden. */
+  private syncAxisIndicator(): void {
+    this.renderer.axisIndicator = this.activeOp?.axisIndicator?.() ?? null;
+  }
+
   startOperator(op: Operator): void {
     if (this.activeOp) return;
     if (op.start(this.ctx, this.pointer)) {
       this.activeOp = op;
       this.renderer.gizmoVisible = false; // hide the gizmo while a tool is modal
+      this.syncAxisIndicator(); // gizmo-handle drags start pre-locked
     }
   }
 
@@ -403,6 +411,7 @@ export class InputManager {
     this.activeOp = null;
     this.boxSelectOp = null;
     this.renderer.gizmoVisible = true;
+    this.renderer.axisIndicator = null;
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -648,6 +657,7 @@ export class InputManager {
       else if (e.key === 'Enter') this.endOperator(true);
       else if (this.activeOp.onKey(this.ctx, e.key)) {
         e.preventDefault();
+        this.syncAxisIndicator(); // X/Y/Z may have toggled an axis lock
         // GG: a second G during an edit-mode Move swaps it for Edge Slide. The
         // Move sets a sentinel; we cancel it (restore, push nothing) and hand the
         // same selection to a fresh Edge Slide operator.
@@ -1088,7 +1098,7 @@ export class InputManager {
   private snapCameraToView(): void {
     const scene = this.ctx.scene;
     const cam = this.ctx.camera;
-    const pose = cameraTransformFromView(cam.eye, cam.forward, Vec3.Y);
+    const pose = cameraTransformFromView(cam.eye, cam.forward, Vec3.Z);
     let camObj = scene.activeCamera;
     if (!camObj) {
       camObj = scene.addCamera('Camera');

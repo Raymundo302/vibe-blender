@@ -376,6 +376,10 @@ export class EditTranslateOperator extends EditTransformBase {
     }
   }
 
+  axisIndicator(): { axis: 'x' | 'y' | 'z'; pivot: Vec3 } | null {
+    return this.axis ? { axis: this.axis, pivot: this.pivot } : null;
+  }
+
   private updateStatus(ctx: OperatorContext): void {
     const d = this.delta;
     const lock = this.axis ? `  [${this.axis.toUpperCase()} axis]` : '  [X/Y/Z: lock axis]';
@@ -452,6 +456,10 @@ export class EditRotateOperator extends EditTransformBase {
     this.updateStatus(ctx, angle);
   }
 
+  axisIndicator(): { axis: 'x' | 'y' | 'z'; pivot: Vec3 } | null {
+    return this.axis ? { axis: this.axis, pivot: this.pivot } : null;
+  }
+
   private updateStatus(ctx: OperatorContext, angleRad: number): void {
     const angleText = this.numeric.text !== '' ? this.numeric.text : ((angleRad * 180) / Math.PI).toFixed(2);
     const lock = this.axis ? `  [${this.axis.toUpperCase()} axis]` : '  [view axis]';
@@ -521,6 +529,10 @@ export class EditScaleOperator extends EditTransformBase {
       this.setWorld(id, this.pivot.add(new Vec3(off.x * sx, off.y * sy, off.z * sz)));
     }
     this.updateStatus(ctx, f);
+  }
+
+  axisIndicator(): { axis: 'x' | 'y' | 'z'; pivot: Vec3 } | null {
+    return this.axis ? { axis: this.axis, pivot: this.pivot } : null;
   }
 
   private updateStatus(ctx: OperatorContext, factor: number): void {

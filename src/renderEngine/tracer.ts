@@ -485,7 +485,7 @@ export function sky(dy: number, out: [number, number, number]): void {
  * (dx,dy,dz) (need not be normalized). Multiplied by world.strength.
  *
  *   flat     → the flat color.
- *   gradient → horizon→zenith lerp on t = clamp(dy*0.5+0.5) — with the DEFAULT
+ *   gradient → horizon→zenith lerp on t = clamp(dz*0.5+0.5) — with the DEFAULT
  *              world this exactly reproduces the old sky() (regression bar).
  *   hdri     → equirect lookup; falls back to the gradient if pixels are absent.
  */
@@ -507,8 +507,8 @@ export function worldSky(
     return;
   }
   // gradient (also the hdri-without-pixels fallback). traceRay passes a unit
-  // direction, so dy is used directly — byte-identical to the old sky(dy).
-  const t = Math.min(1, Math.max(0, dy * 0.5 + 0.5));
+  // direction; elevation = dz in the Z-up world.
+  const t = Math.min(1, Math.max(0, dz * 0.5 + 0.5));
   out[0] = (world.horizon[0] + (world.zenith[0] - world.horizon[0]) * t) * s;
   out[1] = (world.horizon[1] + (world.zenith[1] - world.horizon[1]) * t) * s;
   out[2] = (world.horizon[2] + (world.zenith[2] - world.horizon[2]) * t) * s;

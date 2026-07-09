@@ -1,7 +1,7 @@
 import { Shader } from '../gl/Shader';
 import { VertexArray } from '../gl/VertexArray';
 import { Vec3 } from '../../core/math/vec3';
-import type { Mat4 } from '../../core/math/mat4';
+import { Mat4 } from '../../core/math/mat4';
 import type { Scene } from '../../core/scene/Scene';
 import { objectForward, type Material } from '../../core/scene/objectData';
 import type { World } from '../../core/scene/worldData';
@@ -67,6 +67,28 @@ export function collectLights(scene: Scene): LightSet {
   return set;
 }
 
+/**
+ * Which lights cast real-time shadows this frame: suns and spots in scene
+ * order, up to `slots`. Returns their light indices; the array position IS the
+ * shadow-map slot. Point lights are skipped (no cube maps in the viewport).
+ */
+export function shadowCasterIndices(lights: LightSet, slots: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < lights.count && out.length < slots; i++) {
+    if (lights.types[i] === 1 || lights.types[i] === 2) out.push(i);
+  }
+  return out;
+}
+
+/** Point lights that cast cube shadows this frame (scene order, capped). */
+export function cubeCasterIndices(lights: LightSet, slots: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < lights.count && out.length < slots; i++) {
+    if (lights.types[i] === 0) out.push(i);
+  }
+  return out;
+}
+
 const VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
@@ -76,16 +98,19 @@ uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform mat3 u_normalMat; // WORLD-space normal matrix (model only)
+uniform mat4 u_shadowVP[4]; // per-slot shadow view-projections (identity when unused)
 out vec3 v_worldPos;
 out vec3 v_normal;
 out vec3 v_tint;
 out vec2 v_uv;
+out vec4 v_shadowCoord[4];
 void main() {
   vec4 world = u_model * vec4(a_position, 1.0);
   v_worldPos = world.xyz;
   v_normal = u_normalMat * a_normal;
   v_tint = a_color;
   v_uv = a_uv;
+  for (int i = 0; i < 4; i++) v_shadowCoord[i] = u_shadowVP[i] * world;
   gl_Position = u_proj * u_view * world;
 }`;
 
@@ -95,6 +120,7 @@ in vec3 v_worldPos;
 in vec3 v_normal;
 in vec3 v_tint;
 in vec2 v_uv;
+in vec4 v_shadowCoord[4];
 
 uniform int u_texKind;      // 0 none, 1 checker, 2 image
 uniform int u_hasTex;       // 1 when an image texture is bound
@@ -117,11 +143,30 @@ uniform vec3 u_lightEnergy[${MAX_LIGHTS}];
 uniform float u_lightType[${MAX_LIGHTS}]; // 0 point, 1 sun, 2 spot
 uniform vec2 u_spot[${MAX_LIGHTS}];       // cos(inner), cos(outer)
 
+// Shadow maps (units 4-7). u_shadowSlot[i] = which map light i casts through
+// (suns/spots, first-come), or -1 for no shadow. GLSL ES 3.0 forbids dynamic
+// sampler indexing, so the four maps are separate uniforms + a slot switch.
+uniform float u_shadowSlot[${MAX_LIGHTS}];
+uniform highp sampler2DShadow u_shadowMap0;
+uniform highp sampler2DShadow u_shadowMap1;
+uniform highp sampler2DShadow u_shadowMap2;
+uniform highp sampler2DShadow u_shadowMap3;
+
+// Point-light cube shadow maps (units 8-9). u_shadowCubeSlot[i] = cube slot for
+// light i, or -1. u_cubeNF[slot] = the cube camera's (near, far) — needed to
+// rebuild the face's clip depth from the world-space light distance.
+uniform float u_shadowCubeSlot[${MAX_LIGHTS}];
+uniform highp samplerCubeShadow u_shadowCube0;
+uniform highp samplerCubeShadow u_shadowCube1;
+uniform vec2 u_cubeNF[2];
+
 uniform vec3 u_baseColor;
 uniform float u_metallic;
 uniform float u_roughness;
 uniform vec3 u_emissive;
 uniform vec3 u_ambient; // flat world-derived ambient (avg world color × strength × 0.3)
+uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
+uniform vec2 u_aoTexel;
 
 out vec4 outColor;
 
@@ -141,6 +186,40 @@ float geometrySmith(float NdotV, float NdotL, float rough) {
 }
 vec3 fresnelSchlick(float cosTheta, vec3 F0) {
   return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// 0 = fully shadowed, 1 = lit. sampler2DShadow does the depth compare with
+// hardware 2×2 PCF; slope-scaled bias fights acne on grazing faces. Anything
+// outside the map's frustum (or behind a spot's apex, w <= 0) is treated as lit.
+float shadowFactor(int slot, float NdotL) {
+  vec4 c = v_shadowCoord[slot];
+  if (c.w <= 0.0) return 1.0;
+  vec3 sc = c.xyz / c.w * 0.5 + 0.5;
+  if (sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0 || sc.z > 1.0) return 1.0;
+  float bias = max(0.003 * (1.0 - NdotL), 0.0008);
+  vec3 s = vec3(sc.xy, sc.z - bias);
+  if (slot == 0) return texture(u_shadowMap0, s);
+  if (slot == 1) return texture(u_shadowMap1, s);
+  if (slot == 2) return texture(u_shadowMap2, s);
+  return texture(u_shadowMap3, s);
+}
+
+// Point-light shadow: sample the cube map by the light→fragment direction and
+// compare against the face's clip depth rebuilt from the major-axis distance
+// (each face was rendered with a 90° perspective at (near, far)). The bias is
+// applied in WORLD units on the distance, scaled with distance so far
+// geometry doesn't acne.
+float cubeShadowFactor(int slot, vec3 lightPos, float NdotL) {
+  vec3 L = v_worldPos - lightPos;
+  vec3 a = abs(L);
+  float d = max(a.x, max(a.y, a.z));
+  vec2 nf = u_cubeNF[slot];
+  float bias = (0.02 + 0.05 * (1.0 - NdotL)) * max(1.0, d * 0.2);
+  float dz = max(d - bias, nf.x + 1e-4);
+  float ndc = (nf.y + nf.x) / (nf.y - nf.x) - 2.0 * nf.y * nf.x / ((nf.y - nf.x) * dz);
+  float ref = clamp(ndc * 0.5 + 0.5, 0.0, 1.0);
+  if (slot == 0) return texture(u_shadowCube0, vec4(L, ref));
+  return texture(u_shadowCube1, vec4(L, ref));
 }
 
 void main() {
@@ -212,6 +291,18 @@ void main() {
     }
     float NdotL = max(dot(N, L), 0.0);
     if (NdotL <= 0.0) continue;
+    int slot = int(u_shadowSlot[i]);
+    if (slot >= 0) {
+      float shadow = shadowFactor(slot, NdotL);
+      if (shadow <= 0.0) continue;
+      radiance *= shadow;
+    }
+    int cubeSlot = int(u_shadowCubeSlot[i]);
+    if (cubeSlot >= 0) {
+      float shadow = cubeShadowFactor(cubeSlot, u_lightPos[i], NdotL);
+      if (shadow <= 0.0) continue;
+      radiance *= shadow;
+    }
     vec3 H = normalize(V + L);
     float NdotV = max(dot(N, V), 1e-4);
     float NdotH = max(dot(N, H), 0.0);
@@ -222,6 +313,8 @@ void main() {
     vec3 kd = (1.0 - F) * (1.0 - metallic);
     color += (kd * baseColor / PI + specular) * radiance * NdotL;
   }
+  // SSAO darkens the lit result but never self-lit emission.
+  color *= texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
   color += u_emissive;
 
   color = color / (color + vec3(1.0));   // Reinhard tonemap
@@ -246,14 +339,57 @@ export class RenderedPass {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
 
-  /** Bind per-frame state: camera + the frame's light set + world ambient. */
-  begin(view: Mat4, proj: Mat4, eye: Vec3, lights: LightSet, ambient: Vec3): void {
+  /**
+   * Bind per-frame state: camera + the frame's light set + world ambient +
+   * the shadow maps. `shadowMaps` is ALWAYS the ShadowPass's 4 depth textures
+   * (their compare mode makes them valid for sampler2DShadow even when
+   * unused); `casters` lists the lights that actually rendered a map this
+   * frame — casters[slot] = { light-space matrix, light index }. Lights not
+   * in it get u_shadowSlot = -1 (no shadow sampling).
+   */
+  begin(
+    view: Mat4, proj: Mat4, eye: Vec3, lights: LightSet, ambient: Vec3,
+    shadowMaps: readonly WebGLTexture[],
+    casters: readonly { viewProj: Mat4; lightIndex: number }[],
+    cubeMaps: readonly WebGLTexture[],
+    cubeCasters: readonly { lightIndex: number; near: number; far: number }[],
+    ao: WebGLTexture,
+    aoW: number,
+    aoH: number,
+  ): void {
     const s = this.shader;
     s.use();
     s.setMat4('u_view', view);
     s.setMat4('u_proj', proj);
     s.setVec3('u_eye', eye);
     s.setVec3('u_ambient', ambient);
+    const gl = this.gl;
+    for (let slot = 0; slot < 4; slot++) {
+      gl.activeTexture(gl.TEXTURE4 + slot);
+      gl.bindTexture(gl.TEXTURE_2D, shadowMaps[slot]);
+      s.setInt(`u_shadowMap${slot}`, 4 + slot);
+      s.setMat4(`u_shadowVP[${slot}]`, casters[slot]?.viewProj ?? Mat4.identity());
+    }
+    // Cube maps on units 8-9 (always bound — compare mode makes them valid
+    // samplerCubeShadow targets even when no point light casts).
+    for (let slot = 0; slot < 2; slot++) {
+      gl.activeTexture(gl.TEXTURE8 + slot);
+      gl.bindTexture(gl.TEXTURE_CUBE_MAP, cubeMaps[slot]);
+      s.setInt(`u_shadowCube${slot}`, 8 + slot);
+      const cc = cubeCasters[slot];
+      s.setVec2(`u_cubeNF[${slot}]`, cc?.near ?? 0.05, cc?.far ?? 100);
+    }
+    gl.activeTexture(gl.TEXTURE10);
+    gl.bindTexture(gl.TEXTURE_2D, ao);
+    gl.activeTexture(gl.TEXTURE0);
+    s.setInt('u_ao', 10);
+    s.setVec2('u_aoTexel', 1 / aoW, 1 / aoH);
+    const slotOf = new Map(casters.map((c, slot) => [c.lightIndex, slot]));
+    const cubeSlotOf = new Map(cubeCasters.map((c, slot) => [c.lightIndex, slot]));
+    for (let i = 0; i < MAX_LIGHTS; i++) {
+      s.setFloat(`u_shadowSlot[${i}]`, slotOf.get(i) ?? -1);
+      s.setFloat(`u_shadowCubeSlot[${i}]`, cubeSlotOf.get(i) ?? -1);
+    }
     s.setInt('u_lightCount', lights.count);
     // Shader has no array setters; set array uniforms element by element.
     for (let i = 0; i < lights.count; i++) {
@@ -369,11 +505,12 @@ void main() {
   if (u_mode == 0) {
     c = u_color;
   } else if (u_mode == 2 && u_hasHdri == 1) {
-    float u = 0.5 + atan(dir.x, dir.z) / (2.0 * PI);
-    float v = 0.5 - asin(clamp(dir.y, -1.0, 1.0)) / PI;
+    // Z-up equirect — must mirror worldData.equirectUV exactly.
+    float u = 0.5 + atan(dir.x, -dir.y) / (2.0 * PI);
+    float v = 0.5 - asin(clamp(dir.z, -1.0, 1.0)) / PI;
     c = texture(u_hdri, vec2(u, v)).rgb;
   } else {
-    float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+    float t = clamp(dir.z * 0.5 + 0.5, 0.0, 1.0);
     c = mix(u_horizon, u_zenith, t);
   }
   c *= u_strength;

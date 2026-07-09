@@ -27,6 +27,9 @@ import { Passepartout } from './ui/passepartout';
 import { CursorOverlay } from './ui/cursorOverlay';
 import { OriginDots } from './ui/originDots';
 import { loadOverlayPrefs, overlays } from './render/overlayPrefs';
+import { loadShadePrefs, shadePrefs } from './render/shadePrefs';
+import { ShadingMenu } from './ui/shadingMenu';
+import './ui/shadingMenu.css';
 import { Splash } from './ui/splash';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { Autosave } from './io/autosave';
@@ -48,6 +51,9 @@ const statusEl = document.getElementById('status') as HTMLDivElement;
 
 const ctx = createGlContext(canvas);
 const renderer = new Renderer(ctx);
+// Viewport-header shading dropdown (created once; the viewport editor factory
+// hands its element to whichever area hosts the 3D viewport).
+const shadingMenu = new ShadingMenu(renderer);
 const scene = new Scene();
 const camera = new OrbitCamera();
 const undo = new UndoStack();
@@ -189,6 +195,7 @@ const cursorOverlay = new CursorOverlay(viewportWrap, scene, camera, renderer, c
 // toggles before the first frame so the initial render honors them, and sync
 // the cursor marker's visibility to the stored pref.
 loadOverlayPrefs();
+loadShadePrefs();
 cursorOverlay.visible = overlays.cursor3d;
 
 // Origin dots (P12-2): small orange dot at each selected object's world origin.
@@ -271,7 +278,13 @@ const editorFactories: EditorFactory[] = [
     type: 'viewport',
     title: '3D Viewport',
     singleton: true,
-    create: () => ({ element: viewportWrap, update: () => {} }),
+    // The shading dropdown lives on the RIGHT side of the viewport's area
+    // header (Blender's shading popover) and travels with the editor.
+    create: () => ({
+      element: viewportWrap,
+      headerExtra: shadingMenu.element,
+      update: () => shadingMenu.update(),
+    }),
   },
   {
     type: 'outliner',
@@ -347,7 +360,7 @@ const workspaces = new WorkspaceManager(workspaceRoot, editorFactories, DEFAULT_
 
 // The header bar fills #topbar and is updated directly in the frame loop
 // alongside workspaces.update().
-const topbar = new Topbar(scene, renderer, {
+const topbar = new Topbar(scene, {
   saveScene, openScene,
   exportObj: exportObjFile,
   importObj: importObjFile,
@@ -360,7 +373,7 @@ topbar.mountTabs(workspaces.createTabs());
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots,
+  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
   animRender: {
     render: (opts: { mode: 'webm' | 'png'; start?: number; end?: number; fps?: number }) => animRender.render(opts),
     cancel: () => animRender.cancel(),

@@ -62,7 +62,7 @@ describe('theme registry', () => {
   it('every viewport palette has 5 sane rgb triples in 0..1', () => {
     for (const theme of themes()) {
       const vp = theme.viewport;
-      for (const key of ['background', 'grid', 'axisX', 'axisZ', 'selection'] as const) {
+      for (const key of ['background', 'grid', 'axisX', 'axisY', 'selection'] as const) {
         const rgb = vp[key];
         expect(rgb, `${theme.id}.${key}`).toHaveLength(3);
         for (const c of rgb) {

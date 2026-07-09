@@ -17,7 +17,7 @@ export interface ThemeViewport {
   grid: Rgb;
   /** Floor axis line colors (world X / world Z). */
   axisX: Rgb;
-  axisZ: Rgb;
+  axisY: Rgb;
   /** Selection outline + selected icon/gizmo accent. */
   selection: Rgb;
 }
@@ -54,7 +54,7 @@ export const themeViewport: ThemeViewport = {
   background: [0.227, 0.227, 0.227],
   grid: [0.32, 0.32, 0.32],
   axisX: [0.65, 0.28, 0.32],
-  axisZ: [0.35, 0.55, 0.28],
+  axisY: [0.35, 0.55, 0.28],
   selection: [0.996, 0.451, 0.062],
 };
 
@@ -78,7 +78,7 @@ export function applyTheme(id: string): boolean {
     background: [...theme.viewport.background],
     grid: [...theme.viewport.grid],
     axisX: [...theme.viewport.axisX],
-    axisZ: [...theme.viewport.axisZ],
+    axisY: [...theme.viewport.axisY],
     selection: [...theme.viewport.selection],
   });
   try {
@@ -120,7 +120,7 @@ registerTheme({
     background: [0.227, 0.227, 0.227],
     grid: [0.32, 0.32, 0.32],
     axisX: [0.65, 0.28, 0.32],
-    axisZ: [0.35, 0.55, 0.28],
+    axisY: [0.35, 0.55, 0.28],
     selection: [0.996, 0.451, 0.062],
   },
 });
@@ -147,7 +147,7 @@ registerTheme({
     background: [0.239, 0.239, 0.239],
     grid: [0.29, 0.29, 0.29],
     axisX: [0.596, 0.259, 0.325],
-    axisZ: [0.31, 0.52, 0.235],
+    axisY: [0.31, 0.52, 0.235],
     selection: [0.996, 0.451, 0.062], // Blender keeps the orange outline
   },
 });

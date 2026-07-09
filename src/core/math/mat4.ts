@@ -58,6 +58,17 @@ export class Mat4 {
     return out;
   }
 
+  static ortho(left: number, right: number, bottom: number, top: number, near: number, far: number): Mat4 {
+    const out = new Mat4();
+    out.m[0] = 2 / (right - left);
+    out.m[5] = 2 / (top - bottom);
+    out.m[10] = -2 / (far - near);
+    out.m[12] = -(right + left) / (right - left);
+    out.m[13] = -(top + bottom) / (top - bottom);
+    out.m[14] = -(far + near) / (far - near);
+    return out;
+  }
+
   static lookAt(eye: Vec3, center: Vec3, up: Vec3): Mat4 {
     const z = eye.sub(center).normalize();
     const x = up.cross(z).normalize();

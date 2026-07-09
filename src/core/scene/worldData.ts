@@ -96,15 +96,17 @@ export function averageWorldColor(w: World): [number, number, number] {
 
 /**
  * Equirectangular mapping: unit direction → (u, v) in [0,1].
- *   u = 0.5 + atan2(x, z)/2π   (azimuth; +Z is u=0.5, wraps seamlessly)
- *   v = 0.5 - asin(y)/π        (elevation; +Y up → v=0 top row, -Y → v=1)
+ *   u = 0.5 + atan2(x, -y)/2π  (azimuth; -Y (front) is u=0.5, wraps seamlessly)
+ *   v = 0.5 - asin(z)/π        (elevation; +Z up → v=0 top row, -Z → v=1)
  * Pure + deterministic — the unit tests pin known directions to known pixels.
  */
 export function equirectUV(dx: number, dy: number, dz: number): { u: number; v: number } {
   const len = Math.hypot(dx, dy, dz) || 1;
-  const y = Math.min(1, Math.max(-1, dy / len));
-  const u = 0.5 + Math.atan2(dx / len, dz / len) / (2 * Math.PI);
-  const v = 0.5 - Math.asin(y) / Math.PI;
+  const z = Math.min(1, Math.max(-1, dz / len));
+  // `|| 0` folds -0 → +0: atan2(0, -0) is π, which would wrap the exact pole
+  // to u=1 instead of the old-convention u=0.5.
+  const u = 0.5 + Math.atan2(dx / len, -dy / len || 0) / (2 * Math.PI);
+  const v = 0.5 - Math.asin(z) / Math.PI;
   return { u, v };
 }
 

@@ -101,7 +101,7 @@ describe('Scatter modifier — placement rules', () => {
     }
   });
 
-  it('upOnly on a cube host → instances only on the +Y face', () => {
+  it('upOnly on a cube host → instances only on the +Z face', () => {
     const host = makeCube(), src = makePlane(0.2);
     const { srcObj, ctx } = setup(host, src);
     const out = mk({
@@ -110,7 +110,7 @@ describe('Scatter modifier — placement rules', () => {
     }).apply(makeCube(), ctx);
     const cents = instanceCentroids(out, 8, 4);
     expect(cents.length).toBeGreaterThan(0);
-    for (const c of cents) expect(c.y).toBeGreaterThan(0.99);
+    for (const c of cents) expect(c.z).toBeGreaterThan(0.99);
   });
 });
 

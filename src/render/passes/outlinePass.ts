@@ -37,17 +37,24 @@ out vec4 outColor;
 void main() {
   vec2 uv = gl_FragCoord.xy * u_texelSize;
   float center = texture(u_mask, uv).r;
+  if (center > 0.5) discard; // interior stays clear — outline sits just outside
+  // Averaged 8-tap circular kernel instead of a binary max: coverage falls off
+  // with distance from the silhouette, giving the outline a soft (anti-aliased)
+  // edge instead of a hard 1-bit staircase.
   float w = 1.5;
+  float d = w * 0.7071; // diagonal taps at the same radius → circular kernel
   float n = 0.0;
-  n = max(n, texture(u_mask, uv + vec2( w, 0.0) * u_texelSize).r);
-  n = max(n, texture(u_mask, uv + vec2(-w, 0.0) * u_texelSize).r);
-  n = max(n, texture(u_mask, uv + vec2(0.0,  w) * u_texelSize).r);
-  n = max(n, texture(u_mask, uv + vec2(0.0, -w) * u_texelSize).r);
-  n = max(n, texture(u_mask, uv + vec2( w,  w) * u_texelSize).r);
-  n = max(n, texture(u_mask, uv + vec2(-w, -w) * u_texelSize).r);
-  float edge = n - center; // 1 just outside the silhouette, 0 elsewhere
-  if (edge < 0.1) discard;
-  outColor = vec4(u_selectionColor, edge); // theme selection accent
+  n += texture(u_mask, uv + vec2( w, 0.0) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2(-w, 0.0) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2(0.0,  w) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2(0.0, -w) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2( d,  d) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2(-d,  d) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2( d, -d) * u_texelSize).r;
+  n += texture(u_mask, uv + vec2(-d, -d) * u_texelSize).r;
+  float edge = n / 8.0; // fraction of the kernel inside the silhouette
+  if (edge <= 0.001) discard;
+  outColor = vec4(u_selectionColor, clamp(edge * 2.2, 0.0, 1.0));
 }`;
 
 export class OutlinePass {

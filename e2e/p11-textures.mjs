@@ -118,11 +118,14 @@ runE2e(async (t) => {
     })()`));
 
   // Wait for the async GL upload, then the cube's dominant color reads red.
+  // Sample BELOW-LEFT of center: the translate gizmo's arrows converge exactly
+  // at the cube origin (= canvas center), so the dead-center pixel can land on
+  // a shaft instead of the cube face.
   const centerPixel = () => t.evaluate(`(() => {
     const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
     app.renderer.render(app.scene, app.camera);
     const px = new Uint8Array(4);
-    gl.readPixels(Math.round(c.width / 2), Math.round(c.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.readPixels(Math.round(c.width / 2) - 60, Math.round(c.height / 2) - 60, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     return [px[0], px[1], px[2]];
   })()`);
   let redOk = false, last = [0, 0, 0];

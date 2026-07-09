@@ -41,7 +41,7 @@ runE2e(async (t) => {
   };
 
   // --- Setup: a donut on a floor + a grazing point light ---
-  // The light is low and to the side (y=1.2) so the donut is GRAZING-lit — that
+  // The light is low and to the side (z=1.2) so the donut is GRAZING-lit — that
   // is where the wrapped-diffuse SSS glow shows, and it casts a long soft floor
   // shadow with a wide penumbra for the soft-shadow check.
   await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
@@ -54,7 +54,7 @@ runE2e(async (t) => {
     const m = await import('/src/core/mesh/primitives.ts');
     // Floor: a big plane just under the donut to catch its shadow.
     const floor = s.add('Floor', m.makePlane(9));
-    floor.transform = floor.transform.withPosition(new floor.transform.position.constructor(0, -0.3, 0));
+    floor.transform = floor.transform.withPosition(new floor.transform.position.constructor(0, 0, -0.3));
     // Donut.
     const torus = s.add('Donut', m.makeTorus());
     s.selectOnly(torus.id);
@@ -63,7 +63,7 @@ runE2e(async (t) => {
     const light = s.addLight('Light', 'point');
     light.light.power = 4000;
     light.light.radius = 0;
-    light.transform = light.transform.withPosition(new light.transform.position.constructor(3.5, 1.2, 2.5));
+    light.transform = light.transform.withPosition(new light.transform.position.constructor(3.5, -2.5, 1.2));
     window.__p9 = { torusId: torus.id, lightId: light.id };
     return s.objects.length;
   })()`);

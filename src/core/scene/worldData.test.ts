@@ -30,16 +30,16 @@ describe('defaultWorld reproduces the pre-P10-4 sky (regression bar)', () => {
     hdri: null,
   };
   const dirs: [number, number, number][] = [
-    [0, 1, 0],      // straight up (zenith)
-    [0, -1, 0],     // straight down (ground)
-    [0.6, 0.3, -0.74], // an oblique ray
+    [0, 0, 1],      // straight up (zenith, Z-up world)
+    [0, 0, -1],     // straight down (ground)
+    [0.6, -0.74, 0.3], // an oblique ray
   ];
   for (const [dx, dy, dz] of dirs) {
     it(`miss color matches sky() at (${dx},${dy},${dz})`, () => {
       const a: [number, number, number] = [0, 0, 0];
       const b: [number, number, number] = [0, 0, 0];
       worldSky(snap, dx, dy, dz, a);
-      sky(dy, b);
+      sky(dz, b);
       expect(a[0]).toBeCloseTo(b[0], 12);
       expect(a[1]).toBeCloseTo(b[1], 12);
       expect(a[2]).toBeCloseTo(b[2], 12);
@@ -58,20 +58,20 @@ describe('worldSky modes', () => {
   it('gradient falls back for hdri with no pixels', () => {
     const w: SnapWorld = { mode: 2, color: [0, 0, 0], horizon: [0, 0, 0], zenith: [1, 1, 1], strength: 1, hdri: null };
     const out: [number, number, number] = [0, 0, 0];
-    worldSky(w, 0, 1, 0, out); // dy=1 → t=1 → zenith
+    worldSky(w, 0, 0, 1, out); // dz=1 → t=1 → zenith
     expect(out[0]).toBeCloseTo(1, 6);
   });
 });
 
 describe('equirect lookup math (known pixel ↔ known direction)', () => {
   it('maps up / down to the poles (v = 0 / 1)', () => {
-    expect(equirectUV(0, 1, 0).v).toBeCloseTo(0, 6);
-    expect(equirectUV(0, -1, 0).v).toBeCloseTo(1, 6);
-    expect(equirectUV(0, 1, 0).v).toBeLessThan(equirectUV(0, -1, 0).v);
+    expect(equirectUV(0, 0, 1).v).toBeCloseTo(0, 6);
+    expect(equirectUV(0, 0, -1).v).toBeCloseTo(1, 6);
+    expect(equirectUV(0, 0, 1).v).toBeLessThan(equirectUV(0, 0, -1).v);
   });
 
-  it('maps +Z forward to u = 0.5, the horizon to v = 0.5', () => {
-    const f = equirectUV(0, 0, 1);
+  it('maps -Y forward to u = 0.5, the horizon to v = 0.5', () => {
+    const f = equirectUV(0, -1, 0);
     expect(f.u).toBeCloseTo(0.5, 6);
     expect(f.v).toBeCloseTo(0.5, 6);
   });
@@ -84,11 +84,11 @@ describe('equirect lookup math (known pixel ↔ known direction)', () => {
     ]);
     const img: HdriImage = { width: 2, height: 2, data };
     const out: [number, number, number] = [0, 0, 0];
-    // Straight up → v≈0 (top row). u for +Z is 0.5 → px = floor(0.5*2)=1 → green.
-    sampleEquirect(img, 0, 1, 0, out);
+    // Straight up → v≈0 (top row). u for -Y (front) is 0.5 → px = floor(0.5*2)=1 → green.
+    sampleEquirect(img, 0, 0, 1, out);
     expect(out).toEqual([0, 1, 0]);
     // Straight down → v≈1 (bottom row, clamped to py=1) → white at px 1.
-    sampleEquirect(img, 0, -1, 0, out);
+    sampleEquirect(img, 0, 0, -1, out);
     expect(out).toEqual([1, 1, 1]);
   });
 });

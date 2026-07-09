@@ -2,7 +2,7 @@ import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { Transform } from '../core/math/transform';
 import { sanitizeGraph, type NodeGraph } from '../core/nodes/nodeGraph';
-import type { AnimData } from '../core/anim/fcurve';
+import { evalFCurve, type AnimData, type Interp } from '../core/anim/fcurve';
 import { applyAnimation } from '../core/anim/sampler';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import type { Scene, SceneObject } from '../core/scene/Scene';
@@ -41,8 +41,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 7;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7];
+const VERSION = 8;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -342,6 +342,8 @@ interface SceneData {
   frameStart: number;
   frameEnd: number;
   frameCurrent: number;
+  /** File format version, for load-time migrations (v8: Y-up → Z-up). */
+  version: number;
 }
 
 /** Default viewport color for files saved before per-object color existed. */
@@ -458,7 +460,7 @@ function parseScene(json: string): SceneData {
   const frameStart = root.frameStart === undefined ? 1 : numField(root.frameStart, 'frameStart');
   const frameEnd = root.frameEnd === undefined ? 120 : numField(root.frameEnd, 'frameEnd');
   const frameCurrent = root.frameCurrent === undefined ? 1 : numField(root.frameCurrent, 'frameCurrent');
-  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode, frameStart, frameEnd, frameCurrent };
+  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode, frameStart, frameEnd, frameCurrent, version: root.version as number };
 }
 
 /**
@@ -831,8 +833,74 @@ function buildModifier(data: ModifierData): Modifier {
  * everything is parsed and every mesh is built BEFORE the first mutation, so a
  * bad file can never half-load. The caller is responsible for `undo.clear()`.
  */
+/**
+ * v8 migration: the world switched from Y-up to Z-up (Blender convention).
+ * Older files were authored Y-up, so rotate their ROOT content by +90° about X
+ * (old +Y up → new +Z up; children ride their parents). Pure data-level:
+ *  - root transforms: position/rotation premultiplied by Rx90 (scale is local);
+ *  - root location fcurves: new z = old y verbatim, new y = old z negated;
+ *  - root euler-rotation fcurves: recomposed per keyed frame (Rx90 ∘ old);
+ *  - 3D cursor rotated; orbit-camera target rotated (yaw/pitch carry over
+ *    unchanged — the orbit frame rotates with the world).
+ */
+function migrateYupToZup(data: SceneData): void {
+  const R = Quat.fromAxisAngle(Vec3.X, Math.PI / 2);
+  const rot = (v: [number, number, number]): [number, number, number] => [v[0], -v[2], v[1]];
+  data.cursor = rot(data.cursor);
+  data.camera.target = rot(data.camera.target);
+  for (const od of data.objects) {
+    if (od.parent !== null) continue; // children inherit the parent's new frame
+    od.position = rot(od.position);
+    const q = new Quat(od.rotation[0], od.rotation[1], od.rotation[2], od.rotation[3]);
+    const q2 = R.mul(q);
+    od.rotation = [q2.x, q2.y, q2.z, q2.w];
+    if (!od.anim) continue;
+    const curves = od.anim.fcurves;
+    const find = (path: string) => curves.find((c) => c.channelPath === path);
+    // location: swap the vertical channel in (values: newY = -oldZ, newZ = oldY).
+    const locY = find('location.y');
+    const locZ = find('location.z');
+    if (locY) locY.channelPath = 'location.z';
+    if (locZ) {
+      locZ.channelPath = 'location.y';
+      for (const k of locZ.keys) k.value = -k.value;
+    }
+    // rotation (euler XYZ): recompose Rx90 ∘ R(e) at every keyed frame. Exact at
+    // keys; between keys the auto-tangent interpolation differs infinitesimally.
+    const rotCurves = (['x', 'y', 'z'] as const).map((a) => find(`rotation.${a}`));
+    if (rotCurves.some(Boolean)) {
+      const frames = [...new Set(rotCurves.flatMap((c) => c ? c.keys.map((k) => k.frame) : []))].sort((a, b) => a - b);
+      const rest = q.toEulerXYZ();
+      const evalAt = (c: (typeof rotCurves)[number], frame: number, fallback: number): number => {
+        if (!c) return fallback;
+        return evalFCurve(c, frame);
+      };
+      const newKeys: { frame: number; e: { x: number; y: number; z: number }; interp: Interp }[] = frames.map((frame) => {
+        const e = {
+          x: evalAt(rotCurves[0], frame, rest.x),
+          y: evalAt(rotCurves[1], frame, rest.y),
+          z: evalAt(rotCurves[2], frame, rest.z),
+        };
+        const composed = R.mul(Quat.fromEulerXYZ(e.x, e.y, e.z)).toEulerXYZ();
+        const src = rotCurves.map((c) => c?.keys.find((k) => k.frame === frame));
+        const interp: Interp = (src.find(Boolean)?.interp) ?? 'bezier';
+        return { frame, e: composed, interp };
+      });
+      od.anim.fcurves = curves.filter((c) => !c.channelPath.startsWith('rotation.'));
+      for (const [i, axis] of (['x', 'y', 'z'] as const).entries()) {
+        void i;
+        od.anim.fcurves.push({
+          channelPath: `rotation.${axis}`,
+          keys: newKeys.map((k) => ({ frame: k.frame, value: k.e[axis], interp: k.interp })),
+        });
+      }
+    }
+  }
+}
+
 export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera): void {
   const data = parseScene(json);
+  if (data.version < 8) migrateYupToZup(data);
   // Build meshes AND modifier instances up front — any failure here (already
   // ruled out by validation, but createModifier is the source of truth) throws
   // before the first scene mutation, so a bad file can never half-load.

@@ -49,9 +49,9 @@ runE2e(async (t) => {
   // off-center — rendered mode has no fallback rig, an unlit scene is near-black.
   await t.evaluate(`(() => {
     const app = window.__app, cam = app.camera, e = cam.eye;
-    const Y = e.constructor.Y ?? new e.constructor(0, 1, 0);
-    const right = cam.forward.cross(Y).normalize();
-    const pos = e.add(right.scale(6)).add(Y.scale(4));
+    const Up = new e.constructor(0, 0, 1); // world up is +Z (Z-up)
+    const right = cam.forward.cross(Up).normalize();
+    const pos = e.add(right.scale(6)).add(Up.scale(4));
     const L = app.scene.addLight('KeyLight', 'point');
     L.transform = L.transform.withPosition(pos);
     L.light.power = 20000;
@@ -88,8 +88,13 @@ runE2e(async (t) => {
 
   // Force a render then read the center pixel immediately (preserveDrawingBuffer
   // is false, so the read must happen in the same synchronous turn as the draw).
+  // Z-up: the selected cube's origin (0,0,0) projects to the exact screen
+  // center, so the translate gizmo's green Y handle sits on the sampled pixel.
+  // Suppress the gizmo for the read so we measure the MATERIAL, not the editing
+  // decoration (in the old Y-up frame the origin decoration happened to read red).
   const readCenter = () => t.evaluate(`(() => {
     const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.gizmoVisible = false;
     app.renderer.render(app.scene, app.camera);
     const px = new Uint8Array(4);
     gl.readPixels((c.width / 2) | 0, (c.height / 2) | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -158,6 +163,7 @@ runE2e(async (t) => {
     (await t.evaluate('window.__app.scene.activeObject.materialId')) === null);
 
   // Restore a clean default scene + matcap shading so the suite ends as it began.
+  await t.evaluate(`window.__app.renderer.gizmoVisible = true`);
   await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
   await t.evaluate(`window.__app.io.apply(${JSON.stringify(saved)})`);
   await t.evaluate(`window.__app.autosave.clear()`);

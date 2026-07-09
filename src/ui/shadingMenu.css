@@ -1,0 +1,36 @@
+/* Viewport-header shading dropdown (right side of the 3D Viewport header). */
+.wsp-area-header-extra {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.shading-menu-btn {
+  background: var(--vb-button, #3a3a3a);
+  color: var(--vb-text, #ddd);
+  border: 1px solid var(--vb-border, #2a2a2a);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.shading-menu-btn:hover { background: var(--vb-hover, #4a4a4a); }
+.shading-menu-pop { min-width: 210px; }
+/* When the extra slot has content, it takes the header's free space (pushing
+   itself right); the fullscreen button then hugs it instead of also claiming
+   an auto margin (two auto margins would split the space and center us). */
+.wsp-area-header-extra:not(:empty) + .wsp-area-full-btn { margin-left: 0; }
+.shading-menu-slider {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 10px 2px 26px; /* indented under the AO checkbox */
+  font-size: 11px; color: var(--vb-text, #d0d0d0);
+}
+.shading-menu-slider.is-disabled { opacity: 0.45; }
+.shading-menu-slider-label { width: 52px; flex: none; }
+.shading-menu-slider input[type="range"] { flex: 1; min-width: 80px; }
+.shading-menu-slider-value {
+  width: 32px; flex: none; text-align: right;
+  color: var(--vb-text-dim, #8a8a8a); font-variant-numeric: tabular-nums;
+}

@@ -161,12 +161,12 @@ function snapMat(over: Partial<SnapMaterial> = {}): SnapMaterial {
  * mapped so the full 0..1 square covers the quad. */
 function floorTris(h: number): number[] {
   return [
-    -h, 0, -h, h, 0, h, h, 0, -h,
-    -h, 0, -h, -h, 0, h, h, 0, h,
+    -h, h, 0, h, -h, 0, h, h, 0,
+    -h, h, 0, -h, -h, 0, h, -h, 0,
   ];
 }
 function floorUV(): number[] {
-  // Per-corner UVs matching floorTris corner order (u from X, v from Z).
+  // Per-corner UVs matching floorTris corner order (u from X, v from -Y).
   return [
     0, 0, 1, 1, 1, 0,
     0, 0, 0, 1, 1, 1,
@@ -219,11 +219,11 @@ function constImage(w: number, h: number, v: number) {
 
 const SEED = 0x1234567;
 const overhead: SnapLight = {
-  type: 0, position: [0, 6, 0], direction: [0, -1, 0],
+  type: 0, position: [0, 0, 6], direction: [0, 0, -1],
   energy: [400, 400, 400], cosInner: 1, cosOuter: 1, radius: 0,
 };
 const camDown: SnapCamera = {
-  position: [0, 6, 0.001], forward: [0, -1, 0], right: [1, 0, 0], up: [0, 0, -1],
+  position: [0, -0.001, 6], forward: [0, 0, -1], right: [1, 0, 0], up: [0, 1, 0],
   fovY: Math.PI / 3,
 };
 
@@ -257,7 +257,7 @@ describe('tracer normal maps (P13-1)', () => {
   it('an asymmetric normal map CHANGES the image', () => {
     // A grazing sun so tilted normals visibly change NdotL across the surface.
     const grazeSun: SnapLight = {
-      type: 1, position: [0, 0, 0], direction: [-0.9, -0.4, 0],
+      type: 1, position: [0, 0, 0], direction: [-0.9, 0, -0.4],
       energy: [3, 3, 3], cosInner: 1, cosOuter: 1, radius: 0,
     };
     const noMap = renderImg(snapMat({ baseColor: [0.8, 0.8, 0.8] }), [grazeSun], w, h, passes);
@@ -270,7 +270,7 @@ describe('tracer normal maps (P13-1)', () => {
 
   it('a bump (height) map also changes the image', () => {
     const grazeSun: SnapLight = {
-      type: 1, position: [0, 0, 0], direction: [-0.9, -0.4, 0],
+      type: 1, position: [0, 0, 0], direction: [-0.9, 0, -0.4],
       energy: [3, 3, 3], cosInner: 1, cosOuter: 1, radius: 0,
     };
     // Height ramp across U → non-zero central-difference gradient.

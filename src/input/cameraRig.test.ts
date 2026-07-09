@@ -13,18 +13,18 @@ import { Transform } from '../core/math/transform';
 
 const EPS = 1e-6;
 
-/** A roll-free camera pose (built the way cameraToView builds it → up = +Y). */
+/** A roll-free camera pose (built the way cameraToView builds it → up = +Z). */
 function poseLookingAt(eye: Vec3, target: Vec3): Transform {
-  return cameraTransformFromView(eye, target.sub(eye).normalize(), Vec3.Y);
+  return cameraTransformFromView(eye, target.sub(eye).normalize(), Vec3.Z);
 }
 
 describe('configureRigFromCamera → cameraPoseFromRig round-trip', () => {
   it('reproduces the original camera pose within epsilon', () => {
     const cases: Array<[Vec3, Vec3]> = [
-      [new Vec3(0, 0, 6), new Vec3(0, 0, 0)],
-      [new Vec3(4, 3, 8), new Vec3(0, 0, 0)],
-      [new Vec3(-5, 2, -3), new Vec3(0, 0, 0)],
-      [new Vec3(2, 6, 2), new Vec3(1, 0, -1)],
+      [new Vec3(0, -6, 0), new Vec3(0, 0, 0)],
+      [new Vec3(4, 8, 3), new Vec3(0, 0, 0)],
+      [new Vec3(-5, -3, 2), new Vec3(0, 0, 0)],
+      [new Vec3(2, 2, 6), new Vec3(1, -1, 0)],
     ];
     for (const [eye, target] of cases) {
       const pose = poseLookingAt(eye, target);

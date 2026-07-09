@@ -103,12 +103,18 @@ export class GizmoPass {
   private readonly shaft: VertexArray; // 2-vertex line
   private readonly cone: VertexArray; //  triangles
   private readonly pickBox: VertexArray; // fat triangles for picking
+  /** Two-way guide line for the modal axis-lock indicator, re-uploaded per
+   *  draw: renderAxis clamps its extent against the camera near plane on the
+   *  CPU, because rasterizers (SwiftShader at least) drop LINES with an
+   *  endpoint behind the eye instead of clipping them. */
+  private readonly guide: VertexArray;
 
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.shader = new Shader(gl, VERT, FRAG, 'gizmo');
     this.shaft = new VertexArray(gl, [{ location: 0, size: 3, data: new Float32Array([0, 0, 0, SHAFT, 0, 0]) }]);
     this.cone = new VertexArray(gl, [{ location: 0, size: 3, data: coneTris(SHAFT, TIP, CONE_R, 12) }]);
     this.pickBox = new VertexArray(gl, [{ location: 0, size: 3, data: boxTris(0, PICK_LEN, PICK_R) }]);
+    this.guide = new VertexArray(gl, [{ location: 0, size: 3, data: new Float32Array(6) }]);
   }
 
   /**
@@ -130,6 +136,54 @@ export class GizmoPass {
       this.shaft.draw(gl.LINES);
       this.cone.draw(gl.TRIANGLES);
     }
+    gl.enable(gl.CULL_FACE);
+  }
+
+  /**
+   * Modal axis-lock indicator: ONE axis's arrow plus a long guide line through
+   * the pivot (Blender's constraint line), in the axis color. Drawn while a
+   * G/R/S runs with X/Y/Z locked, where the full gizmo is hidden. Caller
+   * clears the depth buffer first, same as render(). `eye`/`forward` are the
+   * viewpoint, used to clamp the guide in front of the camera (see `guide`).
+   */
+  renderAxis(
+    viewProj: Mat4, origin: Vec3, scale: number, axis: GizmoAxis,
+    eye: Vec3, forward: Vec3,
+  ): void {
+    const gl = this.gl;
+    this.shader.use();
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    const mvp = viewProj.mul(gizmoModelMatrix(origin, scale, axis));
+    const [r, g, b] = AXIS_COLOR[axis];
+    this.shader.setMat4('u_mvp', mvp);
+    this.shader.setVec4('u_color', r, g, b, 1);
+
+    // Guide extent in gizmo-local t along +X (world P(t) = origin + dir·scale·t):
+    // ±T reaches ~7× the eye distance (scale is 0.18·dist·tan(fov/2)), always
+    // off-screen sideways; then clamp t so every point stays a margin in front
+    // of the eye plane — dot(P(t) − eye, forward) ≥ NEAR.
+    const T = 100;
+    const NEAR = 0.3;
+    const dir = axis === 'x' ? new Vec3(1, 0, 0) : axis === 'y' ? new Vec3(0, 1, 0) : new Vec3(0, 0, 1);
+    const a = origin.sub(eye).dot(forward);
+    const b2 = dir.dot(forward) * scale;
+    let t0 = -T;
+    let t1 = T;
+    if (Math.abs(b2) < 1e-9) {
+      if (a < NEAR) t0 = t1 = 0; // whole line behind the camera: skip
+    } else {
+      const tCut = (NEAR - a) / b2;
+      if (b2 > 0) t0 = Math.max(t0, tCut);
+      else t1 = Math.min(t1, tCut);
+    }
+    if (t1 > t0) {
+      this.guide.update(0, new Float32Array([t0, 0, 0, t1, 0, 0]));
+      this.guide.draw(gl.LINES);
+    }
+    this.shaft.draw(gl.LINES);
+    this.cone.draw(gl.TRIANGLES);
     gl.enable(gl.CULL_FACE);
   }
 

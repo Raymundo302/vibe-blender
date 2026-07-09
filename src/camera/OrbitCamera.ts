@@ -3,13 +3,14 @@ import { Mat4 } from '../core/math/mat4';
 import { rayFromNdc, type Ray } from '../core/math/ray';
 
 /**
- * Blender-style turntable camera: yaw around world Y, pitch clamped short of
- * the poles, orbiting `target` at `distance`.
+ * Blender-style turntable camera: yaw around world Z (up, Blender convention),
+ * pitch clamped short of the poles, orbiting `target` at `distance`.
  */
 export class OrbitCamera {
   target = Vec3.ZERO;
   distance = 8;
-  /** Radians. yaw 0 looks down -Z; Blender home view is over-the-shoulder. */
+  /** Radians. yaw 0 looks along +Y (Blender front view looks -Y); the default
+   *  is Blender's over-the-shoulder home view from the front-right-above. */
   yaw = Math.PI / 4;
   pitch = Math.PI / 6;
 
@@ -24,8 +25,8 @@ export class OrbitCamera {
     return this.target.add(
       new Vec3(
         Math.sin(this.yaw) * cp,
+        -Math.cos(this.yaw) * cp,
         Math.sin(this.pitch),
-        Math.cos(this.yaw) * cp,
       ).scale(this.distance),
     );
   }
@@ -35,7 +36,7 @@ export class OrbitCamera {
   }
 
   viewMatrix(): Mat4 {
-    return Mat4.lookAt(this.eye, this.target, Vec3.Y);
+    return Mat4.lookAt(this.eye, this.target, Vec3.Z);
   }
 
   projMatrix(aspect: number): Mat4 {

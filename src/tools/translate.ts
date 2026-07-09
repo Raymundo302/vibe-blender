@@ -107,6 +107,10 @@ export class TranslateOperator implements Operator {
     }
   }
 
+  axisIndicator(): { axis: 'x' | 'y' | 'z'; pivot: Vec3 } | null {
+    return this.axis ? { axis: this.axis, pivot: this.pivot } : null;
+  }
+
   confirm(ctx: OperatorContext): void {
     ctx.undo.push(
       new TransformCommand(

@@ -179,15 +179,15 @@ runE2e(async (t) => {
     S.editMode.clearSelection();
   })()`);
   await t.sleep(80);
-  // Pick the topmost vert (max world y) and select it.
+  // Pick the topmost vert (max world z — +Z is up in the Z-up convention) and select it.
   const topVert = await t.evaluate(`(() => {
     const S = window.__app.scene, o = S.editObject, m = o.mesh;
-    let best = null, bestY = -1e9;
-    for (const [id, v] of m.verts) if (v.co.y > bestY) { bestY = v.co.y; best = id; }
+    let best = null, bestZ = -1e9;
+    for (const [id, v] of m.verts) if (v.co.z > bestZ) { bestZ = v.co.z; best = id; }
     S.editMode.verts.add(best); S.editMode.touch();
     return best;
   })()`);
-  const beforePE = await t.evaluate(`[...window.__app.scene.editObject.mesh.verts.values()].map(v => v.co.y)`);
+  const beforePE = await t.evaluate(`[...window.__app.scene.editObject.mesh.verts.values()].map(v => v.co.z)`);
   // Pin the proportional radius to 2 — the value this suite's frozen geometry
   // expectations (lump size → hero warmth distribution) were built with.
   // P16-4 made the DEFAULT 1.0 and session-sticky, so an e2e must set its own.
@@ -211,7 +211,7 @@ runE2e(async (t) => {
   await t.sleep(60);
   await t.key('Enter', 'Enter', 0);
   await t.sleep(120);
-  const afterPE = await t.evaluate(`[...window.__app.scene.editObject.mesh.verts.values()].map(v => v.co.y)`);
+  const afterPE = await t.evaluate(`[...window.__app.scene.editObject.mesh.verts.values()].map(v => v.co.z)`);
   let movedPE = 0;
   for (let i = 0; i < beforePE.length; i++) if (Math.abs(afterPE[i] - beforePE[i]) > 1e-6) movedPE++;
   t.check('S2: proportional grab moved a NEIGHBOURHOOD of verts (not just one)', movedPE >= 3, `moved=${movedPE}`);
@@ -231,8 +231,8 @@ runE2e(async (t) => {
     const rnd = mulberry32(1337);
     const Vec = m.verts.values().next().value.co.constructor;
     for (const v of m.verts.values()) {
-      const r = 1 + (rnd() - 0.5) * 0.09; // ±4.5% radial wobble
-      m.setVertCo(v.id, new Vec(v.co.x * r, v.co.y + (rnd() - 0.5) * 0.05, v.co.z * r));
+      const r = 1 + (rnd() - 0.5) * 0.09; // ±4.5% radial wobble (radial plane is XY in Z-up)
+      m.setVertCo(v.id, new Vec(v.co.x * r, v.co.y * r, v.co.z + (rnd() - 0.5) * 0.05));
     }
   })()`);
   await t.sleep(80);
@@ -254,8 +254,8 @@ runE2e(async (t) => {
     const toDelete = [];
     for (const [fid, f] of icingMesh.faces) {
       const vs = f.verts.map((vid) => icingMesh.verts.get(vid).co);
-      let ys = 0; for (const c of vs) ys += c.y; ys /= vs.length;
-      if (ys < -0.02) toDelete.push(fid);
+      let zs = 0; for (const c of vs) zs += c.z; zs /= vs.length; // +Z is up
+      if (zs < -0.02) toDelete.push(fid);
     }
     icingMesh.deleteFaces(toDelete);
     // Drop now-orphaned verts (no incident face) so counts are clean.
@@ -373,8 +373,8 @@ runE2e(async (t) => {
   // =====================================================================
   const drips = await evalAsync(`(() => {
     const S = window.__app.scene, o = S.get(${icingId}), m = o.mesh;
-    // Rim verts = lowest ring of the icing cap (near the equator we cut at).
-    const rim = [...m.verts.entries()].filter(([, v]) => v.co.y < 0.03).map(([id]) => id);
+    // Rim verts = lowest ring of the icing cap (near the equator we cut at) — low Z.
+    const rim = [...m.verts.entries()].filter(([, v]) => v.co.z < 0.03).map(([id]) => id);
     // Pick a deterministic handful spread around the ring.
     const picks = [];
     for (let k = 0; k < rim.length; k += Math.max(1, Math.floor(rim.length / 5))) picks.push(rim[k]);
@@ -382,9 +382,10 @@ runE2e(async (t) => {
     for (const id of picks.slice(0, 5)) {
       const src = m.verts.get(id).co;
       const Vec = src.constructor;
-      const tip = m.addVert(new Vec(src.x * 1.02, src.y - 0.22, src.z * 1.02));
+      // Drips hang downward = -Z; radial spread is in the XY plane.
+      const tip = m.addVert(new Vec(src.x * 1.02, src.y * 1.02, src.z - 0.22));
       // A tiny 3-vert triangle drip so it has a face (visible in render).
-      const side = m.addVert(new Vec(src.x * 1.04, src.y - 0.05, src.z * 1.04));
+      const side = m.addVert(new Vec(src.x * 1.04, src.y * 1.04, src.z - 0.05));
       m.addFace([id, side, tip]);
       made++;
     }
@@ -403,11 +404,11 @@ runE2e(async (t) => {
     const S = window.__app.scene;
     const prim = await import('/src/core/mesh/primitives.ts');
     const V = (await import('/src/core/math/vec3.ts')).Vec3;
-    const plate = S.add('Plate', prim.makeCylinder(2.2, 0.18, 48)); // shallow disc
-    plate.transform = plate.transform.withPosition(new V(0, -0.85, 0));
+    const plate = S.add('Plate', prim.makeCylinder(2.2, 0.18, 48)); // shallow disc (cylinder axis is Z)
+    plate.transform = plate.transform.withPosition(new V(0, 0, -0.85)); // below the donut = -Z
     plate.shadeSmooth = true;
-    const table = S.add('Table', prim.makePlane(20));
-    table.transform = table.transform.withPosition(new V(0, -0.95, 0));
+    const table = S.add('Table', prim.makePlane(20)); // plane lies in XY (horizontal)
+    table.transform = table.transform.withPosition(new V(0, 0, -0.95));
     return { plateId: plate.id, tableId: table.id };
   })()`);
   await t.sleep(120);
@@ -566,24 +567,33 @@ runE2e(async (t) => {
   await t.sleep(140);
   const camId = await t.evaluate(`window.__app.scene.activeCameraId`);
   t.check('S8: lock-to-view created + activated a camera', camId !== null);
+  // Pull the camera back along its view ray (it looks at the origin after
+  // "frame selected") so the donut doesn't fill the whole frame — the S9
+  // warmth check needs actual background in the side strips.
+  await t.evaluate(`(() => {
+    const c = window.__app.scene.get(${camId});
+    const p = c.transform.position, V = p.constructor;
+    c.transform = c.transform.withPosition(new V(p.x * 2.1, p.y * 2.1, p.z * 2.1));
+  })()`);
   await t.evaluate(`(() => { const c = window.__app.scene.get(${camId}); c.camera.focalLength = 50; })()`);
   t.check('S8: camera focal length ~50', Math.abs(await t.evaluate(`window.__app.scene.get(${camId}).camera.focalLength`) - 50) < 1e-6);
 
   const lights = await evalAsync(`(() => {
     const S = window.__app.scene;
     const V = S.get(${donutId}).transform.position.constructor;
-    // Warm angled Sun (key).
+    // Warm angled Sun (key). Identity rotation now aims -Z (straight down) — a
+    // natural overhead key. Position is cosmetic for a directional sun.
     const sun = S.addLight('Sun', 'sun');
     sun.light.color = [1.0, 0.85, 0.6]; sun.light.power = 4; sun.light.radius = 0.02;
-    sun.transform = sun.transform.withPosition(new V(4, 6, 3));
+    sun.transform = sun.transform.withPosition(new V(4, -3, 6));
     // Blue "sky" point fill, soft (radius for soft shadows).
     const sky = S.addLight('SkyFill', 'point');
     sky.light.color = [0.5, 0.62, 1.0]; sky.light.power = 500; sky.light.radius = 1.2;
-    sky.transform = sky.transform.withPosition(new V(-4, 3, -2));
-    // White bounce point from below/front.
+    sky.transform = sky.transform.withPosition(new V(-4, 2, 3));
+    // White bounce point from the front, near table height.
     const bounce = S.addLight('Bounce', 'point');
     bounce.light.color = [1, 1, 1]; bounce.light.power = 260; bounce.light.radius = 0.8;
-    bounce.transform = bounce.transform.withPosition(new V(0, 1.2, 5));
+    bounce.transform = bounce.transform.withPosition(new V(0, -5, 1.2));
     return { sun: sun.id, sky: sky.id, bounce: bounce.id };
   })()`);
   await t.sleep(80);

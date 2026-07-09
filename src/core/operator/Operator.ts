@@ -1,6 +1,7 @@
 import type { Scene } from '../scene/Scene';
 import type { OrbitCamera } from '../../camera/OrbitCamera';
 import type { UndoStack } from '../undo/UndoStack';
+import type { Vec3 } from '../math/vec3';
 
 /**
  * Modal operator system (architecture decision A1) — Blender's core tool
@@ -49,6 +50,14 @@ export interface Operator {
    * to Ctrl being released (grid-snap invert is held, not toggled).
    */
   onKeyUp?(ctx: OperatorContext, key: string): void;
+
+  /**
+   * Optional: the operator's current world-axis constraint, so the viewport
+   * can keep that axis's gizmo arrow visible while the modal runs. Return the
+   * locked axis + the world pivot to anchor the indicator at, or null when
+   * moving freely. InputManager polls this after every routed event.
+   */
+  axisIndicator?(): { axis: 'x' | 'y' | 'z'; pivot: Vec3 } | null;
 
   /** LMB or Enter: apply final state and push the undo command. */
   confirm(ctx: OperatorContext): void;
