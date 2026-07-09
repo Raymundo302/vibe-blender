@@ -355,11 +355,16 @@ runE2e(async (t) => {
   }
   console.log(`      [banding] active=${dark.length}/${darkFull.length} distinct=${distinct} maxRun=${maxRun}`);
   console.log(`      [banding] darkFull=[${darkFull.join(',')}]`);
-  // A smooth active ramp hits many distinct darkening levels and never plateaus
-  // on one value for long. v2 (17 raw AO levels, un-dithered, blur dead on the
-  // grazing floor) collapses to a few long plateaus.
+  // A smooth active ramp hits a distinct darkening level at almost every active
+  // sample and never plateaus on one value for long. v2 (17 raw AO levels,
+  // un-dithered, blur dead on the grazing floor) collapses MANY active samples
+  // onto a few long plateaus — a low distinct/active ratio. Ratio-based so the
+  // check survives look retunes that change how far the ramp reaches (the
+  // 2026-07-08 half-res rebuild shortened the active ramp; smoothness is what
+  // this check pins, not reach).
   t.check('banding detector: contact ramp spreads over many distinct AO levels',
-    distinct >= 16, `distinct=${distinct} (of ${dark.length} active samples)`);
+    dark.length >= 8 && distinct >= Math.max(8, Math.floor(dark.length * 0.8)),
+    `distinct=${distinct} (of ${dark.length} active samples)`);
   t.check('banding detector: contact ramp has no long same-value plateaus (bands)',
     maxRun <= 6, `maxRun=${maxRun}`);
 

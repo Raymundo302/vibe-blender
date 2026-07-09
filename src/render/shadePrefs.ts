@@ -19,10 +19,12 @@ export interface ShadePrefs {
 }
 
 /** Slider bounds — shared by the UI and the loader's clamping. */
-export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 0.55 };
-export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 1 };
+export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 1.2 };
+export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 0.9 };
 
-const STORAGE_KEY = 'vibe-shading';
+// v2: AO look re-tuned (half-res GTAO rebuild, 2026-07-08) — new key so
+// stored pre-rebuild radius/strength don't override the calibrated defaults.
+const STORAGE_KEY = 'vibe-shading-v2';
 
 export function defaultShadePrefs(): ShadePrefs {
   return {

@@ -32,6 +32,9 @@ export class Framebuffer {
     height: number,
     private readonly withDepth: boolean,
     private format: FboFormat = 'rgba8',
+    /** LINEAR-filter the color texture (half-float linear is WebGL2 core) —
+     *  used by low-res AO so the upsample to canvas resolution is smooth. */
+    private readonly linear = false,
   ) {
     this.fbo = gl.createFramebuffer()!;
     this.colorTex = gl.createTexture()!;
@@ -54,8 +57,9 @@ export class Framebuffer {
 
     gl.bindTexture(gl.TEXTURE_2D, this.colorTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, internal, width, height, 0, format, type, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    const filter = this.linear ? gl.LINEAR : gl.NEAREST;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 

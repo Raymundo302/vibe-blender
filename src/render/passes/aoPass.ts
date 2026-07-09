@@ -29,7 +29,8 @@ import type { Mat4 } from '../../core/math/mat4';
  */
 
 const SLICES = 3;      // horizon directions per pixel (spp = 2*SLICES*STEPS)
-const STEPS = 6;       // march steps per side
+const STEPS = 8;       // march steps per side
+const BLUR_TAPS = 6;   // separable denoise: taps each side, each blur pass
 
 const PRE_VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
@@ -139,7 +140,7 @@ float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
   if (above <= AO_BIAS) return -1.0;          // below / level with the plane
   float r = sqrt(d2) * invRadius;
   if (r >= 1.0) return -1.0;                  // beyond the AO radius
-  float falloff = 1.0 - smoothstep(0.7, 1.0, r);
+  float falloff = 1.0 - smoothstep(0.5, 1.0, r);
   return mix(-1.0, dot(dv, V) * invd, falloff);
 }
 
@@ -225,7 +226,7 @@ void main() {
 
   // Deepen contacts a touch, then apply the strength slider (0 → off, 1 →
   // default, 2 → strong; clamped so heavy settings can't over-darken to black).
-  float ao = pow(visibility, 1.6);
+  float ao = pow(visibility, 1.15);
   ao = clamp(1.0 - (1.0 - ao) * u_strength, 0.0, 1.0);
 
   // ±0.5-LSB IGN dither before the 8-bit write turns residual quantization
@@ -234,18 +235,22 @@ void main() {
   outColor = vec4(vec3(clamp(ao, 0.0, 1.0)), 1.0);
 }`;
 
-// 5×5 depth-aware bilateral. Edge weight = the tap's distance to the CENTER's
-// tangent plane (predicted from depth+normal), relative to depth — so it stays
-// alive on receding/grazing floors (the fixed-threshold blur died there) yet
-// still preserves silhouettes and creases.
+// Separable plane-aware Gaussian denoise (X pass then Y pass). Edge weight =
+// the tap's distance to the CENTER's tangent plane (predicted from depth +
+// normal), relative to depth — alive on receding/grazing floors, still
+// silhouette/crease-preserving. Run at the half-res AO resolution the two
+// 13-tap passes cover a ~24×24 canvas-pixel footprint, which is what melts
+// the IGN stipple into the smooth Blender-like gradient.
 const BLUR_FRAG = /* glsl */ `#version 300 es
 precision highp float;
 uniform highp sampler2D u_src;
 uniform highp sampler2D u_depth;   // highp: see GTAO_FRAG — lowp default = fp16 depth on AMD
 uniform highp sampler2D u_normal;
 uniform mat4 u_invProj;
-uniform vec2 u_texel;
+uniform vec2 u_dir;      // one-texel step along this pass's axis (x or y)
 out vec4 outColor;
+
+uniform vec2 u_texel;    // 1 / AO-resolution size (for gl_FragCoord → uv)
 
 vec3 viewPos(vec2 uv, float d) {
   vec4 p = u_invProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
@@ -263,25 +268,22 @@ void main() {
   // crease (points off the plane) is rejected.
   float tol = 0.05 * abs(cP.z) + 0.01;
 
-  float sum = 0.0;
-  float wsum = 0.0;
-  for (int y = -2; y <= 2; y++) {
-    for (int x = -2; x <= 2; x++) {
-      vec2 o = vec2(float(x), float(y)) * u_texel;
+  float sum = texture(u_src, uv).r;
+  float wsum = 1.0;
+  for (int i = 1; i <= ${BLUR_TAPS}; i++) {
+    float g = exp(-float(i * i) * 0.08);       // gaussian falloff, sigma ~2.5
+    for (float side = -1.0; side <= 1.0; side += 2.0) {
+      vec2 o = u_dir * (float(i) * side);
       float sd = texture(u_depth, uv + o).r;
-      float w;
-      if (sd >= 1.0) {
-        w = 0.0;
-      } else {
-        vec3 sP = viewPos(uv + o, sd);
-        float planeDist = abs(dot(sP - cP, cN));
-        w = exp(-planeDist / tol);
-      }
+      if (sd >= 1.0) continue;
+      vec3 sP = viewPos(uv + o, sd);
+      float planeDist = abs(dot(sP - cP, cN));
+      float w = g * exp(-planeDist / tol);
       sum += texture(u_src, uv + o).r * w;
       wsum += w;
     }
   }
-  outColor = vec4(vec3(wsum > 0.0 ? sum / wsum : texture(u_src, uv).r), 1.0);
+  outColor = vec4(vec3(sum / wsum), 1.0);
 }`;
 
 export class AoPass {
@@ -291,6 +293,7 @@ export class AoPass {
   private readonly fullscreen: EmptyVao;
   private readonly ssaoFbo: Framebuffer;
   private readonly blurFbo: Framebuffer;
+  private readonly finalFbo: Framebuffer;
   private preFbo: WebGLFramebuffer;
   private depthTex: WebGLTexture;
   private normalTex: WebGLTexture;
@@ -309,9 +312,16 @@ export class AoPass {
 
     // Single-channel AO targets: R16F removes 8-bit quantization outright where
     // the float-render extension exists; R8 + dither is the core fallback.
+    // The whole AO chain runs at HALF the canvas resolution (like EEVEE's 1:2
+    // raytracing) — 4× cheaper per tap, and the LINEAR upsample of the final
+    // target is itself a smoothing stage. ssao = raw GTAO, blur = X-pass,
+    // final = Y-pass (the texture the shaded passes multiply by).
     this.aoFormat = floatColorRenderable(gl) ? 'r16f' : 'r8';
-    this.ssaoFbo = new Framebuffer(gl, width, height, false, this.aoFormat);
-    this.blurFbo = new Framebuffer(gl, width, height, false, this.aoFormat);
+    const aoW = Math.max(1, Math.round(width / 2));
+    const aoH = Math.max(1, Math.round(height / 2));
+    this.ssaoFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat);
+    this.blurFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat);
+    this.finalFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat, true);
 
     this.white = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.white);
@@ -338,6 +348,7 @@ export class AoPass {
     this.aoFormat = format;
     this.ssaoFbo.setFormat(format);
     this.blurFbo.setFormat(format);
+    this.finalFbo.setFormat(format);
   }
 
   private allocateTargets(width: number, height: number): void {
@@ -371,8 +382,11 @@ export class AoPass {
   resize(width: number, height: number): void {
     if (width === this.width && height === this.height) return;
     this.allocateTargets(width, height);
-    this.ssaoFbo.resize(width, height);
-    this.blurFbo.resize(width, height);
+    const aoW = Math.max(1, Math.round(width / 2));
+    const aoH = Math.max(1, Math.round(height / 2));
+    this.ssaoFbo.resize(aoW, aoH);
+    this.blurFbo.resize(aoW, aoH);
+    this.finalFbo.resize(aoW, aoH);
   }
 
   /** Stage 1: bind the prepass FBO; the Renderer then draws every mesh through
@@ -400,7 +414,10 @@ export class AoPass {
     const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
     gl.disable(gl.DEPTH_TEST);
 
-    this.ssaoFbo.bind();
+    const aoW = this.ssaoFbo.width;
+    const aoH = this.ssaoFbo.height;
+
+    this.ssaoFbo.bind(); // sets the half-res viewport
     this.gtaoShader.use();
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
@@ -411,36 +428,43 @@ export class AoPass {
     gl.activeTexture(gl.TEXTURE0);
     this.gtaoShader.setMat4('u_proj', proj);
     this.gtaoShader.setMat4('u_invProj', invProj);
-    this.gtaoShader.setVec2('u_texel', 1 / this.width, 1 / this.height);
-    this.gtaoShader.setVec2('u_size', this.width, this.height);
+    this.gtaoShader.setVec2('u_texel', 1 / aoW, 1 / aoH);
+    this.gtaoShader.setVec2('u_size', aoW, aoH);
     this.gtaoShader.setFloat('u_radius', radius);
     this.gtaoShader.setFloat('u_strength', strength);
     this.gtaoShader.setFloat('u_dither', this.ditherFlag);
     this.fullscreen.drawTriangles(3);
 
-    this.blurFbo.bind();
-    this.blurShader.use();
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.ssaoFbo.texture);
-    this.blurShader.setInt('u_src', 0);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
-    this.blurShader.setInt('u_depth', 1);
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, this.normalTex);
-    this.blurShader.setInt('u_normal', 2);
-    gl.activeTexture(gl.TEXTURE0);
-    this.blurShader.setMat4('u_invProj', invProj);
-    this.blurShader.setVec2('u_texel', 1 / this.width, 1 / this.height);
-    this.fullscreen.drawTriangles(3);
+    // Separable plane-aware denoise: X pass into blurFbo, Y pass into finalFbo.
+    const blurPass = (src: Framebuffer, dst: Framebuffer, dx: number, dy: number) => {
+      dst.bind();
+      this.blurShader.use();
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, src.texture);
+      this.blurShader.setInt('u_src', 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+      this.blurShader.setInt('u_depth', 1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.normalTex);
+      this.blurShader.setInt('u_normal', 2);
+      gl.activeTexture(gl.TEXTURE0);
+      this.blurShader.setMat4('u_invProj', invProj);
+      this.blurShader.setVec2('u_texel', 1 / aoW, 1 / aoH);
+      this.blurShader.setVec2('u_dir', dx / aoW, dy / aoH);
+      this.fullscreen.drawTriangles(3);
+    };
+    blurPass(this.ssaoFbo, this.blurFbo, 1, 0);
+    blurPass(this.blurFbo, this.finalFbo, 0, 1);
 
-    this.blurFbo.unbind();
+    this.finalFbo.unbind();
     gl.viewport(0, 0, this.width, this.height);
     if (depthWasOn) gl.enable(gl.DEPTH_TEST);
   }
 
-  /** The denoised AO texture (valid after compute()). */
+  /** The denoised AO texture (valid after compute()) — half-res, LINEAR
+   *  filtered, sampled by the shaded passes at normalized coordinates. */
   get texture(): WebGLTexture {
-    return this.blurFbo.texture;
+    return this.finalFbo.texture;
   }
 }
