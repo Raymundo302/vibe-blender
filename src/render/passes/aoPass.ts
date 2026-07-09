@@ -168,8 +168,22 @@ float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
   float sSurf = length(sP);
   vec3 rayDir = sP / sSurf;
   float sNear = dot(P, rayDir);               // ray param closest to the center
-  float sQ = clamp(sNear, sSurf, sSurf + 1.0 / invRadius);
-  return scoreTap(rayDir * sQ, P, N, V, invRadius);
+  // Slab depth scales with INCIDENCE: a ray hitting the surface head-on may
+  // extrude a full radius (solid volume genuinely continues behind it — this
+  // is what completes the shadow diamond behind a cube's far corner), while a
+  // ray grazing a silhouette tangentially extrudes ~nothing — a fixed-depth
+  // slab there pokes laterally past the object and cast ball-shaped phantom
+  // shadows that tracked the silhouette corners as the camera orbited.
+  vec3 sN = normalize(texture(u_normal, suv).xyz * 2.0 - 1.0);
+  float incid = clamp(-dot(rayDir, sN), 0.0, 1.0);
+  float sQ = clamp(sNear, sSurf, sSurf + incid / invRadius);
+  // Score the visible surface AND the slab point, keep the stronger: the slab
+  // point is closest to P but can dive below the center's tangent plane (a
+  // steep camera's rays point down), where the elevation gate rejects it — the
+  // surface point must stay a candidate or plain wall contact shadows weaken.
+  float c = scoreTap(sP, P, N, V, invRadius);
+  if (sQ > sSurf + 1e-4) c = max(c, scoreTap(rayDir * sQ, P, N, V, invRadius));
+  return c;
 }
 
 void main() {
