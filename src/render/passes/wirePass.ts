@@ -9,9 +9,18 @@ uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform mat3 u_normalMat; // view-space normal matrix (view * model)
-uniform float u_zBias;    // NDC pull toward the camera, so wires win the depth
-                          // fight against the faces they sit on (overlay /
-                          // hidden-line modes); 0 for the classic wireframe.
+uniform float u_zBias;    // FRACTIONAL view-space pull toward the eye, so wires
+                          // win the depth fight against the faces they sit on
+                          // (overlay / hidden-line modes); 0 for the classic
+                          // wireframe. Fraction-of-distance, NOT a constant NDC
+                          // shift: NDC depth compresses far from the camera, so
+                          // a constant 0.002 NDC bias out-shifted the entire
+                          // depth separation between OBJECTS a few units apart
+                          // once the camera stepped back — edges of hidden
+                          // geometry drew straight through the mesh in front.
+                          // Pulling by a fixed fraction of view distance keeps
+                          // the margin proportional at every range (leaks only
+                          // within ~bias*z of a surface, mm–cm scale).
 uniform float u_hideBack; // 1 = cull edges whose BOTH faces face away. Without
                           // it, hidden edges poke through at shared silhouette
                           // corners: right at the corner vertex their depth
@@ -19,8 +28,10 @@ uniform float u_hideBack; // 1 = cull edges whose BOTH faces face away. Without
                           // stub of each back edge win the depth test.
 void main() {
   vec4 viewPos = u_view * u_model * vec4(a_position, 1.0);
-  gl_Position = u_proj * viewPos;
-  gl_Position.z -= u_zBias * gl_Position.w;
+  vec4 pulled = viewPos;
+  pulled.xyz *= (1.0 - u_zBias);   // radial: screen position is unchanged
+  gl_Position = u_proj * pulled;
+  gl_Position.z -= 2e-5 * gl_Position.w;   // few-ULP epsilon for raster noise
   if (u_hideBack > 0.5) {
     bool front1 = dot(u_normalMat * a_faceN1, viewPos.xyz) < 0.0;
     bool front2 = dot(u_normalMat * a_faceN2, viewPos.xyz) < 0.0;

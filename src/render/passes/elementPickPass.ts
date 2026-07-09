@@ -86,14 +86,20 @@ export function closestNonZeroId(
 const VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_color;
-uniform mat4 u_mvp;
-uniform float u_depthBias; // pull toward the camera so points/lines beat coplanar faces
+uniform mat4 u_modelView;
+uniform mat4 u_proj;
+uniform float u_depthBias; // FRACTIONAL view-space pull so points/lines beat
+                           // coplanar faces at every distance — must mirror
+                           // editOverlayPass so picking matches the visible
+                           // cage (see wirePass.ts for the rationale).
 uniform float u_pointSize;
 out vec3 v_color;
 void main() {
   v_color = a_color;
-  gl_Position = u_mvp * vec4(a_position, 1.0);
-  gl_Position.z -= u_depthBias * gl_Position.w;
+  vec4 viewPos = u_modelView * vec4(a_position, 1.0);
+  viewPos.xyz *= (1.0 - u_depthBias);
+  gl_Position = u_proj * viewPos;
+  gl_Position.z -= 2e-5 * gl_Position.w;
   gl_PointSize = u_pointSize;
 }`;
 
@@ -201,7 +207,7 @@ export class ElementPickPass {
    * kind is clickable, and front elements win. Leaves the id FBO unbound; the
    * caller reads a region and restores the main viewport.
    */
-  render(mvp: Mat4, mesh: EditableMesh, mode: ElementMode): void {
+  render(modelView: Mat4, proj: Mat4, mesh: EditableMesh, mode: ElementMode): void {
     const gl = this.gl;
     const xray = xrayState.enabled;
     this.rebuild(mesh);
@@ -215,7 +221,8 @@ export class ElementPickPass {
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     this.shader.use();
-    this.shader.setMat4('u_mvp', mvp);
+    this.shader.setMat4('u_modelView', modelView);
+    this.shader.setMat4('u_proj', proj);
     this.shader.setFloat('u_pointSize', 1);
 
     if (mode === 'face') {

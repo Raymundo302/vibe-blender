@@ -651,9 +651,9 @@ export class Renderer {
 
     // Edit-mode cage (verts/edges/selected-face fill)
     if (editObj && scene.effectiveVisible(editObj) && scene.editMode) {
-      const mvp = proj.mul(view).mul(scene.worldMatrix(editObj));
-      this.editOverlayPass.render(mvp, editObj.mesh, scene.editMode);
-      if (this.editPreviewLines) this.editOverlayPass.renderPreview(mvp, this.editPreviewLines);
+      const modelView = view.mul(scene.worldMatrix(editObj));
+      this.editOverlayPass.render(modelView, proj, editObj.mesh, scene.editMode);
+      if (this.editPreviewLines) this.editOverlayPass.renderPreview(modelView, proj, this.editPreviewLines);
     }
 
     // Translate gizmo — on top of everything (clear depth after outlines).
@@ -752,8 +752,8 @@ export class Renderer {
 
     const view = camera.viewMatrix();
     const proj = camera.projMatrix(canvas.width / canvas.height);
-    const mvp = proj.mul(view).mul(scene.worldMatrix(editObj));
-    this.elementPickPass.render(mvp, editObj.mesh, kindOverride ?? sel.elementMode);
+    const modelView = view.mul(scene.worldMatrix(editObj));
+    this.elementPickPass.render(modelView, proj, editObj.mesh, kindOverride ?? sel.elementMode);
 
     // Center a clamped 9×9 window on the cursor (device pixels, GL bottom-up).
     const dpr = window.devicePixelRatio || 1;

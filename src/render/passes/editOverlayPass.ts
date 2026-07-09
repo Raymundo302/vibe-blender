@@ -8,14 +8,22 @@ import type { Mat4 } from '../../core/math/mat4';
 const WIRE_VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_color;
-uniform mat4 u_mvp;
-uniform float u_depthBias; // pull toward the camera so the cage wins z-fighting
+uniform mat4 u_modelView;
+uniform mat4 u_proj;
+uniform float u_depthBias; // FRACTIONAL view-space pull toward the eye so the
+                           // cage wins z-fighting with its own faces. Fraction
+                           // of distance, not constant NDC — a constant shift
+                           // out-shifts the compressed depth gap between whole
+                           // OBJECTS at range, drawing the cage through
+                           // geometry in front of it (see wirePass.ts).
 uniform float u_pointSize;
 out vec3 v_color;
 void main() {
   v_color = a_color;
-  gl_Position = u_mvp * vec4(a_position, 1.0);
-  gl_Position.z -= u_depthBias * gl_Position.w;
+  vec4 viewPos = u_modelView * vec4(a_position, 1.0);
+  viewPos.xyz *= (1.0 - u_depthBias);
+  gl_Position = u_proj * viewPos;
+  gl_Position.z -= 2e-5 * gl_Position.w;
   gl_PointSize = u_pointSize;
 }`;
 
@@ -27,10 +35,13 @@ void main() { outColor = vec4(v_color, 1.0); }`;
 
 const FILL_VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
-uniform mat4 u_mvp;
+uniform mat4 u_modelView;
+uniform mat4 u_proj;
 void main() {
-  gl_Position = u_mvp * vec4(a_position, 1.0);
-  gl_Position.z -= 0.0005 * gl_Position.w;
+  vec4 viewPos = u_modelView * vec4(a_position, 1.0);
+  viewPos.xyz *= (1.0 - 0.0005);   // fractional pull — see WIRE_VERT
+  gl_Position = u_proj * viewPos;
+  gl_Position.z -= 2e-5 * gl_Position.w;
 }`;
 
 const FILL_FRAG = /* glsl */ `#version 300 es
@@ -112,7 +123,7 @@ export class EditOverlayPass {
    * VertexArray is cached per Float32Array identity — callers pass a new array
    * only when the preview actually changes.
    */
-  renderPreview(mvp: Mat4, segments: Float32Array): void {
+  renderPreview(modelView: Mat4, proj: Mat4, segments: Float32Array): void {
     if (segments.length === 0) return;
     const gl = this.gl;
     if (this.previewSource !== segments) {
@@ -126,7 +137,8 @@ export class EditOverlayPass {
       this.previewSource = segments;
     }
     this.wireShader.use();
-    this.wireShader.setMat4('u_mvp', mvp);
+    this.wireShader.setMat4('u_modelView', modelView);
+    this.wireShader.setMat4('u_proj', proj);
     this.wireShader.setFloat('u_depthBias', 0.002);
     this.wireShader.setFloat('u_pointSize', 1.0);
     this.previewVa!.draw(gl.LINES);
@@ -134,14 +146,15 @@ export class EditOverlayPass {
   private previewVa: VertexArray | null = null;
   private previewSource: Float32Array | null = null;
 
-  render(mvp: Mat4, mesh: EditableMesh, sel: EditModeState): void {
+  render(modelView: Mat4, proj: Mat4, mesh: EditableMesh, sel: EditModeState): void {
     const gl = this.gl;
     this.rebuild(mesh, sel);
 
     // Selected-face fill (blended, under the wires)
     if (this.fillVa) {
       this.fillShader.use();
-      this.fillShader.setMat4('u_mvp', mvp);
+      this.fillShader.setMat4('u_modelView', modelView);
+      this.fillShader.setMat4('u_proj', proj);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       gl.depthMask(false);
@@ -153,7 +166,8 @@ export class EditOverlayPass {
     }
 
     this.wireShader.use();
-    this.wireShader.setMat4('u_mvp', mvp);
+    this.wireShader.setMat4('u_modelView', modelView);
+    this.wireShader.setMat4('u_proj', proj);
 
     this.wireShader.setFloat('u_depthBias', 0.001);
     this.wireShader.setFloat('u_pointSize', 1.0);
