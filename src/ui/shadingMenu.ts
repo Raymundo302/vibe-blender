@@ -1,5 +1,6 @@
 import type { Renderer, ShadingMode } from '../render/Renderer';
-import { shadePrefs, saveShadePrefs, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE } from '../render/shadePrefs';
+import { shadePrefs, saveShadePrefs, AO_METHODS, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE } from '../render/shadePrefs';
+import type { AoMode } from '../render/shadePrefs';
 
 /**
  * Viewport-header shading dropdown (right side of the 3D Viewport area header,
@@ -95,12 +96,17 @@ export class ShadingMenu {
       { key: 'wireOverlay', label: 'Wireframe', title: 'Draw the edge wireframe over the shaded modes' },
       { key: 'wireHiddenLine', label: 'Hidden Line (wireframe)', title: 'In Wireframe mode: hide backfacing wires and wires behind geometry' },
     ];
-    // AO's tuner sliders live right under its checkbox and grey out with it.
+    // AO's tuner sliders + selects live right under its checkbox and grey out with it.
     const aoSliders: HTMLInputElement[] = [];
+    const aoSelects: { el: HTMLSelectElement; row: HTMLElement }[] = [];
     const syncSliderState = (): void => {
       for (const el of aoSliders) {
         el.disabled = !shadePrefs.ao;
         (el.closest('.shading-menu-slider') as HTMLElement).classList.toggle('is-disabled', !shadePrefs.ao);
+      }
+      for (const { el, row } of aoSelects) {
+        el.disabled = !shadePrefs.ao;
+        row.classList.toggle('is-disabled', !shadePrefs.ao);
       }
     };
     const sliderRow = (
@@ -152,6 +158,62 @@ export class ShadingMenu {
       row.append(box, text);
       root.appendChild(row);
       if (c.key === 'ao') {
+        // AO estimator selectors — Mode picks the family, Method (object only)
+        // picks the estimator. Both grey out with the AO checkbox.
+        const selectRow = (
+          label: string, dataAttr: 'shadeMode' | 'shadeMethod', title: string,
+          fill: (sel: HTMLSelectElement) => void, onChange: (sel: HTMLSelectElement) => void,
+        ): { row: HTMLElement; select: HTMLSelectElement } => {
+          const row = document.createElement('label');
+          row.className = 'shading-menu-select-row';
+          row.title = title;
+          const text = document.createElement('span');
+          text.className = 'shading-menu-slider-label';
+          text.textContent = label;
+          const select = document.createElement('select');
+          select.className = 'shading-menu-select';
+          if (dataAttr === 'shadeMode') select.dataset.shadeMode = '';
+          else select.dataset.shadeMethod = '';
+          fill(select);
+          select.addEventListener('change', () => { onChange(select); saveShadePrefs(); });
+          aoSelects.push({ el: select, row });
+          row.append(text, select);
+          return { row, select };
+        };
+
+        const mode = selectRow('Mode', 'shadeMode',
+          'AO estimator family — Screen-space GTAO or object-space SDF march',
+          (sel) => {
+            for (const [value, text] of [['screen', 'Screen (GTAO)'], ['object', 'Object (SDF)']]) {
+              const o = document.createElement('option');
+              o.value = value; o.textContent = text;
+              sel.appendChild(o);
+            }
+            sel.value = shadePrefs.aoMode;
+          },
+          (sel) => { shadePrefs.aoMode = sel.value as AoMode; updateMethodVisibility(); },
+        );
+        root.appendChild(mode.row);
+
+        const method = selectRow('Method', 'shadeMethod',
+          'Object-AO estimator (used when Mode = Object)',
+          (sel) => {
+            AO_METHODS.forEach((m, i) => {
+              const o = document.createElement('option');
+              o.value = String(i); o.textContent = m.label; o.title = m.desc;
+              sel.appendChild(o);
+            });
+            sel.value = String(shadePrefs.aoMethod);
+          },
+          (sel) => { shadePrefs.aoMethod = Number(sel.value); },
+        );
+        root.appendChild(method.row);
+
+        const updateMethodVisibility = (): void => {
+          method.row.style.display = shadePrefs.aoMode === 'object' ? '' : 'none';
+        };
+        updateMethodVisibility();
+
         root.appendChild(sliderRow('aoRadius', 'Radius', AO_RADIUS_RANGE, 0.05,
           'AO sample radius (world units) — bigger reaches broader creases'));
         root.appendChild(sliderRow('aoStrength', 'Strength', AO_STRENGTH_RANGE, 0.05,

@@ -4,9 +4,28 @@
  * scene load, persisted in localStorage and replayed at boot.
  */
 
+/** AO estimator family: 'screen' = GTAO from the depth buffer; 'object' =
+ *  Ray's AO-Prototype technique — a march against per-object voxel SDFs in
+ *  world space, camera-independent by construction. */
+export type AoMode = 'screen' | 'object';
+
+/** The Object-AO estimator menu, ported 1:1 from AO-Prototype/ao-hybrid.html. */
+export const AO_METHODS: { label: string; desc: string }[] = [
+  { label: 'Baseline', desc: '5-tap linear march along the normal — the reference (this is what bands)' },
+  { label: 'Dithered', desc: 'Same march, IGN-jittered per pixel — trades bands for fine grain' },
+  { label: 'Cone', desc: 'Sphere-traces a cone, takes the min openness ratio — continuous, cheap, smooth' },
+  { label: 'Hemisphere', desc: 'Golden-angle directions across the hemisphere — smoother and directional' },
+  { label: 'Exp-weighted', desc: 'Taps packed near the surface with exponential weights — soft contact falloff' },
+  { label: 'Supersample ×4', desc: '4 noisy marches averaged — brute force, smoothest' },
+];
+
 export interface ShadePrefs {
   /** Screen-space ambient occlusion in the solid shaded modes (not wireframe). */
   ao: boolean;
+  /** Which AO estimator drives the pass. */
+  aoMode: AoMode;
+  /** Object-AO method index into AO_METHODS (used when aoMode = 'object'). */
+  aoMethod: number;
   /** AO sample radius in world units (bigger = broader, softer occlusion). */
   aoRadius: number;
   /** AO darkening multiplier: 0 = invisible, 1 = default, 2 = doubled. */
@@ -32,6 +51,8 @@ const STORAGE_KEY = 'vibe-shading-v2';
 export function defaultShadePrefs(): ShadePrefs {
   return {
     ao: false,
+    aoMode: 'screen',
+    aoMethod: 2,   // Cone — the prototype's cheap + smooth default
     aoRadius: AO_RADIUS_RANGE.default,
     aoStrength: AO_STRENGTH_RANGE.default,
     aoSamples: AO_SAMPLES_RANGE.default,
@@ -61,6 +82,8 @@ export function loadShadePrefs(): ShadePrefs {
       typeof v === want && (want !== 'number' || Number.isFinite(v as number)) ? v : d[key];
   }
   // Clamp the numeric prefs into their slider ranges (stale/hand-edited storage).
+  if (shadePrefs.aoMode !== 'screen' && shadePrefs.aoMode !== 'object') shadePrefs.aoMode = 'screen';
+  shadePrefs.aoMethod = Math.min(AO_METHODS.length - 1, Math.max(0, Math.round(shadePrefs.aoMethod)));
   shadePrefs.aoRadius = Math.min(AO_RADIUS_RANGE.max, Math.max(AO_RADIUS_RANGE.min, shadePrefs.aoRadius));
   shadePrefs.aoStrength = Math.min(AO_STRENGTH_RANGE.max, Math.max(AO_STRENGTH_RANGE.min, shadePrefs.aoStrength));
   shadePrefs.aoSamples = Math.min(AO_SAMPLES_RANGE.max, Math.max(AO_SAMPLES_RANGE.min, shadePrefs.aoSamples));

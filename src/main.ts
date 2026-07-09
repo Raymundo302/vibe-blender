@@ -245,6 +245,11 @@ if (shadingParam === 'matcap' || shadingParam === 'wireframe'
 }
 const aoParam = bootParams.get('ao');
 if (aoParam !== null) shadePrefs.ao = aoParam !== '0';
+// ?aomode=screen|object and ?aomethod=0..5 — pick the AO estimator at boot.
+const aoModeParam = bootParams.get('aomode');
+if (aoModeParam === 'screen' || aoModeParam === 'object') shadePrefs.aoMode = aoModeParam;
+const aoMethodParam = bootParams.get('aomethod');
+if (aoMethodParam !== null && /^[0-5]$/.test(aoMethodParam)) shadePrefs.aoMethod = Number(aoMethodParam);
 
 const sceneParam = bootParams.get('scene');
 if (sceneParam) {

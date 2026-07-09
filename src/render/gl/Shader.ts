@@ -58,4 +58,12 @@ export class Shader {
   setVec2(name: string, x: number, y: number): void { this.gl.uniform2f(this.loc(name), x, y); }
   setFloat(name: string, v: number): void { this.gl.uniform1f(this.loc(name), v); }
   setInt(name: string, v: number): void { this.gl.uniform1i(this.loc(name), v); }
+  /** Upload a mat4[] uniform array from a packed column-major Float32Array. */
+  setMat4Array(name: string, m: Float32Array): void {
+    this.gl.uniformMatrix4fv(this.loc(name), false, m);
+  }
+  /** Upload a vec4[] uniform array from a packed Float32Array. */
+  setVec4Array(name: string, v: Float32Array): void {
+    this.gl.uniform4fv(this.loc(name), v);
+  }
 }

@@ -20,12 +20,14 @@ describe('shadePrefs persistence', () => {
 
   it('defaults: toggles off, AO tuner at its documented midpoints', () => {
     expect(defaultShadePrefs()).toEqual({
-      ao: false, aoRadius: 1.2, aoStrength: 0.9, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
+      ao: false, aoMode: 'screen', aoMethod: 2, aoRadius: 1.2, aoStrength: 0.9, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
     });
   });
 
   it('round-trips through localStorage (booleans + numbers)', () => {
     shadePrefs.ao = true;
+    shadePrefs.aoMode = 'object';
+    shadePrefs.aoMethod = 4;
     shadePrefs.wireHiddenLine = true;
     shadePrefs.aoRadius = 1.7;
     shadePrefs.aoStrength = 1.6;
@@ -33,7 +35,7 @@ describe('shadePrefs persistence', () => {
     Object.assign(shadePrefs, defaultShadePrefs());
     loadShadePrefs();
     expect(shadePrefs).toEqual({
-      ao: true, aoRadius: 1.7, aoStrength: 1.6, aoSamples: 48, wireOverlay: false, wireHiddenLine: true,
+      ao: true, aoMode: 'object', aoMethod: 4, aoRadius: 1.7, aoStrength: 1.6, aoSamples: 48, wireOverlay: false, wireHiddenLine: true,
     });
   });
 
@@ -51,6 +53,13 @@ describe('shadePrefs persistence', () => {
     expect(shadePrefs.aoStrength).toBe(0.9);
   });
 
+  it('sanitizes an invalid stored aoMode / aoMethod', () => {
+    localStorage.setItem('vibe-shading-v2', JSON.stringify({ aoMode: 'quantum', aoMethod: 42 }));
+    loadShadePrefs();
+    expect(shadePrefs.aoMode).toBe('screen');
+    expect(shadePrefs.aoMethod).toBe(5);
+  });
+
   it('malformed storage falls back to defaults', () => {
     localStorage.setItem('vibe-shading-v2', '{not json');
     shadePrefs.ao = true;
@@ -62,7 +71,7 @@ describe('shadePrefs persistence', () => {
     localStorage.setItem('vibe-shading-v2', JSON.stringify({ ao: true }));
     loadShadePrefs();
     expect(shadePrefs).toEqual({
-      ao: true, aoRadius: 1.2, aoStrength: 0.9, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
+      ao: true, aoMode: 'screen', aoMethod: 2, aoRadius: 1.2, aoStrength: 0.9, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
     });
   });
 });

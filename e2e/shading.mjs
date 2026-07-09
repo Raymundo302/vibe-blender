@@ -506,4 +506,143 @@ runE2e(async (t) => {
     offNear - onNear > 8, `off=${offNear.toFixed(1)} on=${onNear.toFixed(1)}`);
   t.check('grazing diamond: FAR-corner crease darkens',
     offFar - onFar > 8, `off=${offFar.toFixed(1)} on=${onFar.toFixed(1)}`);
+
+  // ===================================================================
+  // OBJECT AO — the world-space per-object voxel-SDF march (aoMode='object').
+  // Camera-independent by construction, unlike the screen-space GTAO above.
+  // Adapted from the verified /tmp .../scratchpad/objao-smoke.mjs: fixed
+  // framing (yaw 0.785, pitch 0.9), world-space crease/open probes, SUM-of-RGB
+  // reads. Appended after the GTAO checks; restores the camera pose, shadePrefs
+  // (ao/aoMode/aoMethod/aoRadius/aoStrength) and shading mode at the end.
+  // ===================================================================
+  const sumRGB = (p) => p[0] + p[1] + p[2];
+
+  // Clean single-cube-on-floor rig: drop the (f) Diamond cube so only the
+  // default cube + Floor remain (the smoke's rig). Deselect so no gizmo/outline
+  // sits under the probes.
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) if (o.name === 'Diamond') S.remove(o.id);
+    S.deselectAll();
+  })()`);
+  // Fixed framing helper: default yaw / raised pitch / default distance. The
+  // suite left the camera at pitch 0.22 & distance 9, so reset all three.
+  const objFrame = (yaw) => t.evaluate(`(() => {
+    const cam = window.__app.camera; cam.yaw = ${yaw}; cam.pitch = 0.9; cam.distance = 8;
+  })()`);
+  await objFrame(0.785);
+  await t.sleep(60);
+
+  const OBJ_CREASE = [1.08, 0, -0.98]; // floor hugging the cube's +x face (in view)
+  const OBJ_OPEN = [3.5, 0, -0.98];    // open floor, far from the cube — the control
+
+  // (1) Baseline (ao off) vs Object AO at the fixed framing.
+  await setPref('ao', false);
+  await t.sleep(40);
+  const objCreaseOff = sumRGB(await pixelAt(...OBJ_CREASE));
+  const objOpenOff = sumRGB(await pixelAt(...OBJ_OPEN));
+  await t.evaluate(`(() => {
+    const p = window.__app.shadePrefs;
+    p.ao = true; p.aoMode = 'object'; p.aoMethod = 2; p.aoRadius = 1.2; p.aoStrength = 0.9;
+  })()`);
+  await t.sleep(60);
+  const objCreaseOn = sumRGB(await pixelAt(...OBJ_CREASE));
+  const objOpenOn = sumRGB(await pixelAt(...OBJ_OPEN));
+  const objGlErr = await t.evaluate(`window.__app.renderer.ctx.gl.getError()`);
+  t.check('Object AO: probes are on-screen lit floor',
+    objCreaseOff > 100 && objOpenOff > 100, `crease=${objCreaseOff} open=${objOpenOff}`);
+  t.check('Object AO: no GL error', objGlErr === 0, `err=${objGlErr}`);
+  t.check('Object AO darkens the contact crease (sum RGB)',
+    objCreaseOn < objCreaseOff - 12, `off=${objCreaseOff} on=${objCreaseOn}`);
+  t.check('Object AO leaves open floor nearly untouched',
+    Math.abs(objOpenOn - objOpenOff) < 20, `off=${objOpenOff} on=${objOpenOn}`);
+
+  // (2) Camera-independence — the mode's selling point. Same WORLD-SPACE crease
+  // point read at three yaws; the readings must barely move.
+  const yawReadings = [];
+  for (const yaw of [0.5, 1.1, 1.7]) {
+    await objFrame(yaw);
+    await t.sleep(40);
+    yawReadings.push(sumRGB(await pixelAt(...OBJ_CREASE)));
+  }
+  const yawSpread = Math.max(...yawReadings) - Math.min(...yawReadings);
+  t.check('Object AO crease is stable across yaws (camera-independent)',
+    yawSpread < 40, `readings=[${yawReadings.join(',')}] spread=${yawSpread}`);
+
+  // (3) All six estimator methods (0..5) at the fixed framing: no GL error and
+  // each still occludes the crease below the ao-off baseline.
+  await objFrame(0.785);
+  await t.sleep(40);
+  for (let m = 0; m < 6; m++) {
+    await t.evaluate(`window.__app.shadePrefs.aoMethod = ${m}`);
+    await t.sleep(40);
+    const v = sumRGB(await pixelAt(...OBJ_CREASE));
+    const err = await t.evaluate(`window.__app.renderer.ctx.gl.getError()`);
+    t.check(`Object AO method ${m}: clean render + occludes crease`,
+      err === 0 && v < objCreaseOff - 8, `crease=${v} baseline=${objCreaseOff} err=${err}`);
+  }
+
+  // (4) UI — parallel worker's contract: Mode + Method selects in the shading
+  // menu; the Method row hides for 'screen' and shows for 'object'. Reset aoMode
+  // to 'screen' first so the menu opens with the Method row hidden.
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.aoMode = 'screen'; p.aoMethod = 2; })()`);
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
+  await t.sleep(80);
+  const ui = await t.evaluate(`(() => {
+    const modeSel = document.querySelector('select[data-shade-mode]');
+    const methodSel = document.querySelector('select[data-shade-method]');
+    if (!modeSel || !methodSel) return { present: false, hasMode: !!modeSel, hasMethod: !!methodSel };
+    const methodRow = methodSel.closest('.shading-menu-select-row') || methodSel.parentElement;
+    const hidden = (el) => getComputedStyle(el).display === 'none' || el.offsetParent === null;
+    modeSel.value = 'screen'; modeSel.dispatchEvent(new Event('change'));
+    const hiddenWhenScreen = hidden(methodRow);
+    const aoModeScreen = window.__app.shadePrefs.aoMode;
+    modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
+    const visibleWhenObject = !hidden(methodRow);
+    const aoModeObject = window.__app.shadePrefs.aoMode;
+    return {
+      present: true,
+      modeOptions: [...modeSel.options].map((o) => o.value).join(','),
+      methodCount: methodSel.options.length,
+      hiddenWhenScreen, visibleWhenObject, aoModeScreen, aoModeObject,
+    };
+  })()`);
+  t.check('UI: Mode + Method selects exist in the shading menu',
+    ui.present, `hasMode=${ui.hasMode} hasMethod=${ui.hasMethod}`);
+  if (ui.present) {
+    t.check('UI: Mode select offers screen + object', ui.modeOptions === 'screen,object', `got ${ui.modeOptions}`);
+    t.check('UI: Method select has 6 options', ui.methodCount === 6, `got ${ui.methodCount}`);
+    t.check('UI: Method row hidden when aoMode = screen', ui.hiddenWhenScreen);
+    t.check('UI: Method row visible after switching Mode to object', ui.visibleWhenObject);
+    t.check('UI: shadePrefs.aoMode tracks the Mode select',
+      ui.aoModeScreen === 'screen' && ui.aoModeObject === 'object',
+      `screen->${ui.aoModeScreen} object->${ui.aoModeObject}`);
+  }
+
+  // (5) Persistence — driving the selects (object, method 4) fires their change
+  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v2'.
+  const persisted = await t.evaluate(`(() => {
+    const modeSel = document.querySelector('select[data-shade-mode]');
+    const methodSel = document.querySelector('select[data-shade-method]');
+    if (modeSel && methodSel) {
+      modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
+      methodSel.value = '4'; methodSel.dispatchEvent(new Event('change'));
+    }
+    return localStorage.getItem('vibe-shading-v2') || '';
+  })()`);
+  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v2)',
+    persisted.includes('"aoMode":"object"'), `stored=${persisted.slice(0, 90)}`);
+
+  // Restore global state: close menu, revert selects to screen (re-persists),
+  // reset prefs + camera + shading so nothing downstream inherits object mode.
+  await t.evaluate(`(() => {
+    const modeSel = document.querySelector('select[data-shade-mode]');
+    if (modeSel) { modeSel.value = 'screen'; modeSel.dispatchEvent(new Event('change')); }
+  })()`);
+  await t.key('Escape', 'Escape', 0);
+  await t.evaluate(`(() => {
+    const p = window.__app.shadePrefs;
+    p.ao = false; p.aoMode = 'screen'; p.aoMethod = 2; p.aoRadius = 0.55; p.aoStrength = 1;
+    window.__app.renderer.shadingMode = 'matcap';
+  })()`);
 });

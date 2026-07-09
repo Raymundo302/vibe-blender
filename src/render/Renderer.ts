@@ -27,6 +27,7 @@ import { cameraFovY, type Material } from '../core/scene/objectData';
 import { overlays } from './overlayPrefs';
 import { shadePrefs } from './shadePrefs';
 import { AoPass } from './passes/aoPass';
+import { SdfAtlas } from './sdfAtlas';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
@@ -95,6 +96,7 @@ export class Renderer {
   private readonly renderedPass: RenderedPass;
   private readonly shadowPass: ShadowPass;
   private readonly aoPass: AoPass;
+  private readonly sdfAtlas: SdfAtlas;
   private readonly worldBgPass: WorldBackgroundPass;
   private readonly iconPass: IconPass;
   private readonly cameraFrustumPass: CameraFrustumPass;
@@ -167,6 +169,7 @@ export class Renderer {
     this.renderedPass = new RenderedPass(gl);
     this.shadowPass = new ShadowPass(gl);
     this.aoPass = new AoPass(gl, canvas.width, canvas.height);
+    this.sdfAtlas = new SdfAtlas(gl);
     this.worldBgPass = new WorldBackgroundPass(gl);
     this.iconPass = new IconPass(gl);
     this.cameraFrustumPass = new CameraFrustumPass(gl);
@@ -485,12 +488,22 @@ export class Renderer {
     const aoOn = shadePrefs.ao && this.shadingMode !== 'wireframe';
     if (aoOn) {
       this.aoPass.beginDepth(view, proj);
+      const aoMeshes: SceneObject[] = [];
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
+        aoMeshes.push(obj);
         this.aoPass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
-      this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples);
+      if (shadePrefs.aoMode === 'object') {
+        // Object AO (Ray's SDF technique): voxel-SDF atlas in sync with the
+        // visible meshes, then the world-space march instead of GTAO.
+        const sdf = this.sdfAtlas.sync(scene, aoMeshes);
+        this.aoPass.computeObject(proj.invert(), view.invert(), sdf,
+          shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples, shadePrefs.aoMethod);
+      } else {
+        this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples);
+      }
     }
     const aoTex = aoOn ? this.aoPass.texture : this.aoPass.white;
 

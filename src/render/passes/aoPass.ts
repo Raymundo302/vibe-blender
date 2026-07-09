@@ -2,6 +2,8 @@ import { Shader } from '../gl/Shader';
 import { EmptyVao } from '../gl/VertexArray';
 import { Framebuffer, floatColorRenderable, type FboFormat } from '../gl/Framebuffer';
 import type { Mat4 } from '../../core/math/mat4';
+import { SDF_RES } from '../sdf';
+import { MAX_SDF_OBJECTS, SDF_ATLAS_W, SDF_ATLAS_H, SDF_ATLAS_D, type SdfSceneData } from '../sdfAtlas';
 
 /**
  * Screen-space ambient occlusion for the shaded viewport modes (the "AO"
@@ -416,11 +418,181 @@ void main() {
   outColor = vec4(vec3(wsum > 1e-3 ? sum / wsum : bestV), 1.0);
 }`;
 
+/** Map the shared "Samples" pref (16–96) to Object-AO march taps (3–16). */
+export function objectAoTaps(samples: number): number {
+  return Math.max(3, Math.min(16, Math.round(samples / 6)));
+}
+
+// Object AO (Ray's AO-Prototype technique, ported from ao-hybrid.html): instead
+// of hunting occluders in the depth buffer, march a WORLD-SPACE distance field
+// of the scene — per-object voxel SDFs in a 3D atlas (sdfAtlas.ts). The field
+// is camera-independent, so the shadows are pinned to the geometry and cannot
+// swim, fade, or pop with view angle — the structural weakness of every
+// screen-space method. Position + normal still come from the same depth
+// prepass; the six estimators are the prototype's aoLive() methods verbatim.
+const OBJAO_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+uniform highp sampler2D u_depth;     // depth prepass (0..1 window depth)
+uniform highp sampler2D u_normal;    // view-space normals (normal*0.5+0.5)
+uniform highp sampler3D u_sdf;       // SDF slot atlas (R8: 0.5 = surface)
+uniform mat4 u_invProj;
+uniform mat4 u_invView;
+uniform vec2 u_texel;                // 1 / AO-target size
+uniform int u_count;                 // active SDF objects
+uniform mat4 u_w2uvw[${MAX_SDF_OBJECTS}];  // world → slot grid uvw [0,1]
+uniform vec4 u_info[${MAX_SDF_OBJECTS}];   // boxSize.xyz (local), min axis scale
+uniform vec4 u_slot[${MAX_SDF_OBJECTS}];   // slot origin in atlas voxels, encode range R
+uniform int u_method;                // 0..5 — the prototype's estimator menu
+uniform int u_taps;                  // march taps (3..16)
+uniform float u_radius;              // world units
+uniform float u_strength;
+uniform float u_bias;                // self-occlusion offset along the normal
+uniform float u_dither;              // 1.0 for the R8 target
+out vec4 outColor;
+
+const vec3 ATLAS = vec3(${SDF_ATLAS_W}.0, ${SDF_ATLAS_H}.0, ${SDF_ATLAS_D}.0);
+#define MAX_TAPS 16
+
+vec3 viewPos(vec2 uv, float d) {
+  vec4 ndc = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+  vec4 p = u_invProj * ndc;
+  return p.xyz / p.w;
+}
+
+// Scene distance field: min over the per-object SDFs. Points outside a slot's
+// box use clamp-to-box + euclidean remainder (conservative lower bound). The
+// (outside - R) early-out skips the 3D fetch for objects that cannot beat the
+// current best — most of the loop for most pixels.
+float map(vec3 p) {
+  float best = 1e9;
+  for (int i = 0; i < ${MAX_SDF_OBJECTS}; i++) {
+    if (i >= u_count) break;
+    vec3 u = (u_w2uvw[i] * vec4(p, 1.0)).xyz;
+    vec3 q = clamp(u, 0.0, 1.0);
+    vec3 dl = (u - q) * u_info[i].xyz;
+    float outside = length(dl);
+    float scale = u_info[i].w;
+    float R = u_slot[i].w;
+    if ((outside - R) * scale >= best) continue;
+    vec3 tc = (u_slot[i].xyz + q * ${SDF_RES - 1}.0 + 0.5) / ATLAS;
+    float ds = (textureLod(u_sdf, tc, 0.0).r - 0.5) * 2.0 * R;
+    // Debias by half this object's voxel size: trilinear interpolation of a
+    // quantized field UNDERESTIMATES distance near curved / sub-voxel detail,
+    // which reads as phantom occlusion (blotchy floors, blackened scatter
+    // islands). Half a cell is the error bound; real contacts lose only a
+    // sliver of reach.
+    float cell = max(u_info[i].x, max(u_info[i].y, u_info[i].z)) * ${(0.5 / (SDF_RES - 1)).toFixed(6)};
+    best = min(best, (ds + outside + cell) * scale);
+  }
+  return best;
+}
+
+float ign(vec2 p) {
+  return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+}
+void basis(vec3 n, out vec3 t, out vec3 b) {
+  vec3 up = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  t = normalize(cross(up, n));
+  b = cross(n, t);
+}
+
+// ---- the prototype's six estimators (aoLive), verbatim math ----
+float aoBase(vec3 p, vec3 n) {                 // 0 — linear march (bands; kept as reference)
+  float occ = 0.0, sca = 1.0;
+  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
+    float h = u_bias + u_radius * float(i) / float(u_taps - 1);
+    occ += (h - map(p + n * h)) * sca; sca *= 0.6;
+  }
+  return clamp(1.0 - u_strength * occ, 0.0, 1.0);
+}
+float aoDither(vec3 p, vec3 n) {               // 1 — IGN offset: bands → fine grain
+  float r = ign(gl_FragCoord.xy), occ = 0.0, sca = 1.0;
+  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
+    float h = u_bias + u_radius * (float(i) + r) / float(u_taps);
+    occ += (h - map(p + n * h)) * sca; sca *= 0.82;
+  }
+  return clamp(1.0 - u_strength * occ, 0.0, 1.0);
+}
+float aoCone(vec3 p, vec3 n) {                 // 2 — continuous openness ratio, no taps
+  float res = 1.0, t = u_bias;
+  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
+    float d = map(p + n * t);
+    res = min(res, 6.0 * d / t);
+    t += clamp(d, 0.01, 0.10);
+    if (t > u_radius) break;
+  }
+  res = clamp(res, 0.0, 1.0);
+  return clamp(1.0 - u_strength * (1.0 - res), 0.0, 1.0);
+}
+float aoHemi(vec3 p, vec3 n) {                 // 3 — golden-angle hemisphere spread
+  vec3 t, b; basis(n, t, b);
+  float a0 = ign(gl_FragCoord.xy) * 6.2831853, occ = 0.0, N = float(u_taps);
+  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
+    float fi = (float(i) + 0.5) / N, rr = sqrt(fi), phi = a0 + float(i) * 2.3999632;
+    vec3 dir = normalize(n + (t * cos(phi) + b * sin(phi)) * rr * 1.3);
+    float h = u_radius;
+    occ += clamp((h - map(p + dir * h)) / h, 0.0, 1.0);
+  }
+  return clamp(1.0 - u_strength * occ / N, 0.0, 1.0);
+}
+float aoExp(vec3 p, vec3 n) {                  // 4 — taps dense near surface, smooth weights
+  float occ = 0.0, w = 0.0;
+  for (int i = 0; i < MAX_TAPS; i++) { if (i >= u_taps) break;
+    float fi = float(i) / float(u_taps - 1);
+    float h = u_bias + u_radius * fi * fi;
+    float wi = exp(-2.5 * fi);
+    occ += clamp((h - map(p + n * h)) / max(h, 1e-3), 0.0, 1.0) * wi; w += wi;
+  }
+  return clamp(1.0 - u_strength * occ / max(w, 1e-3), 0.0, 1.0);
+}
+float aoSuper(vec3 p, vec3 n) {                // 5 — 4 noisy estimates averaged
+  float sum = 0.0;
+  for (int s = 0; s < 4; s++) {
+    float r = ign(gl_FragCoord.xy + vec2(float(s) * 23.0, float(s) * 41.0)), occ = 0.0, sca = 1.0;
+    for (int i = 0; i < 4; i++) {
+      float h = u_bias + u_radius * (float(i) + r) / 4.0;
+      occ += (h - map(p + n * h)) * sca; sca *= 0.7;
+    }
+    sum += clamp(1.0 - u_strength * occ, 0.0, 1.0);
+  }
+  return sum * 0.25;
+}
+
+float aoLive(vec3 p, vec3 n) {
+  if (u_method == 0)      return aoBase(p, n);
+  else if (u_method == 1) return aoDither(p, n);
+  else if (u_method == 2) return aoCone(p, n);
+  else if (u_method == 3) return aoHemi(p, n);
+  else if (u_method == 4) return aoExp(p, n);
+  return aoSuper(p, n);
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy * u_texel;
+  float d = texture(u_depth, uv).r;
+  if (d >= 1.0 || u_count == 0) { outColor = vec4(1.0); return; }
+
+  vec3 P = viewPos(uv, d);
+  vec3 N = normalize(texture(u_normal, uv).xyz * 2.0 - 1.0);
+  vec3 V = normalize(-P);
+  if (dot(N, V) < 0.0) N = -N;      // face the camera per-pixel (see prepass)
+
+  // To world space: the field lives there, so the result is view-independent.
+  vec3 W = (u_invView * vec4(P, 1.0)).xyz;
+  vec3 Wn = normalize(mat3(u_invView) * N);
+
+  float ao = aoLive(W, Wn);
+  ao += (ign(gl_FragCoord.xy + 0.5) - 0.5) * (1.0 / 255.0) * u_dither;
+  outColor = vec4(vec3(clamp(ao, 0.0, 1.0)), 1.0);
+}`;
+
 export class AoPass {
   private readonly preShader: Shader;
   private readonly gtaoShader: Shader;
   private readonly blurShader: Shader;
   private readonly upsampleShader: Shader;
+  /** Object AO (SDF-march) program — compiled on first use of the mode. */
+  private objAoShader: Shader | null = null;
   private readonly fullscreen: EmptyVao;
   private readonly ssaoFbo: Framebuffer;
   private readonly blurFbo: Framebuffer;
@@ -574,6 +746,66 @@ export class AoPass {
     this.gtaoShader.setInt('u_steps', steps);
     this.fullscreen.drawTriangles(3);
 
+    this.denoiseAndUpsample(invProj);
+    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
+  }
+
+  /** Object AO (Ray's SDF-march technique): same prepass, same denoise +
+   *  upsample chain as GTAO — only stage 2's estimator differs. */
+  computeObject(
+    invProj: Mat4, invView: Mat4, sdf: SdfSceneData,
+    radius: number, strength: number, samples: number, method: number,
+  ): void {
+    const gl = this.gl;
+    const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+
+    if (!this.objAoShader) this.objAoShader = new Shader(gl, FS_VERT, OBJAO_FRAG, 'ao-object');
+    const sh = this.objAoShader;
+    const aoW = this.ssaoFbo.width;
+    const aoH = this.ssaoFbo.height;
+
+    this.ssaoFbo.bind();
+    sh.use();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    sh.setInt('u_depth', 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.normalTex);
+    sh.setInt('u_normal', 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_3D, sdf.texture);
+    sh.setInt('u_sdf', 2);
+    gl.activeTexture(gl.TEXTURE0);
+    sh.setMat4('u_invProj', invProj);
+    sh.setMat4('u_invView', invView);
+    sh.setVec2('u_texel', 1 / aoW, 1 / aoH);
+    sh.setInt('u_count', sdf.count);
+    if (sdf.count > 0) {
+      sh.setMat4Array('u_w2uvw', sdf.worldToUvw);
+      sh.setVec4Array('u_info', sdf.info);
+      sh.setVec4Array('u_slot', sdf.slot);
+    }
+    sh.setInt('u_method', method);
+    sh.setInt('u_taps', objectAoTaps(samples));
+    sh.setFloat('u_radius', radius);
+    sh.setFloat('u_strength', strength);
+    sh.setFloat('u_bias', 0.05);
+    sh.setFloat('u_dither', this.ditherFlag);
+    this.fullscreen.drawTriangles(3);
+
+    this.denoiseAndUpsample(invProj);
+    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
+  }
+
+  /** Stage 3 shared by both estimators: separable plane-aware denoise then the
+   *  depth-aware upsample to canvas resolution. Leaves the default framebuffer
+   *  bound at (canvasW, canvasH). */
+  private denoiseAndUpsample(invProj: Mat4): void {
+    const gl = this.gl;
+    const aoW = this.ssaoFbo.width;
+    const aoH = this.ssaoFbo.height;
+
     // Separable plane-aware denoise: X pass into blurFbo, Y pass into finalFbo.
     const blurPass = (src: Framebuffer, dst: Framebuffer, dx: number, dy: number) => {
       dst.bind();
@@ -617,7 +849,6 @@ export class AoPass {
 
     this.fullFbo.unbind();
     gl.viewport(0, 0, this.width, this.height);
-    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
   }
 
   /** The denoised, canvas-resolution AO texture (valid after compute()). */
