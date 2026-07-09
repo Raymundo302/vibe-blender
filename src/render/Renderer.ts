@@ -488,7 +488,7 @@ export class Renderer {
         this.aoPass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
-      this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength);
+      this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples);
     }
     const aoTex = aoOn ? this.aoPass.texture : this.aoPass.white;
 

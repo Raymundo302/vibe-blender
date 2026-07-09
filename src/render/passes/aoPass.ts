@@ -28,9 +28,17 @@ import type { Mat4 } from '../../core/math/mat4';
  * References: Jimenez et al. 2016 (GTAO), Intel XeGTAO, IGN (Jimenez CoD:AW 2014).
  */
 
-const SLICES = 3;      // horizon directions per pixel (spp = 2*SLICES*STEPS)
-const STEPS = 8;       // march steps per side
 const BLUR_TAPS = 6;   // separable denoise: taps each side, each blur pass
+
+/** Map the "Samples" pref (spp = 2*slices*steps) to a (slices, steps) pair. */
+export function sampleBudget(samples: number): { slices: number; steps: number } {
+  if (samples <= 16) return { slices: 2, steps: 4 };
+  if (samples <= 32) return { slices: 2, steps: 8 };
+  if (samples <= 48) return { slices: 3, steps: 8 };
+  if (samples <= 64) return { slices: 4, steps: 8 };
+  if (samples <= 80) return { slices: 4, steps: 10 };
+  return { slices: 4, steps: 12 };
+}
 
 const PRE_VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
@@ -79,6 +87,8 @@ uniform vec2 u_size;           // canvas size in pixels
 uniform float u_radius;        // world/view units
 uniform float u_strength;      // darkening multiplier (0 = off, 1 = default)
 uniform float u_dither;        // 1.0 for R8 (apply dither), 0.0 for R16F
+uniform int u_slices;          // horizon directions per pixel
+uniform int u_steps;           // march steps per side
 out vec4 outColor;
 
 const float PI = 3.14159265359;
@@ -168,8 +178,8 @@ void main() {
   float visibility = 0.0;
   float weightSum = 0.0;
 
-  for (int s = 0; s < ${SLICES}; s++) {
-    float phi = (float(s) + noiseDir) * PI / float(${SLICES});
+  for (int s = 0; s < u_slices; s++) {
+    float phi = (float(s) + noiseDir) * PI / float(u_slices);
     vec2 omega = vec2(cos(phi), sin(phi));   // unit screen/pixel direction
 
     // View-space slice direction: unproject a neighbour along omega at the SAME
@@ -195,8 +205,8 @@ void main() {
     // Horizon cosines per side. Init -1 → no occluder → full visible arc.
     float cH0 = -1.0;   // +omega side
     float cH1 = -1.0;   // -omega side
-    for (int k = 0; k < ${STEPS}; k++) {
-      float t = (float(k) + noiseOff) / float(${STEPS}); // (0,1]
+    for (int k = 0; k < u_steps; k++) {
+      float t = (float(k) + noiseOff) / float(u_steps); // (0,1]
       vec2 offs = omega * (t * pxRadius) * u_texel;
       // Each side: a tap raises the horizon only if it clears the tangent-plane
       // bias and lies within the radius (distance falloff, no hard ring). The
@@ -286,14 +296,74 @@ void main() {
   outColor = vec4(vec3(sum / wsum), 1.0);
 }`;
 
+// Depth-aware upsample of the half-res denoised AO back to canvas resolution.
+// Plain LINEAR upsampling wobbles at silhouettes: the AO term is quantized to
+// half-res texels, and at depth edges the 2px staircase reads as a wavy edge.
+// Here each full-res pixel manually blends the 4 surrounding half-res texels
+// with bilinear × plane-consistency weights (same tangent-plane test as the
+// denoise), so edges follow FULL-res geometry. Falls back to plain bilinear
+// where no neighbour matches (isolated pixels, extreme grazing).
+const UPSAMPLE_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+uniform highp sampler2D u_src;     // half-res denoised AO (LINEAR filterable)
+uniform highp sampler2D u_depth;   // FULL-res depth prepass
+uniform highp sampler2D u_normal;  // FULL-res view-space normals
+uniform mat4 u_invProj;
+uniform vec2 u_texel;      // 1 / canvas size
+uniform vec2 u_srcSize;    // half-res size in texels
+out vec4 outColor;
+
+vec3 viewPos(vec2 uv, float d) {
+  vec4 p = u_invProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+  return p.xyz / p.w;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy * u_texel;
+  float cd = texture(u_depth, uv).r;
+  if (cd >= 1.0) { outColor = vec4(1.0); return; }   // background: unoccluded
+  vec3 cP = viewPos(uv, cd);
+  vec3 cN = normalize(texture(u_normal, uv).xyz * 2.0 - 1.0);
+  float tol = 0.05 * abs(cP.z) + 0.01;
+
+  // The 4 half-res texel centers around this pixel + their bilinear weights.
+  vec2 st = uv * u_srcSize - 0.5;
+  vec2 base = floor(st);
+  vec2 f = st - base;
+  float sum = 0.0;
+  float wsum = 0.0;
+  for (int j = 0; j <= 1; j++) {
+    for (int i = 0; i <= 1; i++) {
+      vec2 suv = (base + vec2(float(i), float(j)) + 0.5) / u_srcSize;
+      float bilin = (i == 0 ? 1.0 - f.x : f.x) * (j == 0 ? 1.0 - f.y : f.y);
+      // Consistency: compare against the FULL-res surface under that texel.
+      float sd = texture(u_depth, suv).r;
+      float w;
+      if (sd >= 1.0) {
+        w = 0.0;
+      } else {
+        vec3 sP = viewPos(suv, sd);
+        float planeDist = abs(dot(sP - cP, cN));
+        w = bilin * exp(-planeDist / tol);
+      }
+      sum += texture(u_src, suv).r * w;
+      wsum += w;
+    }
+  }
+  // No consistent neighbour → plain bilinear beats black halos.
+  outColor = vec4(vec3(wsum > 1e-4 ? sum / wsum : texture(u_src, uv).r), 1.0);
+}`;
+
 export class AoPass {
   private readonly preShader: Shader;
   private readonly gtaoShader: Shader;
   private readonly blurShader: Shader;
+  private readonly upsampleShader: Shader;
   private readonly fullscreen: EmptyVao;
   private readonly ssaoFbo: Framebuffer;
   private readonly blurFbo: Framebuffer;
   private readonly finalFbo: Framebuffer;
+  private readonly fullFbo: Framebuffer;
   private preFbo: WebGLFramebuffer;
   private depthTex: WebGLTexture;
   private normalTex: WebGLTexture;
@@ -308,6 +378,7 @@ export class AoPass {
     this.preShader = new Shader(gl, PRE_VERT, PRE_FRAG, 'ao-prepass');
     this.gtaoShader = new Shader(gl, FS_VERT, GTAO_FRAG, 'ao-gtao');
     this.blurShader = new Shader(gl, FS_VERT, BLUR_FRAG, 'ao-blur');
+    this.upsampleShader = new Shader(gl, FS_VERT, UPSAMPLE_FRAG, 'ao-upsample');
     this.fullscreen = new EmptyVao(gl);
 
     // Single-channel AO targets: R16F removes 8-bit quantization outright where
@@ -322,6 +393,7 @@ export class AoPass {
     this.ssaoFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat);
     this.blurFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat);
     this.finalFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat, true);
+    this.fullFbo = new Framebuffer(gl, width, height, false, this.aoFormat);
 
     this.white = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.white);
@@ -349,6 +421,7 @@ export class AoPass {
     this.ssaoFbo.setFormat(format);
     this.blurFbo.setFormat(format);
     this.finalFbo.setFormat(format);
+    this.fullFbo.setFormat(format);
   }
 
   private allocateTargets(width: number, height: number): void {
@@ -387,6 +460,7 @@ export class AoPass {
     this.ssaoFbo.resize(aoW, aoH);
     this.blurFbo.resize(aoW, aoH);
     this.finalFbo.resize(aoW, aoH);
+    this.fullFbo.resize(width, height);
   }
 
   /** Stage 1: bind the prepass FBO; the Renderer then draws every mesh through
@@ -409,7 +483,7 @@ export class AoPass {
 
   /** Stages 2+3: GTAO from the depth+normal prepass, then the bilateral denoise.
    *  Leaves the default framebuffer bound at (canvasW, canvasH). */
-  compute(proj: Mat4, invProj: Mat4, radius = 0.55, strength = 1): void {
+  compute(proj: Mat4, invProj: Mat4, radius = 0.55, strength = 1, samples = 48): void {
     const gl = this.gl;
     const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
     gl.disable(gl.DEPTH_TEST);
@@ -433,6 +507,9 @@ export class AoPass {
     this.gtaoShader.setFloat('u_radius', radius);
     this.gtaoShader.setFloat('u_strength', strength);
     this.gtaoShader.setFloat('u_dither', this.ditherFlag);
+    const { slices, steps } = sampleBudget(samples);
+    this.gtaoShader.setInt('u_slices', slices);
+    this.gtaoShader.setInt('u_steps', steps);
     this.fullscreen.drawTriangles(3);
 
     // Separable plane-aware denoise: X pass into blurFbo, Y pass into finalFbo.
@@ -457,14 +534,32 @@ export class AoPass {
     blurPass(this.ssaoFbo, this.blurFbo, 1, 0);
     blurPass(this.blurFbo, this.finalFbo, 0, 1);
 
-    this.finalFbo.unbind();
+    // Depth-aware upsample to canvas resolution — kills the wavy half-res
+    // staircase at silhouettes that plain LINEAR sampling shows.
+    this.fullFbo.bind();
+    this.upsampleShader.use();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.finalFbo.texture);
+    this.upsampleShader.setInt('u_src', 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    this.upsampleShader.setInt('u_depth', 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.normalTex);
+    this.upsampleShader.setInt('u_normal', 2);
+    gl.activeTexture(gl.TEXTURE0);
+    this.upsampleShader.setMat4('u_invProj', invProj);
+    this.upsampleShader.setVec2('u_texel', 1 / this.width, 1 / this.height);
+    this.upsampleShader.setVec2('u_srcSize', aoW, aoH);
+    this.fullscreen.drawTriangles(3);
+
+    this.fullFbo.unbind();
     gl.viewport(0, 0, this.width, this.height);
     if (depthWasOn) gl.enable(gl.DEPTH_TEST);
   }
 
-  /** The denoised AO texture (valid after compute()) — half-res, LINEAR
-   *  filtered, sampled by the shaded passes at normalized coordinates. */
+  /** The denoised, canvas-resolution AO texture (valid after compute()). */
   get texture(): WebGLTexture {
-    return this.finalFbo.texture;
+    return this.fullFbo.texture;
   }
 }

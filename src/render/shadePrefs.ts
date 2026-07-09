@@ -11,6 +11,8 @@ export interface ShadePrefs {
   aoRadius: number;
   /** AO darkening multiplier: 0 = invisible, 1 = default, 2 = doubled. */
   aoStrength: number;
+  /** AO samples per pixel (2·slices·steps) — more = cleaner, slower. */
+  aoSamples: number;
   /** Draw the edge wireframe on top of the shaded modes. */
   wireOverlay: boolean;
   /** Wireframe mode: hide backfacing wires + wires behind geometry (depth-
@@ -21,6 +23,7 @@ export interface ShadePrefs {
 /** Slider bounds — shared by the UI and the loader's clamping. */
 export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 1.2 };
 export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 0.9 };
+export const AO_SAMPLES_RANGE = { min: 16, max: 96, default: 48 };
 
 // v2: AO look re-tuned (half-res GTAO rebuild, 2026-07-08) — new key so
 // stored pre-rebuild radius/strength don't override the calibrated defaults.
@@ -31,6 +34,7 @@ export function defaultShadePrefs(): ShadePrefs {
     ao: false,
     aoRadius: AO_RADIUS_RANGE.default,
     aoStrength: AO_STRENGTH_RANGE.default,
+    aoSamples: AO_SAMPLES_RANGE.default,
     wireOverlay: false,
     wireHiddenLine: false,
   };
@@ -59,6 +63,7 @@ export function loadShadePrefs(): ShadePrefs {
   // Clamp the numeric prefs into their slider ranges (stale/hand-edited storage).
   shadePrefs.aoRadius = Math.min(AO_RADIUS_RANGE.max, Math.max(AO_RADIUS_RANGE.min, shadePrefs.aoRadius));
   shadePrefs.aoStrength = Math.min(AO_STRENGTH_RANGE.max, Math.max(AO_STRENGTH_RANGE.min, shadePrefs.aoStrength));
+  shadePrefs.aoSamples = Math.min(AO_SAMPLES_RANGE.max, Math.max(AO_SAMPLES_RANGE.min, shadePrefs.aoSamples));
   return shadePrefs;
 }
 

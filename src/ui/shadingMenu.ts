@@ -1,5 +1,5 @@
 import type { Renderer, ShadingMode } from '../render/Renderer';
-import { shadePrefs, saveShadePrefs, AO_RADIUS_RANGE, AO_STRENGTH_RANGE } from '../render/shadePrefs';
+import { shadePrefs, saveShadePrefs, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE } from '../render/shadePrefs';
 
 /**
  * Viewport-header shading dropdown (right side of the 3D Viewport area header,
@@ -104,7 +104,7 @@ export class ShadingMenu {
       }
     };
     const sliderRow = (
-      key: 'aoRadius' | 'aoStrength', label: string,
+      key: 'aoRadius' | 'aoStrength' | 'aoSamples', label: string,
       range: { min: number; max: number }, step: number, title: string,
     ): HTMLElement => {
       const row = document.createElement('label');
@@ -116,7 +116,8 @@ export class ShadingMenu {
       text.textContent = label;
       const value = document.createElement('span');
       value.className = 'shading-menu-slider-value';
-      value.textContent = shadePrefs[key].toFixed(2);
+      const fmt = (v: number): string => key === 'aoSamples' ? String(Math.round(v)) : v.toFixed(2);
+      value.textContent = fmt(shadePrefs[key]);
       const input = document.createElement('input');
       input.type = 'range';
       input.min = String(range.min);
@@ -125,7 +126,7 @@ export class ShadingMenu {
       input.value = String(shadePrefs[key]);
       input.addEventListener('input', () => {
         shadePrefs[key] = Number(input.value);
-        value.textContent = shadePrefs[key].toFixed(2);
+        value.textContent = fmt(shadePrefs[key]);
         saveShadePrefs();
       });
       aoSliders.push(input);
@@ -155,6 +156,8 @@ export class ShadingMenu {
           'AO sample radius (world units) — bigger reaches broader creases'));
         root.appendChild(sliderRow('aoStrength', 'Strength', AO_STRENGTH_RANGE, 0.05,
           'AO darkening amount — 0 off, 1 default, 2 doubled'));
+        root.appendChild(sliderRow('aoSamples', 'Samples', AO_SAMPLES_RANGE, 16,
+          'AO samples per pixel — more is cleaner, fewer is faster'));
       }
     }
     syncSliderState();

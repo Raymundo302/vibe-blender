@@ -48,6 +48,11 @@ runE2e(async (t) => {
     floor.transform = floor.transform.withPosition(new V(0, 0, -1.001));
     S.deselectAll(); // no gizmo/outline near the sampled pixels
   })()`);
+  // t.evaluate does NOT await async IIFEs — the floor lands after the dynamic
+  // imports resolve. Poll for it, or the first pixel probe races the setup
+  // (flaked as off=58: the crease pixel read background before the floor hit).
+  t.check('pixel-check scene: floor landed',
+    await t.until(`window.__app.scene.objects.some((o) => o.name === 'Floor')`));
   await t.sleep(120);
 
   // Sample helper: force a render, read one pixel (GL coords, bottom-up).
@@ -105,10 +110,10 @@ runE2e(async (t) => {
   // Slider rows exist in the dropdown, indented under AO, and write the prefs.
   await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
   await t.sleep(80);
-  t.check('AO radius + strength sliders present in the menu',
+  t.check('AO radius + strength + samples sliders present in the menu',
     await t.evaluate(`(() => {
       const keys = [...document.querySelectorAll('[data-shade-slider]')].map((r) => r.dataset.shadeSlider);
-      return keys.join(',') === 'aoRadius,aoStrength';
+      return keys.join(',') === 'aoRadius,aoStrength,aoSamples';
     })()`));
   t.check('sliders are greyed out while AO is off',
     await t.evaluate(`[...document.querySelectorAll('[data-shade-slider] input')].every((i) => i.disabled)`));
