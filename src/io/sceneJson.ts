@@ -2,7 +2,7 @@ import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { Transform } from '../core/math/transform';
 import { sanitizeGraph, type NodeGraph } from '../core/nodes/nodeGraph';
-import { evalFCurve, type AnimData, type Interp } from '../core/anim/fcurve';
+import { evalFCurve, type AnimData, type Interp, type Keyframe } from '../core/anim/fcurve';
 import { applyAnimation } from '../core/anim/sampler';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import type { Scene, SceneObject } from '../core/scene/Scene';
@@ -41,8 +41,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 8;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8];
+const VERSION = 9;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -156,12 +156,24 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
   };
   if (obj.light) out.light = serializeLight(obj.light);
   if (obj.camera) out.camera = serializeCamera(obj.camera);
-  // Animation (v7) — key omitted entirely for never-keyed objects.
+  // Animation (v7; v9 adds an optional per-key extras object: easing direction
+  // + free bezier handles) — key omitted entirely for never-keyed objects.
   if (obj.anim && obj.anim.fcurves.length > 0) {
     out.anim = {
       fcurves: obj.anim.fcurves.map((c) => ({
         channelPath: c.channelPath,
-        keys: c.keys.map((k) => [num(k.frame), num(k.value), k.interp]),
+        keys: c.keys.map((k) => {
+          const base: unknown[] = [num(k.frame), num(k.value), k.interp];
+          const extra: Record<string, unknown> = {};
+          if (k.easing && k.easing !== 'auto') extra.e = k.easing;
+          if (k.handleMode === 'free') {
+            extra.hm = 'free';
+            if (k.hl) extra.hl = [num(k.hl[0]), num(k.hl[1])];
+            if (k.hr) extra.hr = [num(k.hr[0]), num(k.hr[1])];
+          }
+          if (Object.keys(extra).length > 0) base.push(extra);
+          return base;
+        }),
       })),
     };
   }
@@ -726,8 +738,17 @@ function parseObject(o: unknown, i: number): ObjectData {
   return data;
 }
 
+const INTERPS = ['constant', 'linear', 'bezier', 'sine', 'quad', 'cubic', 'quart', 'back', 'bounce', 'elastic'] as const;
+const EASINGS = ['auto', 'in', 'out', 'inout'] as const;
+
+function parseHandle(v: unknown, where: string): [number, number] {
+  if (!Array.isArray(v) || v.length !== 2) fail(`${where} must be [dframes, dvalue]`);
+  return [numField(v[0], `${where}[0]`), numField(v[1], `${where}[1]`)];
+}
+
 /** Parse an object's animation block (v7): fcurves of [frame, value, interp]
- *  key triplets. Keys re-sorted by frame defensively. */
+ *  key triplets; v9 allows a 4th element {e?, hm?, hl?, hr?} carrying the
+ *  easing direction and free bezier handles. Keys re-sorted defensively. */
 function parseAnim(v: unknown, i: number): AnimData | null {
   if (v === undefined || v === null) return null;
   if (typeof v !== 'object' || Array.isArray(v)) fail(`objects[${i}].anim must be an object`);
@@ -739,13 +760,30 @@ function parseAnim(v: unknown, i: number): AnimData | null {
     if (typeof curve.channelPath !== 'string') fail(`objects[${i}].anim.fcurves[${ci}].channelPath must be a string`);
     if (!Array.isArray(curve.keys)) fail(`objects[${i}].anim.fcurves[${ci}].keys must be an array`);
     const keys = (curve.keys as unknown[]).map((k, ki) => {
-      if (!Array.isArray(k) || k.length !== 3) fail(`objects[${i}].anim.fcurves[${ci}].keys[${ki}] must be [frame, value, interp]`);
+      const where = `objects[${i}].anim.fcurves[${ci}].keys[${ki}]`;
+      if (!Array.isArray(k) || k.length < 3 || k.length > 4) fail(`${where} must be [frame, value, interp, extras?]`);
       const frame = numField(k[0], `objects[${i}].anim key frame`);
       const value = numField(k[1], `objects[${i}].anim key value`);
-      if (k[2] !== 'constant' && k[2] !== 'linear' && k[2] !== 'bezier') {
-        fail(`objects[${i}].anim.fcurves[${ci}].keys[${ki}] interp must be constant|linear|bezier`);
+      if (!(INTERPS as readonly string[]).includes(k[2] as string)) {
+        fail(`${where} interp must be one of ${INTERPS.join('|')}`);
       }
-      return { frame, value, interp: k[2] as 'constant' | 'linear' | 'bezier' };
+      const key: Keyframe = { frame, value, interp: k[2] as Keyframe['interp'] };
+      if (k.length === 4) {
+        const x = k[3];
+        if (typeof x !== 'object' || x === null || Array.isArray(x)) fail(`${where}[3] must be an object`);
+        const extra = x as Record<string, unknown>;
+        if (extra.e !== undefined) {
+          if (!(EASINGS as readonly string[]).includes(extra.e as string)) fail(`${where}[3].e must be one of ${EASINGS.join('|')}`);
+          if (extra.e !== 'auto') key.easing = extra.e as Keyframe['easing'];
+        }
+        if (extra.hm !== undefined) {
+          if (extra.hm !== 'free') fail(`${where}[3].hm must be "free" when present`);
+          key.handleMode = 'free';
+          if (extra.hl !== undefined) key.hl = parseHandle(extra.hl, `${where}[3].hl`);
+          if (extra.hr !== undefined) key.hr = parseHandle(extra.hr, `${where}[3].hr`);
+        }
+      }
+      return key;
     });
     keys.sort((x, y) => x.frame - y.frame);
     return { channelPath: curve.channelPath, keys };

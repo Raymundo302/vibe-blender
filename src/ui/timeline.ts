@@ -21,10 +21,10 @@
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { applyAnimation } from '../core/anim/sampler';
-import { findCurve } from '../core/anim/fcurve';
+import { findCurve, INTERP_MODES, EASING_MODES, EASED_INTERPS } from '../core/anim/fcurve';
 import { InsertKeysCommand, DeleteKeysCommand, LOC_ROT_SCALE } from '../core/anim/animCommands';
-import { MoveKeysCommand, SetKeyInterpCommand, type KeyMove, type KeyInterpTarget } from '../core/anim/keyEditCommands';
-import type { Interp } from '../core/anim/fcurve';
+import { MoveKeysCommand, SetKeyInterpCommand, SetKeyEasingCommand, type KeyMove, type KeyInterpTarget } from '../core/anim/keyEditCommands';
+import type { Interp, Easing, Keyframe } from '../core/anim/fcurve';
 import { TransformCommand } from '../core/undo/commands';
 import './timeline.css';
 
@@ -35,6 +35,18 @@ import './timeline.css';
  * selected objects at frameCurrent whenever a fresh TransformCommand lands.
  */
 export const autoKeyState = { enabled: false };
+
+/**
+ * Single playback clock (punch-list fix). The default Layout docks a Timeline
+ * pane AND a user can switch another area to a second Timeline — two panes each
+ * running advancePlayback() would advance scene.frameCurrent twice per rAF,
+ * doubling playback speed. Module-scoped ownership: exactly ONE pane advances
+ * the clock while playing; the other panes still REFLECT frameCurrent (their
+ * ruler cursor reads the shared scene state each draw). A pane claims ownership
+ * when playback is running and no one owns it, and releases it when playback
+ * stops or the pane is destroyed.
+ */
+let playbackOwner: TimelinePane | null = null;
 
 /**
  * Selection identity for a diamond (P16-3).
@@ -128,6 +140,7 @@ export class TimelinePane {
   private readonly endInput: HTMLInputElement;
   private readonly fpsLabel: HTMLElement;
   private readonly interpSelect: HTMLSelectElement;
+  private readonly easingSelect: HTMLSelectElement;
 
   private cssW = 0;
   private cssH = 0;
@@ -209,7 +222,7 @@ export class TimelinePane {
     interpSpan.textContent = 'Interp';
     this.interpSelect = document.createElement('select');
     this.interpSelect.className = 'timeline-interp';
-    for (const [value, label] of [['constant', 'Constant'], ['linear', 'Linear'], ['bezier', 'Bezier']] as const) {
+    for (const { value, label } of INTERP_MODES) {
       const opt = document.createElement('option');
       opt.value = value;
       opt.textContent = label;
@@ -221,6 +234,27 @@ export class TimelinePane {
     });
     interpWrap.append(interpSpan, this.interpSelect);
 
+    // Per-key easing-direction picker (the eased interp families). Enabled only
+    // when keys are selected AND the selection's interp is an eased family;
+    // greyed out otherwise (same disabled mechanism as the interp select).
+    const easingWrap = document.createElement('label');
+    easingWrap.className = 'timeline-field timeline-easing-field';
+    const easingSpan = document.createElement('span');
+    easingSpan.textContent = 'Easing';
+    this.easingSelect = document.createElement('select');
+    this.easingSelect.className = 'timeline-easing';
+    for (const { value, label } of EASING_MODES) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.easingSelect.append(opt);
+    }
+    this.easingSelect.disabled = true;
+    this.easingSelect.addEventListener('change', () => {
+      this.applyEasing(this.easingSelect.value as Easing);
+    });
+    easingWrap.append(easingSpan, this.easingSelect);
+
     // Delete-selected-keys button — a discoverable alias for X / Delete.
     const delKeyBtn = document.createElement('button');
     delKeyBtn.className = 'timeline-btn timeline-delkey';
@@ -230,7 +264,7 @@ export class TimelinePane {
 
     header.append(
       toStartBtn, this.playBtn, frameWrap.wrap,
-      startWrap.wrap, endWrap.wrap, this.fpsLabel, interpWrap, delKeyBtn,
+      startWrap.wrap, endWrap.wrap, this.fpsLabel, interpWrap, easingWrap, delKeyBtn,
     );
 
     // --- Canvas (ruler + tracks) ---
@@ -287,6 +321,7 @@ export class TimelinePane {
   }
 
   destroy(): void {
+    if (playbackOwner === this) playbackOwner = null;
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
@@ -538,6 +573,29 @@ export class TimelinePane {
     }
   }
 
+  /** Apply an easing direction to the selected keys as ONE SetKeyEasingCommand. */
+  private applyEasing(easing: Easing): void {
+    if (this.selection.size === 0) return;
+    const targets: KeyInterpTarget[] = this.resolveTargets();
+    const cmd = SetKeyEasingCommand.perform('Set Key Easing', targets, easing);
+    if (cmd) {
+      this.getUndo()?.push(cmd);
+      applyAnimation(this.scene, this.scene.frameCurrent);
+    }
+  }
+
+  /** The concrete Keyframe objects currently targeted by the selection. */
+  private selectedKeyframes(): Keyframe[] {
+    const out: Keyframe[] = [];
+    for (const t of this.resolveTargets()) {
+      if (!t.object.anim) continue;
+      const curve = findCurve(t.object.anim, t.channelPath);
+      const key = curve?.keys.find((k) => k.frame === t.frame);
+      if (key) out.push(key);
+    }
+    return out;
+  }
+
   private handleKeyDown(e: KeyboardEvent): void {
     // Only claim X / Delete when the pane is hovered AND has a key selection,
     // and no form field is focused — otherwise let it fall through to the app.
@@ -675,21 +733,29 @@ export class TimelinePane {
   private advancePlayback(): void {
     const scene = this.scene;
     if (scene.playing) {
-      const now = performance.now();
-      if (!this.wasPlaying) {
-        this.playPos = scene.frameCurrent;
+      // Only ONE pane advances the shared clock (see playbackOwner). Others just
+      // reflect scene.frameCurrent via draw(). Claim ownership if it is free.
+      if (playbackOwner === null) playbackOwner = this;
+      if (playbackOwner === this) {
+        const now = performance.now();
+        if (!this.wasPlaying) {
+          this.playPos = scene.frameCurrent;
+          this.lastTick = now;
+        }
+        const dt = Math.max(0, (now - this.lastTick) / 1000);
         this.lastTick = now;
+        const span = Math.max(1, scene.frameEnd - scene.frameStart);
+        this.playPos += dt * scene.fps;
+        // Loop start↔end.
+        while (this.playPos > scene.frameEnd) this.playPos -= span;
+        if (this.playPos < scene.frameStart) this.playPos = scene.frameStart;
+        const f = Math.round(this.playPos);
+        scene.frameCurrent = f;
+        applyAnimation(scene, f);
       }
-      const dt = Math.max(0, (now - this.lastTick) / 1000);
-      this.lastTick = now;
-      const span = Math.max(1, scene.frameEnd - scene.frameStart);
-      this.playPos += dt * scene.fps;
-      // Loop start↔end.
-      while (this.playPos > scene.frameEnd) this.playPos -= span;
-      if (this.playPos < scene.frameStart) this.playPos = scene.frameStart;
-      const f = Math.round(this.playPos);
-      scene.frameCurrent = f;
-      applyAnimation(scene, f);
+    } else if (playbackOwner === this) {
+      // Playback stopped (pause from any pane) — release the clock.
+      playbackOwner = null;
     }
     this.wasPlaying = scene.playing;
   }
@@ -700,6 +766,19 @@ export class TimelinePane {
     this.fpsLabel.textContent = `${this.scene.fps} fps`;
     // Interp picker is live only when keys are selected.
     if (document.activeElement !== this.interpSelect) this.interpSelect.disabled = this.selection.size === 0;
+    // Easing picker: live only when keys are selected AND their interp is an
+    // eased family; reflects the selection's easing when uniform, else Automatic.
+    if (document.activeElement !== this.easingSelect) {
+      const keys = this.selection.size > 0 ? this.selectedKeyframes() : [];
+      const eased = keys.length > 0 && keys.every((k) => EASED_INTERPS.includes(k.interp));
+      this.easingSelect.disabled = !eased;
+      let uniform: Easing = 'auto';
+      if (eased) {
+        const first = keys[0].easing ?? 'auto';
+        uniform = keys.every((k) => (k.easing ?? 'auto') === first) ? first : 'auto';
+      }
+      this.easingSelect.value = uniform;
+    }
     if (document.activeElement !== this.frameInput) this.frameInput.value = String(this.scene.frameCurrent);
     if (document.activeElement !== this.startInput) this.startInput.value = String(this.scene.frameStart);
     if (document.activeElement !== this.endInput) this.endInput.value = String(this.scene.frameEnd);

@@ -12,6 +12,7 @@ import { UVEditor } from './ui/uvEditor';
 import { ShaderEditor } from './ui/shaderEditor';
 import { ImageViewer } from './ui/imageViewer';
 import { TimelinePane } from './ui/timeline';
+import { GraphEditor } from './ui/graphEditor';
 import './ui/modifierTab'; // side-effect: registers the Modifiers properties tab
 import './ui/materialTab'; // side-effect: registers the Material properties tab (P8-3)
 import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
@@ -338,6 +339,11 @@ const editorFactories: EditorFactory[] = [
     type: 'timeline',
     title: 'Timeline',
     create: () => new TimelinePane({ scene }),
+  },
+  {
+    type: 'graph',
+    title: 'Graph Editor',
+    create: () => new GraphEditor({ scene, undo }),
   },
 ];
 

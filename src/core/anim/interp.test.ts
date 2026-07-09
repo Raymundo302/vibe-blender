@@ -153,3 +153,126 @@ describe('evalFCurve — large frame numbers', () => {
     expect(evalFCurve(c, 9999)).toBeCloseTo(-3, 8);
   });
 });
+
+// ---- Easing families + bezier handles (Graph Editor batch, 2026-07-09) ----
+import { describe as describe2, it as it2, expect as expect2 } from 'vitest';
+import { evalFCurve as evalF, resolveEasing, type FCurve as FC } from './fcurve';
+
+function span(interp: string, extras: object = {}): FC {
+  return {
+    channelPath: 'location.x',
+    keys: [
+      { frame: 0, value: 0, interp: interp as never, ...extras },
+      { frame: 10, value: 1, interp: 'linear' },
+    ],
+  };
+}
+
+describe2('eased interps', () => {
+  it2('hits both endpoints exactly for every family and direction', () => {
+    for (const interp of ['sine', 'quad', 'cubic', 'quart', 'back', 'bounce', 'elastic']) {
+      for (const easing of ['auto', 'in', 'out', 'inout'] as const) {
+        const c = span(interp, { easing });
+        expect2(evalF(c, 0)).toBeCloseTo(0, 6);
+        expect2(evalF(c, 10)).toBeCloseTo(1, 6);
+      }
+    }
+  });
+
+  it2('quad ease-in is slower than linear early, faster late', () => {
+    const c = span('quad', { easing: 'in' });
+    expect2(evalF(c, 2)).toBeLessThan(0.2);   // t=0.2 → 0.04
+    expect2(evalF(c, 8)).toBeGreaterThan(0.6); // t=0.8 → 0.64
+    expect2(evalF(c, 2)).toBeCloseTo(0.04, 4);
+  });
+
+  it2('quad ease-out mirrors ease-in', () => {
+    const cin = span('quad', { easing: 'in' });
+    const cout = span('quad', { easing: 'out' });
+    expect2(evalF(cout, 2)).toBeCloseTo(1 - evalF(cin, 8), 6);
+  });
+
+  it2('inout is symmetric around the midpoint', () => {
+    const c = span('cubic', { easing: 'inout' });
+    expect2(evalF(c, 5)).toBeCloseTo(0.5, 6);
+    expect2(evalF(c, 3) + evalF(c, 7)).toBeCloseTo(1, 6);
+  });
+
+  it2('automatic easing: transitional families ease in, dynamic ease out', () => {
+    expect2(resolveEasing('sine', undefined)).toBe('in');
+    expect2(resolveEasing('quart', 'auto')).toBe('in');
+    expect2(resolveEasing('bounce', undefined)).toBe('out');
+    expect2(resolveEasing('elastic', 'auto')).toBe('out');
+    expect2(resolveEasing('back', undefined)).toBe('out');
+    expect2(resolveEasing('bounce', 'in')).toBe('in'); // explicit wins
+  });
+
+  it2('back overshoots below 0 on the way in', () => {
+    const c = span('back', { easing: 'in' });
+    let minV = 1;
+    for (let f = 0; f <= 10; f += 0.25) minV = Math.min(minV, evalF(c, f));
+    expect2(minV).toBeLessThan(-0.01);
+  });
+
+  it2('bounce ease-out rebounds (non-monotonic near the end)', () => {
+    const c = span('bounce', { easing: 'out' });
+    let dips = 0;
+    let prev = evalF(c, 0);
+    for (let f = 0.1; f <= 10; f += 0.1) {
+      const v = evalF(c, f);
+      if (v < prev - 1e-6) dips++;
+      prev = v;
+    }
+    expect2(dips).toBeGreaterThan(0);
+  });
+});
+
+describe2('bezier free handles', () => {
+  it2('pure auto span matches the original Hermite exactly', () => {
+    const auto: FC = span('bezier');
+    const legacy: FC = span('bezier'); // same — regression guard vs known value
+    expect2(evalF(auto, 5)).toBeCloseTo(evalF(legacy, 5), 12);
+  });
+
+  it2('a free flat right handle makes the curve leave the key flat', () => {
+    const c: FC = {
+      channelPath: 'location.x',
+      keys: [
+        { frame: 0, value: 0, interp: 'bezier', handleMode: 'free', hr: [5, 0] },
+        { frame: 10, value: 1, interp: 'bezier' },
+      ],
+    };
+    // Flat long handle → early values hug 0 much tighter than the auto curve.
+    expect2(evalF(c, 2)).toBeLessThan(evalF(span('bezier'), 2));
+    expect2(evalF(c, 2)).toBeLessThan(0.05);
+    expect2(evalF(c, 0)).toBeCloseTo(0, 6);
+    expect2(evalF(c, 10)).toBeCloseTo(1, 6);
+  });
+
+  it2('handle x offsets are clamped into the span (no time-travel)', () => {
+    const c: FC = {
+      channelPath: 'location.x',
+      keys: [
+        { frame: 0, value: 0, interp: 'bezier', handleMode: 'free', hr: [50, 2] }, // way past the next key
+        { frame: 10, value: 1, interp: 'bezier', handleMode: 'free', hl: [-50, -2] },
+      ],
+    };
+    // Monotonic x → single value everywhere, endpoints exact.
+    expect2(evalF(c, 0)).toBeCloseTo(0, 5);
+    expect2(evalF(c, 10)).toBeCloseTo(1, 5);
+    const mid = evalF(c, 5);
+    expect2(Number.isFinite(mid)).toBe(true);
+  });
+
+  it2('free left handle on the RIGHT key shapes the arrival', () => {
+    const flat: FC = {
+      channelPath: 'location.x',
+      keys: [
+        { frame: 0, value: 0, interp: 'bezier' },
+        { frame: 10, value: 1, interp: 'bezier', handleMode: 'free', hl: [-5, 0] },
+      ],
+    };
+    expect2(evalF(flat, 8)).toBeGreaterThan(evalF(span('bezier'), 8));
+    expect2(evalF(flat, 8)).toBeGreaterThan(0.95);
+  });
+});

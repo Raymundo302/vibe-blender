@@ -62,7 +62,9 @@ runE2e(async (t) => {
 
   // 4. Scrub the ruler to ~frame 12 via synthesized pointer events.
   const geo = await t.evaluate(`(() => {
-    const r = document.querySelector('.timeline-canvas').getBoundingClientRect();
+    // __timeline.canvas, NOT querySelector: the default Layout now docks a
+    // Timeline pane too, so the first .timeline-canvas is not the suite's.
+    const r = window.__timeline.canvas.getBoundingClientRect();
     return { left: r.left, top: r.top, x12: window.__timeline.frameToX(12) };
   })()`);
   const sx = geo.left + geo.x12;
@@ -107,7 +109,7 @@ runE2e(async (t) => {
 
   // 7. Frame input jumps + poses.
   await t.evaluate(`(() => {
-    const inp = document.querySelector('.timeline-frame');
+    const inp = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-frame');
     inp.value = '1';
     inp.dispatchEvent(new Event('change'));
   })()`);
@@ -115,4 +117,81 @@ runE2e(async (t) => {
   t.check('frame input set frameCurrent', (await t.evaluate(`window.__app.scene.frameCurrent`)) === 1);
   const posAtStart = await t.evaluate(`window.__app.scene.activeObject.transform.position.x`);
   t.check('frame input posed the cube back to frame 1 (x≈0)', Math.abs(posAtStart) < 0.01, `x=${posAtStart}`);
+
+  // 8. Interp select now has 10 options; easing select exists + greyed with no
+  //    selection (nothing is selected at this point — scrubbing cleared it).
+  const interpOptCount = await t.evaluate(
+    `window.__timeline.canvas.closest('.timeline').querySelectorAll('.timeline-interp option').length`);
+  t.check('interp select offers all 10 modes', interpOptCount === 10, `n=${interpOptCount}`);
+  t.check('easing select exists in header',
+    await t.evaluate(`!!window.__timeline.canvas.closest('.timeline').querySelector('.timeline-easing')`));
+  t.check('easing select greyed with no selection',
+    await t.evaluate(`window.__timeline.canvas.closest('.timeline').querySelector('.timeline-easing').disabled === true`));
+
+  // 9. Select a key, set interp 'bounce' → easing enables; set easing 'inout'
+  //    → the key gains easing 'inout'; ONE Ctrl+Z reverts the easing.
+  const cubeId = await t.evaluate(`window.__app.scene.activeObject.id`);
+  const gEase = await t.evaluate(`(() => {
+    const r = window.__timeline.canvas.getBoundingClientRect();
+    const d = window.__timeline.diamondXY(${cubeId}, 1);
+    return d ? { x: r.left + d.x, y: r.top + d.y } : null;
+  })()`);
+  t.check('object-row diamond @1 has a screen position', !!gEase);
+  await t.click(gEase.x, gEase.y);
+  t.check('a key is selected for the easing test',
+    (await t.evaluate(`window.__timeline.selectedKeys().length`)) >= 1);
+
+  await t.evaluate(`(() => {
+    const s = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-interp');
+    s.value = 'bounce'; s.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(150); // let a frame run so syncHeader re-evaluates the easing enable
+  const interpIsBounce = await t.evaluate(`(() => {
+    const lx = window.__app.scene.activeObject.anim.fcurves.find(c => c.channelPath === 'location.x');
+    return lx.keys.find(k => k.frame === 1).interp;
+  })()`);
+  t.check("interp select set the key to 'bounce'", interpIsBounce === 'bounce', interpIsBounce);
+  t.check('easing select enables once interp is an eased family',
+    await t.evaluate(`window.__timeline.canvas.closest('.timeline').querySelector('.timeline-easing').disabled === false`));
+
+  await t.evaluate(`(() => {
+    const s = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-easing');
+    s.value = 'inout'; s.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(120);
+  const easingSet = await t.evaluate(`(() => {
+    const lx = window.__app.scene.activeObject.anim.fcurves.find(c => c.channelPath === 'location.x');
+    return lx.keys.find(k => k.frame === 1).easing;
+  })()`);
+  t.check("easing select set the key easing to 'inout'", easingSet === 'inout', String(easingSet));
+
+  await t.key('z', 'KeyZ', 2); // Ctrl+Z
+  await t.sleep(120);
+  const easingReverted = await t.evaluate(`(() => {
+    const lx = window.__app.scene.activeObject.anim.fcurves.find(c => c.channelPath === 'location.x');
+    return lx.keys.find(k => k.frame === 1).easing;
+  })()`);
+  t.check('ONE Ctrl+Z reverts the easing change (back to auto/undefined)',
+    easingReverted === undefined, String(easingReverted));
+
+  // 10. Single-clock guard: the default Layout Timeline AND this suite's pane
+  //     are both alive; playback must advance the clock ONCE (~fps*0.6s), not
+  //     twice. Wide range so no loop wrap during the ~600ms window.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    s.playing = false; s.frameStart = 1; s.frameEnd = 500; s.frameCurrent = 1;
+  })()`);
+  await t.sleep(60);
+  const fps = await t.evaluate(`window.__app.scene.fps`);
+  const f0 = await t.evaluate(`window.__app.scene.frameCurrent`);
+  await t.evaluate(`(() => { [...document.querySelectorAll('.timeline-play')][0].click(); })()`);
+  await t.sleep(600);
+  await t.evaluate(`(() => { window.__app.scene.playing = false; })()`);
+  await t.sleep(80);
+  const f1 = await t.evaluate(`window.__app.scene.frameCurrent`);
+  const advanced = f1 - f0;
+  const expected = fps * 0.6;
+  t.check('playback advanced ~fps*0.6 frames (single clock, not doubled)',
+    advanced >= expected * 0.6 && advanced <= expected * 1.4,
+    `advanced=${advanced} expected≈${expected.toFixed(1)} (fps=${fps})`);
 });

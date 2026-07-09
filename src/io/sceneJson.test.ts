@@ -136,7 +136,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(8);
+    expect(parsed.version).toBe(9);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -600,5 +600,43 @@ describe('v8 migration on a real historical file', () => {
       const up = m.transformDir(new Vec3(0, 1, 0)).normalize();
       expect(up.z).toBeGreaterThan(0.5);
     }
+  });
+});
+
+describe('v9 keyframe extras (easing + free handles)', () => {
+  it('round-trips easing and free handles through serialize/load', () => {
+    const scene = new Scene();
+    const obj = scene.add('Cube', makeCube());
+    obj.anim = {
+      fcurves: [{
+        channelPath: 'location.x',
+        keys: [
+          { frame: 1, value: 0, interp: 'bounce', easing: 'inout' },
+          { frame: 10, value: 2, interp: 'bezier', handleMode: 'free', hl: [-2, 0.5], hr: [3, -0.25] },
+          { frame: 20, value: 1, interp: 'elastic' }, // auto easing → no extras written
+        ],
+      }],
+    };
+    const json = serializeScene(scene, new OrbitCamera());
+    const parsed = JSON.parse(json);
+    const keys = parsed.objects[0].anim.fcurves[0].keys;
+    expect(keys[0][3]).toEqual({ e: 'inout' });
+    expect(keys[1][3]).toEqual({ hm: 'free', hl: [-2, 0.5], hr: [3, -0.25] });
+    expect(keys[2].length).toBe(3); // auto easing stays compact
+
+    const scene2 = new Scene();
+    applySceneJson(json, scene2, new OrbitCamera());
+    const k2 = scene2.objects[0].anim!.fcurves[0].keys;
+    expect(k2[0]).toMatchObject({ interp: 'bounce', easing: 'inout' });
+    expect(k2[1]).toMatchObject({ handleMode: 'free', hl: [-2, 0.5], hr: [3, -0.25] });
+    expect(k2[2].easing).toBeUndefined();
+  });
+
+  it('rejects an unknown interp with a readable error', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    json.objects[0].anim = { fcurves: [{ channelPath: 'location.x', keys: [[1, 0, 'zigzag']] }] };
+    expect(() => applySceneJson(JSON.stringify(json), new Scene(), new OrbitCamera())).toThrow(/interp must be one of/);
   });
 });

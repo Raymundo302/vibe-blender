@@ -1,6 +1,6 @@
 import type { Command } from '../undo/UndoStack';
 import type { SceneObject } from '../scene/Scene';
-import { deleteKey, insertKey, findCurve, type Interp, type Keyframe } from './fcurve';
+import { deleteKey, insertKey, findCurve, type Easing, type Interp, type Keyframe } from './fcurve';
 
 /**
  * Timeline keyframe MOVE undo command (P15-3).
@@ -81,7 +81,7 @@ export class MoveKeysCommand implements Command {
 
     // Pass 2: drop each lifted key at its target, capturing any collided key.
     for (const e of entries) {
-      e.replaced = insertKey(e.object.anim!, e.channelPath, e.toFrame, e.moved.value, e.moved.interp);
+      e.replaced = insertKey(e.object.anim!, e.channelPath, e.toFrame, e.moved.value, e.moved.interp, e.moved);
     }
     return new MoveKeysCommand(name, entries);
   }
@@ -93,14 +93,14 @@ export class MoveKeysCommand implements Command {
       if (!e.object.anim) continue;
       deleteKey(e.object.anim, e.channelPath, e.toFrame);
       if (e.replaced) {
-        insertKey(e.object.anim, e.channelPath, e.replaced.frame, e.replaced.value, e.replaced.interp);
+        insertKey(e.object.anim, e.channelPath, e.replaced.frame, e.replaced.value, e.replaced.interp, e.replaced);
       }
     }
     // Restore the moved keys at their original frames.
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const e = this.entries[i];
       if (!e.object.anim) e.object.anim = { fcurves: [] };
-      insertKey(e.object.anim, e.channelPath, e.moved.frame, e.moved.value, e.moved.interp);
+      insertKey(e.object.anim, e.channelPath, e.moved.frame, e.moved.value, e.moved.interp, e.moved);
     }
   }
 
@@ -110,7 +110,7 @@ export class MoveKeysCommand implements Command {
     }
     for (const e of this.entries) {
       if (!e.object.anim) e.object.anim = { fcurves: [] };
-      insertKey(e.object.anim, e.channelPath, e.toFrame, e.moved.value, e.moved.interp);
+      insertKey(e.object.anim, e.channelPath, e.toFrame, e.moved.value, e.moved.interp, e.moved);
     }
   }
 }
@@ -181,5 +181,134 @@ export class SetKeyInterpCommand implements Command {
       const key = SetKeyInterpCommand.findKey(e.object, e.channelPath, e.frame);
       if (key) key.interp = e.after;
     }
+  }
+}
+
+/**
+ * Per-key easing-direction change (the eased interps' In / Out / In-Out /
+ * Automatic picker) — the exact shape of SetKeyInterpCommand, over `easing`.
+ */
+interface EasingEntry {
+  object: SceneObject;
+  channelPath: string;
+  frame: number;
+  before: Easing | undefined;
+  after: Easing;
+}
+
+export class SetKeyEasingCommand implements Command {
+  private constructor(
+    readonly name: string,
+    private readonly entries: EasingEntry[],
+  ) {}
+
+  static perform(name: string, targets: KeyInterpTarget[], easing: Easing): SetKeyEasingCommand | null {
+    const entries: EasingEntry[] = [];
+    for (const t of targets) {
+      const key = SetKeyEasingCommand.findKey(t.object, t.channelPath, t.frame);
+      if (!key || (key.easing ?? 'auto') === easing) continue;
+      entries.push({ object: t.object, channelPath: t.channelPath, frame: t.frame, before: key.easing, after: easing });
+      if (easing === 'auto') delete key.easing;
+      else key.easing = easing;
+    }
+    return entries.length ? new SetKeyEasingCommand(name, entries) : null;
+  }
+
+  private static findKey(object: SceneObject, channelPath: string, frame: number): Keyframe | undefined {
+    if (!object.anim) return undefined;
+    return findCurve(object.anim, channelPath)?.keys.find((k) => k.frame === frame);
+  }
+
+  undo(): void {
+    for (const e of this.entries) {
+      const key = SetKeyEasingCommand.findKey(e.object, e.channelPath, e.frame);
+      if (!key) continue;
+      if (e.before === undefined) delete key.easing;
+      else key.easing = e.before;
+    }
+  }
+
+  redo(): void {
+    for (const e of this.entries) {
+      const key = SetKeyEasingCommand.findKey(e.object, e.channelPath, e.frame);
+      if (!key) continue;
+      if (e.after === 'auto') delete key.easing;
+      else key.easing = e.after;
+    }
+  }
+}
+
+/**
+ * Whole-curve snapshot command for the Graph Editor's free-form edits (key
+ * value/frame drags, bezier handle drags): capture() deep-copies the target
+ * curves, runs the caller's mutation, deep-copies the result, and returns null
+ * when nothing changed. The A4 snapshot philosophy at fcurve granularity — the
+ * mutation can be anything (live drag already applied), undo/redo just swap
+ * key arrays wholesale.
+ */
+interface CurveSnap {
+  object: SceneObject;
+  channelPath: string;
+  before: Keyframe[];
+  after: Keyframe[];
+}
+
+export class EditCurveKeysCommand implements Command {
+  private constructor(
+    readonly name: string,
+    private readonly snaps: CurveSnap[],
+  ) {}
+
+  /** Deep-copy a curve's keys (handles included). */
+  private static copyKeys(object: SceneObject, channelPath: string): Keyframe[] {
+    const curve = object.anim && findCurve(object.anim, channelPath);
+    return curve ? curve.keys.map((k) => ({
+      ...k,
+      hl: k.hl ? [k.hl[0], k.hl[1]] as [number, number] : undefined,
+      hr: k.hr ? [k.hr[0], k.hr[1]] as [number, number] : undefined,
+    })) : [];
+  }
+
+  private static writeKeys(object: SceneObject, channelPath: string, keys: Keyframe[]): void {
+    if (!object.anim) object.anim = { fcurves: [] };
+    let curve = findCurve(object.anim, channelPath);
+    if (keys.length === 0) {
+      if (curve) object.anim.fcurves = object.anim.fcurves.filter((c) => c !== curve);
+      return;
+    }
+    if (!curve) {
+      curve = { channelPath, keys: [] };
+      object.anim.fcurves.push(curve);
+    }
+    curve.keys = keys.map((k) => ({ ...k }));
+  }
+
+  /**
+   * Snapshot `targets`, run `mutate`, snapshot again. Returns the applied
+   * command, or null if the mutation changed nothing.
+   */
+  static capture(
+    name: string,
+    targets: { object: SceneObject; channelPath: string }[],
+    mutate: () => void,
+  ): EditCurveKeysCommand | null {
+    const before = targets.map((t) => EditCurveKeysCommand.copyKeys(t.object, t.channelPath));
+    mutate();
+    const snaps: CurveSnap[] = [];
+    targets.forEach((t, idx) => {
+      const after = EditCurveKeysCommand.copyKeys(t.object, t.channelPath);
+      if (JSON.stringify(after) !== JSON.stringify(before[idx])) {
+        snaps.push({ object: t.object, channelPath: t.channelPath, before: before[idx], after });
+      }
+    });
+    return snaps.length ? new EditCurveKeysCommand(name, snaps) : null;
+  }
+
+  undo(): void {
+    for (const s of this.snaps) EditCurveKeysCommand.writeKeys(s.object, s.channelPath, s.before);
+  }
+
+  redo(): void {
+    for (const s of this.snaps) EditCurveKeysCommand.writeKeys(s.object, s.channelPath, s.after);
   }
 }

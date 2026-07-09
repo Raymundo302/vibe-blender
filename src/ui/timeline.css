@@ -84,6 +84,28 @@
   cursor: default;
 }
 
+/* Per-key easing-direction picker — sits right after the interp dropdown.
+ * Enabled only when the selection's interp is an eased family. */
+.timeline-easing-field {
+  margin-left: 8px;
+}
+
+.timeline-easing {
+  height: 20px;
+  padding: 0 4px;
+  background: var(--vb-input, #1a1a1a);
+  color: var(--vb-text, #ddd);
+  border: 1px solid var(--vb-border, #111);
+  border-radius: 3px;
+  font: 11px sans-serif;
+  cursor: pointer;
+}
+
+.timeline-easing:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Delete-selected-keys button (P15-3) — sits at the far right, past the fps
  * label's margin-left:auto. A discoverable alias for the X / Delete shortcut. */
 .timeline-delkey {
