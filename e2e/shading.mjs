@@ -464,4 +464,46 @@ runE2e(async (t) => {
   await setPref('aoStrength', 1);
 
   await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+
+  // ===================================================================
+  // (f) FAR-CORNER DIAMOND REGRESSION — screen-space blind spot.
+  //
+  // A cube's ambient shadow must ring ALL four base edges (a diamond), not
+  // just the camera-facing ones (a boomerang). Two historical failure modes:
+  // the Jimenez slice arc unnormalized at grazing gamma (open-slice arc grows
+  // to pi/2, burying occlusion before the clamp), and back-facing walls simply
+  // absent from the depth buffer (fixed by the radius-deep slab thickness in
+  // horizonTap). Probe the crease just outside the near AND far corners at a
+  // low pitch; both must darken with AO on.
+  // ===================================================================
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    const prim = await import('/src/core/mesh/primitives.ts');
+    S.add('Diamond', prim.makeCube(1));
+    S.deselectAll();
+  })()`);
+  t.check('diamond scene: cube landed',
+    await t.until(`window.__app.scene.objects.some((o) => o.name === 'Diamond')`));
+  await t.evaluate(`(() => {
+    const cam = window.__app.camera;
+    cam.pitch = 0.22; cam.distance = 9; return cam.pitch;
+  })()`);
+  await setPref('aoRadius', 1.2);
+  await setPref('aoStrength', 1);
+  await t.sleep(60);
+  // camera sits in the (+x, -y) quadrant (yaw pi/4): near corner (+1,-1),
+  // far corner (-1,+1); cube spans +-1 with its base on the z=-1.001 floor.
+  // Far probe sits DIAGONALLY outside the far-right corner — the floor beyond
+  // the corner itself is hidden behind the cube at this pitch.
+  const offNear = lum(await pixelAt(1.12, -1.12, -1.0));
+  const offFar = lum(await pixelAt(1.18, 1.18, -1.0));
+  await setPref('ao', true);
+  await t.sleep(60);
+  const onNear = lum(await pixelAt(1.12, -1.12, -1.0));
+  const onFar = lum(await pixelAt(1.18, 1.18, -1.0));
+  await setPref('ao', false);
+  t.check('grazing diamond: near-corner crease darkens',
+    offNear - onNear > 8, `off=${offNear.toFixed(1)} on=${onNear.toFixed(1)}`);
+  t.check('grazing diamond: FAR-corner crease darkens (slab thickness)',
+    offFar - onFar > 8, `off=${offFar.toFixed(1)} on=${onFar.toFixed(1)}`);
 });

@@ -121,15 +121,12 @@ const float AO_BIAS = 0.02;
 // torus rim) sit well off the plane (k far from 1) and still register.
 const float AO_COPLANAR = 0.04;
 
-// One marched tap: returns the horizon cosine it contributes (dot(dir,V)), or
-// -1.0 (a no-op for the max) if it is background, self, coplanar with the center
+// Gate + score one candidate occluder position (already reconstructed).
+// Returns its horizon cosine, or -1.0 if it is self, coplanar with the center
 // surface, below the tangent plane, or beyond the radius. A smooth distance
 // falloff toward the radius edge replaces the old hard cutoff so near-radius
 // quantized taps cannot snap a false horizon and no contact ring forms.
-float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
-  float sd = texture(u_depth, suv).r;
-  if (sd >= 1.0) return -1.0;                 // background
-  vec3 sP = viewPos(suv, sd);
+float scoreTap(vec3 sP, vec3 P, vec3 N, vec3 V, float invRadius) {
   vec3 dv = sP - P;
   float d2 = dot(dv, dv);
   if (d2 < 1e-8) return -1.0;                 // reads our own texel
@@ -152,6 +149,27 @@ float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
   if (r >= 1.0) return -1.0;                  // beyond the AO radius
   float falloff = 1.0 - smoothstep(0.5, 1.0, r);
   return mix(-1.0, dot(dv, V) * invd, falloff);
+}
+
+// One marched tap. The depth buffer only knows CAMERA-VISIBLE surfaces, so a
+// visible surface is treated as a SLAB one radius deep (EEVEE-style thickness),
+// not a paper shell. The candidate occluder is the point on the tap pixel's
+// view ray CLOSEST to the center P, clamped inside [surface, surface + radius]
+// along the ray — the normal case (surface behind/level with P) clamps to the
+// surface itself, while a surface fronting P extrudes toward P's depth. This
+// reconstructs approximate hidden geometry behind silhouettes; without it,
+// back-facing occluders contribute nothing and a cube's contact shadow dies at
+// its far corner (the visible top/right walls there sit beyond the radius; the
+// true occluder — the back wall — is not in the depth buffer at all).
+float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
+  float sd = texture(u_depth, suv).r;
+  if (sd >= 1.0) return -1.0;                 // background
+  vec3 sP = viewPos(suv, sd);
+  float sSurf = length(sP);
+  vec3 rayDir = sP / sSurf;
+  float sNear = dot(P, rayDir);               // ray param closest to the center
+  float sQ = clamp(sNear, sSurf, sSurf + 1.0 / invRadius);
+  return scoreTap(rayDir * sQ, P, N, V, invRadius);
 }
 
 void main() {
@@ -224,6 +242,15 @@ void main() {
     float h2 = gamma + max(t2 - gamma, -HALF_PI);
     float arc = 0.25 * (-cos(2.0 * h1 - gamma) + cos(gamma) + 2.0 * h1 * sin(gamma))
               + 0.25 * (-cos(2.0 * h2 - gamma) + cos(gamma) + 2.0 * h2 * sin(gamma));
+    // Normalize by THIS slice's unoccluded arc. The closed form integrates to
+    // cos(g) + g*sin(g) for an open slice — 1.0 only at g = 0. At grazing view
+    // |g| -> pi/2 and the open arc grows to pi/2, so averaging raw arcs and
+    // clamping to 1 buries real occlusion under ~57% of fake headroom: contact
+    // shadows faded with view angle and vanished at grazing (the "boomerang" —
+    // strong on camera-side edges, nothing at the far corner). Per-slice
+    // normalization makes an open slice exactly 1 at EVERY view angle.
+    float g = abs(gamma);
+    arc /= max(cos(g) + g * sin(g), 1e-3);
     visibility += projLen * arc;
     weightSum += projLen;
   }
