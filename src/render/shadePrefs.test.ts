@@ -20,7 +20,7 @@ describe('shadePrefs persistence', () => {
 
   it('defaults: toggles off, AO tuner at its documented midpoints', () => {
     expect(defaultShadePrefs()).toEqual({
-      ao: false, aoMode: 'screen', aoMethod: 0, aoRadius: 1.2, aoStrength: 0.9, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
+      ao: false, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
     });
   });
 
@@ -40,38 +40,38 @@ describe('shadePrefs persistence', () => {
   });
 
   it('clamps out-of-range stored tuner values into the slider bounds', () => {
-    localStorage.setItem('vibe-shading-v2', JSON.stringify({ aoRadius: 99, aoStrength: -3 }));
+    localStorage.setItem('vibe-shading-v3', JSON.stringify({ aoRadius: 99, aoStrength: -3 }));
     loadShadePrefs();
     expect(shadePrefs.aoRadius).toBe(2.5);
     expect(shadePrefs.aoStrength).toBe(0);
   });
 
   it('rejects non-finite numbers (falls back to defaults)', () => {
-    localStorage.setItem('vibe-shading-v2', JSON.stringify({ aoRadius: null, aoStrength: 'big' }));
+    localStorage.setItem('vibe-shading-v3', JSON.stringify({ aoRadius: null, aoStrength: 'big' }));
     loadShadePrefs();
-    expect(shadePrefs.aoRadius).toBe(1.2);
-    expect(shadePrefs.aoStrength).toBe(0.9);
+    expect(shadePrefs.aoRadius).toBe(0.3);
+    expect(shadePrefs.aoStrength).toBe(1);
   });
 
   it('sanitizes an invalid stored aoMode / aoMethod', () => {
-    localStorage.setItem('vibe-shading-v2', JSON.stringify({ aoMode: 'quantum', aoMethod: 42 }));
+    localStorage.setItem('vibe-shading-v3', JSON.stringify({ aoMode: 'quantum', aoMethod: 42 }));
     loadShadePrefs();
-    expect(shadePrefs.aoMode).toBe('screen');
+    expect(shadePrefs.aoMode).toBe('object');
     expect(shadePrefs.aoMethod).toBe(2);
   });
 
   it('malformed storage falls back to defaults', () => {
-    localStorage.setItem('vibe-shading-v2', '{not json');
+    localStorage.setItem('vibe-shading-v3', '{not json');
     shadePrefs.ao = true;
     loadShadePrefs();
     expect(shadePrefs).toEqual(defaultShadePrefs());
   });
 
   it('missing keys fall back individually', () => {
-    localStorage.setItem('vibe-shading-v2', JSON.stringify({ ao: true }));
+    localStorage.setItem('vibe-shading-v3', JSON.stringify({ ao: true }));
     loadShadePrefs();
     expect(shadePrefs).toEqual({
-      ao: true, aoMode: 'screen', aoMethod: 0, aoRadius: 1.2, aoStrength: 0.9, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
+      ao: true, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
     });
   });
 });

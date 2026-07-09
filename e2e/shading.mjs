@@ -74,6 +74,10 @@ runE2e(async (t) => {
 
   // --- AO: the floor right at the cube's base darkens; open floor doesn't. --
   const setPref = (key, val) => t.evaluate(`window.__app.shadePrefs.${key} = ${val}`);
+  // Everything through the diamond checks regression-tests the SCREEN (GTAO)
+  // estimator specifically — pin the mode (the app default is 'object' since
+  // 2026-07-09). The Object AO section further down sets its own mode.
+  await t.evaluate(`window.__app.shadePrefs.aoMode = 'screen'`);
   // Contact crease: floor point hugging the cube's front (-Y) face — the
   // camera-visible side; open floor far away as the control.
   const creaseNoAo = lum(await pixelAt(0.2, -1.12, -1.0));
@@ -634,7 +638,7 @@ runE2e(async (t) => {
   }
 
   // (5) Persistence — driving the selects (object, method 4) fires their change
-  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v2'.
+  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v3'.
   const persisted = await t.evaluate(`(() => {
     const modeSel = document.querySelector('select[data-shade-mode]');
     const methodSel = document.querySelector('select[data-shade-method]');
@@ -642,9 +646,9 @@ runE2e(async (t) => {
       modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
       methodSel.value = '2'; methodSel.dispatchEvent(new Event('change'));
     }
-    return localStorage.getItem('vibe-shading-v2') || '';
+    return localStorage.getItem('vibe-shading-v3') || '';
   })()`);
-  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v2)',
+  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v3)',
     persisted.includes('"aoMode":"object"'), `stored=${persisted.slice(0, 90)}`);
 
   // Restore global state: close menu, revert selects to screen (re-persists),
@@ -656,7 +660,7 @@ runE2e(async (t) => {
   await t.key('Escape', 'Escape', 0);
   await t.evaluate(`(() => {
     const p = window.__app.shadePrefs;
-    p.ao = false; p.aoMode = 'screen'; p.aoMethod = 0; p.aoRadius = 0.55; p.aoStrength = 1;
+    p.ao = false; p.aoMode = 'object'; p.aoMethod = 0; p.aoRadius = 0.3; p.aoStrength = 1;
     window.__app.renderer.shadingMode = 'matcap';
   })()`);
 });

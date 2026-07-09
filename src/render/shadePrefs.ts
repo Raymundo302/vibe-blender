@@ -40,19 +40,20 @@ export interface ShadePrefs {
 }
 
 /** Slider bounds — shared by the UI and the loader's clamping. */
-export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 1.2 };
-export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 0.9 };
+export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 0.3 };
+export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 1 };
 export const AO_SAMPLES_RANGE = { min: 16, max: 96, default: 48 };
 
-// v2: AO look re-tuned (half-res GTAO rebuild, 2026-07-08) — new key so
-// stored pre-rebuild radius/strength don't override the calibrated defaults.
-const STORAGE_KEY = 'vibe-shading-v2';
+// v3: Object (SDF) AO became the default estimator with Ray's picked look
+// (Baseline, radius 0.3, strength 1) — new key so stored v2 GTAO-era values
+// don't shadow the new defaults. (v2: half-res GTAO rebuild, 2026-07-08.)
+const STORAGE_KEY = 'vibe-shading-v3';
 
 export function defaultShadePrefs(): ShadePrefs {
   return {
     ao: false,
-    aoMode: 'screen',
-    aoMethod: 0,   // Baseline — Ray's preferred estimator from the prototype
+    aoMode: 'object',   // Ray's SDF technique is the house default (2026-07-09)
+    aoMethod: 0,        // Baseline — his preferred estimator from the prototype
     aoRadius: AO_RADIUS_RANGE.default,
     aoStrength: AO_STRENGTH_RANGE.default,
     aoSamples: AO_SAMPLES_RANGE.default,
@@ -82,7 +83,7 @@ export function loadShadePrefs(): ShadePrefs {
       typeof v === want && (want !== 'number' || Number.isFinite(v as number)) ? v : d[key];
   }
   // Clamp the numeric prefs into their slider ranges (stale/hand-edited storage).
-  if (shadePrefs.aoMode !== 'screen' && shadePrefs.aoMode !== 'object') shadePrefs.aoMode = 'screen';
+  if (shadePrefs.aoMode !== 'screen' && shadePrefs.aoMode !== 'object') shadePrefs.aoMode = 'object';
   shadePrefs.aoMethod = Math.min(AO_METHODS.length - 1, Math.max(0, Math.round(shadePrefs.aoMethod)));
   shadePrefs.aoRadius = Math.min(AO_RADIUS_RANGE.max, Math.max(AO_RADIUS_RANGE.min, shadePrefs.aoRadius));
   shadePrefs.aoStrength = Math.min(AO_STRENGTH_RANGE.max, Math.max(AO_STRENGTH_RANGE.min, shadePrefs.aoStrength));
