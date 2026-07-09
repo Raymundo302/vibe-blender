@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 8,
+  "version": 9,
   "camera": {
     "target": [
       -0.077136,

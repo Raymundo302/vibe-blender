@@ -45,9 +45,17 @@ runE2e(async (t) => {
   const centerStripSpread = () => t.evaluate(`(() => {
     const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
     app.renderer.render(app.scene, app.camera);
-    const n = 200, x0 = Math.max(0, Math.round(c.width / 2 - n / 2));
+    // Anchor the strip on the CUBE's projected center, not the canvas center —
+    // the viewport's height (and thus where the cube lands) changed when the
+    // default Layout docked a Timeline pane.
+    const vp = app.renderer.currentViewProj(app.scene, app.camera);
+    const m = vp.m;
+    const cw = m[3]*0 + m[7]*0 + m[11]*0 + m[15];
+    const cx = (m[12] / cw * 0.5 + 0.5) * c.width;
+    const cy = (m[13] / cw * 0.5 + 0.5) * c.height;
+    const n = 120, x0 = Math.max(0, Math.round(cx - n / 2));
     const px = new Uint8Array(n * 4);
-    gl.readPixels(x0, Math.round(c.height / 2), n, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.readPixels(x0, Math.round(cy), n, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     let min = 999, max = -999;
     for (let i = 0; i < n; i++) {
       const l = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
