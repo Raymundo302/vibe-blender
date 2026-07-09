@@ -191,11 +191,11 @@ runE2e(async (t) => {
     if (sel) { sel.value = 'timeline'; sel.dispatchEvent(new Event('change')); }
   })()`);
   await t.sleep(300);
-  t.check('S3: timeline pane mounted', await t.evaluate(`!!document.querySelector('.timeline-frame')`));
+  t.check('S3: timeline pane mounted', await t.evaluate(`!!window.__timeline.canvas.closest('.timeline').querySelector('.timeline-frame')`));
 
   const scrub = async (f) => {
     await t.evaluate(`(() => {
-      const inp = document.querySelector('.timeline-frame');
+      const inp = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-frame');
       inp.value = '${f}'; inp.dispatchEvent(new Event('change'));
     })()`);
     await t.sleep(120);
@@ -251,7 +251,7 @@ runE2e(async (t) => {
   // =====================================================================
   await scrub(1);
   const beforePlay = await t.evaluate(`window.__app.scene.frameCurrent`);
-  await t.evaluate(`document.querySelector('.timeline-play').click()`);
+  await t.evaluate(`window.__timeline.canvas.closest('.timeline').querySelector('.timeline-play').click()`);
   t.check('S4: play button set scene.playing', (await t.evaluate(`window.__app.scene.playing`)) === true);
   // Sample frameCurrent over ~0.5s and confirm it never leaves [start,end].
   let inRange = true, maxSeen = beforePlay;
@@ -261,7 +261,7 @@ runE2e(async (t) => {
     if (f < 1 || f > 48) inRange = false;
     maxSeen = Math.max(maxSeen, f);
   }
-  await t.evaluate(`document.querySelector('.timeline-play').click()`);
+  await t.evaluate(`window.__timeline.canvas.closest('.timeline').querySelector('.timeline-play').click()`);
   t.check('S4: pause button cleared scene.playing', (await t.evaluate(`window.__app.scene.playing`)) === false);
   t.check('S4: playback advanced frameCurrent', maxSeen > beforePlay, `before=${beforePlay} maxSeen=${maxSeen}`);
   t.check('S4: playback stayed within [frameStart, frameEnd]', inRange === true);

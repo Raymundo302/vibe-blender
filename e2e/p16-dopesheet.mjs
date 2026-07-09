@@ -27,7 +27,7 @@ runE2e(async (t) => {
   t.check('channelRows debug handle exposed',
     await t.evaluate(`!!(window.__timeline && window.__timeline.channelRows && window.__timeline.toggleExpand)`));
   t.check('interp picker present in header',
-    await t.evaluate(`!!document.querySelector('.timeline-interp')`));
+    await t.evaluate(`!!window.__timeline.canvas.closest('.timeline').querySelector('.timeline-interp')`));
 
   const cubeId = await t.evaluate(`window.__app.scene.activeObject.id`);
 
@@ -43,7 +43,7 @@ runE2e(async (t) => {
 
   // --- Interp picker disabled while nothing is selected ---
   t.check('interp picker disabled with no selection',
-    await t.evaluate(`document.querySelector('.timeline-interp').disabled === true`));
+    await t.evaluate(`window.__timeline.canvas.closest('.timeline').querySelector('.timeline-interp').disabled === true`));
 
   // --- Expand the object row → 9 channel sub-rows ---
   await t.evaluate(`window.__timeline.toggleExpand(${cubeId})`);
@@ -55,7 +55,7 @@ runE2e(async (t) => {
 
   // --- Select the location.x sub-row diamond at frame 24 and delete it ---
   const g = await t.evaluate(`(() => {
-    const r = document.querySelector('.timeline-canvas').getBoundingClientRect();
+    const r = window.__timeline.canvas.getBoundingClientRect();
     const d = window.__timeline.diamondXY(${cubeId}, 24, 'location.x');
     return d ? { x: r.left + d.x, y: r.top + d.y } : null;
   })()`);
@@ -66,7 +66,7 @@ runE2e(async (t) => {
     sel.length === 1 && sel[0].objectId === cubeId && sel[0].frame === 24 && sel[0].channelPath === 'location.x',
     JSON.stringify(sel));
   t.check('interp picker enabled once a key is selected',
-    await t.evaluate(`document.querySelector('.timeline-interp').disabled === false`));
+    await t.evaluate(`window.__timeline.canvas.closest('.timeline').querySelector('.timeline-interp').disabled === false`));
 
   await t.mouse('mouseMoved', g.x, g.y); // ensure the pane is hovered
   await t.key('x', 'KeyX');
@@ -92,7 +92,7 @@ runE2e(async (t) => {
   // --- Select keys, set Linear → interp changes, ONE Ctrl+Z reverts ---
   // Select the location.x sub-row diamond at frame 1.
   const g1 = await t.evaluate(`(() => {
-    const r = document.querySelector('.timeline-canvas').getBoundingClientRect();
+    const r = window.__timeline.canvas.getBoundingClientRect();
     const d = window.__timeline.diamondXY(${cubeId}, 1, 'location.x');
     return { x: r.left + d.x, y: r.top + d.y };
   })()`);
@@ -107,7 +107,7 @@ runE2e(async (t) => {
   t.check('key starts as bezier', interpBefore === 'bezier', interpBefore);
 
   await t.evaluate(`(() => {
-    const s = document.querySelector('.timeline-interp');
+    const s = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-interp');
     s.value = 'linear';
     s.dispatchEvent(new Event('change'));
   })()`);
@@ -131,7 +131,7 @@ runE2e(async (t) => {
   await t.evaluate(`window.__timeline.toggleExpand(${cubeId})`);
   await t.sleep(100);
   const go = await t.evaluate(`(() => {
-    const r = document.querySelector('.timeline-canvas').getBoundingClientRect();
+    const r = window.__timeline.canvas.getBoundingClientRect();
     const d = window.__timeline.diamondXY(${cubeId}, 1);
     return { x: r.left + d.x, y: r.top + d.y };
   })()`);
@@ -140,7 +140,7 @@ runE2e(async (t) => {
   t.check('object-row diamond selects with no channelPath',
     oSel.length === 1 && oSel[0].channelPath === undefined, JSON.stringify(oSel));
   await t.evaluate(`(() => {
-    const s = document.querySelector('.timeline-interp');
+    const s = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-interp');
     s.value = 'constant';
     s.dispatchEvent(new Event('change'));
   })()`);

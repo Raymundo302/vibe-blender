@@ -419,14 +419,21 @@
 /* --- Workspaces (P4-1) --- */
 .wsp-col { display: flex; flex-direction: column; flex-basis: 0; min-width: 120px; min-height: 0; }
 .wsp-area {
+  position: relative;
   display: flex; flex-direction: column; flex-basis: 0; min-height: 80px; min-width: 0;
   background: var(--vb-panel, #2b2b2b); border: 1px solid var(--vb-border, #3d3d3d); border-radius: 4px;
   overflow: hidden; margin: 2px;
 }
 .wsp-area-header {
-  display: flex; align-items: center; gap: 6px; padding: 2px 6px;
+  display: flex; align-items: center; gap: 6px; padding: 2px 6px; padding-right: 18px;
   background: var(--vb-bg, #1d1d1d); border-bottom: 1px solid var(--vb-border, #3d3d3d);
   flex: none;
+}
+/* Blender corner-drag hotspot — invisible, top-right, sits in the header's
+   reserved right padding so it never covers the ⋮ / ⛶ buttons. */
+.wsp-area-corner {
+  position: absolute; top: 1px; right: 1px; width: 14px; height: 14px;
+  z-index: 6; cursor: crosshair; touch-action: none;
 }
 .wsp-area-select {
   background: var(--vb-panel, #2b2b2b); color: var(--vb-text, #d0d0d0); border: 1px solid var(--vb-border, #3d3d3d);
@@ -437,6 +444,12 @@
   cursor: pointer; font-size: 12px; padding: 0 4px;
 }
 .wsp-area-full-btn:hover { color: var(--vb-text, #d0d0d0); }
+.wsp-area-menu-btn {
+  background: none; border: none; color: var(--vb-text-dim, #8a8a8a);
+  cursor: pointer; font-size: 15px; line-height: 1; padding: 0 4px;
+}
+.wsp-area-menu-btn:hover { color: var(--vb-text, #d0d0d0); }
+.wsp-area-menu { min-width: 150px; }
 .wsp-area-body { flex: 1; min-height: 0; position: relative; overflow-y: auto; }
 .wsp-area-fullscreen {
   position: absolute; inset: 0; z-index: 40; margin: 0; border-radius: 0;

@@ -45,7 +45,7 @@ runE2e(async (t) => {
 
   // --- Select the frame-12 diamond ---
   const geo = await t.evaluate(`(() => {
-    const r = document.querySelector('.timeline-canvas').getBoundingClientRect();
+    const r = window.__timeline.canvas.getBoundingClientRect();
     const d = window.__timeline.diamondXY(${cubeId}, 12);
     return { left: r.left, top: r.top, x: d.x, y: d.y };
   })()`);
@@ -81,7 +81,7 @@ runE2e(async (t) => {
 
   // --- Select the frame-24 diamond and delete it with X ---
   const g24 = await t.evaluate(`(() => {
-    const r = document.querySelector('.timeline-canvas').getBoundingClientRect();
+    const r = window.__timeline.canvas.getBoundingClientRect();
     const d = window.__timeline.diamondXY(${cubeId}, 24);
     return { x: r.left + d.x, y: r.top + d.y };
   })()`);

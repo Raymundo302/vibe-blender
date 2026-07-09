@@ -34,7 +34,9 @@ export interface AreaConfig { editor: string; size: number }
 export interface ColumnConfig { size: number; areas: AreaConfig[] }
 export interface WorkspaceConfig { name: string; columns: ColumnConfig[] }
 
-const STORAGE_KEY = 'vibe-blender-workspaces-v1';
+// v2: Timeline docked in the default Layout (2026-07-09) — new key so stored
+// v1 layouts don't hide the new default row.
+const STORAGE_KEY = 'vibe-blender-workspaces-v2';
 
 class Area {
   readonly root = document.createElement('section');
@@ -71,10 +73,54 @@ class Area {
     fullBtn.title = 'Toggle fullscreen (Ctrl+Space over the area)';
     fullBtn.addEventListener('click', () => manager.toggleFullscreen(this));
 
-    header.append(this.select, this.headerSlot, fullBtn);
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'wsp-area-menu-btn';
+    menuBtn.textContent = '⋮';
+    menuBtn.title = 'Area options';
+    menuBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openMenu(menuBtn); });
+
+    header.append(this.select, this.headerSlot, fullBtn, menuBtn);
     this.body.className = 'wsp-area-body';
-    this.root.append(header, this.body);
+    this.root.append(header, this.body, this.makeCorner());
     this.setEditor(editor);
+  }
+
+  /** Blender's corner-drag widget (top-right): drag INTO the area to split
+   *  (left = horizontal, down = vertical), drag OUT to merge over the adjacent
+   *  area (up = the area above in this column, right = the next column if it is
+   *  single-area). One gesture per pointerdown, resolved by dominant axis once
+   *  a ~12px threshold is crossed. */
+  private makeCorner(): HTMLElement {
+    const corner = document.createElement('div');
+    corner.className = 'wsp-area-corner';
+    corner.title = 'Drag to split / merge areas';
+    corner.addEventListener('pointerdown', (down) => {
+      down.preventDefault();
+      try { corner.setPointerCapture(down.pointerId); } catch { /* synthetic pointer */ }
+      const startX = down.clientX, startY = down.clientY;
+      const THRESH = 12;
+      let resolved = false;
+      const onMove = (move: PointerEvent): void => {
+        if (resolved) return;
+        const dx = move.clientX - startX, dy = move.clientY - startY;
+        if (Math.abs(dx) < THRESH && Math.abs(dy) < THRESH) return;
+        resolved = true;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          if (dx < 0) this.manager.splitArea(this, 'h'); // into the area → split
+          else this.manager.mergeArea(this, 'right');    // out → merge neighbor
+        } else {
+          if (dy > 0) this.manager.splitArea(this, 'v'); // into the area → split
+          else this.manager.mergeArea(this, 'up');       // out → merge neighbor
+        }
+      };
+      const onUp = (): void => {
+        corner.removeEventListener('pointermove', onMove);
+        corner.removeEventListener('pointerup', onUp);
+      };
+      corner.addEventListener('pointermove', onMove);
+      corner.addEventListener('pointerup', onUp);
+    });
+    return corner;
   }
 
   /** Detach the current editor (parking singletons so they survive). */
@@ -101,6 +147,61 @@ class Area {
 
   update(): void {
     this.instance?.update();
+  }
+
+  /** Popup with Split Horizontal / Split Vertical / Close Area, styled like the
+   *  app's other dropdowns (topbar-menu). Closes on Escape / outside click. */
+  private menuCleanup: (() => void) | null = null;
+
+  private openMenu(anchor: HTMLElement): void {
+    if (this.menuCleanup) { this.closeMenu(); return; }
+    const root = document.createElement('div');
+    root.className = 'topbar-menu wsp-area-menu';
+    document.body.appendChild(root);
+
+    const rows: [action: string, label: string][] = [
+      ['split-h', 'Split Horizontal'],
+      ['split-v', 'Split Vertical'],
+      ['close', 'Close Area'],
+    ];
+    for (const [action, label] of rows) {
+      const row = document.createElement('button');
+      row.className = 'topbar-menu-row';
+      row.dataset.areaAction = action;
+      row.textContent = label;
+      row.addEventListener('click', () => {
+        this.closeMenu();
+        if (action === 'split-h') this.manager.splitArea(this, 'h');
+        else if (action === 'split-v') this.manager.splitArea(this, 'v');
+        else this.manager.closeArea(this);
+      });
+      root.appendChild(row);
+    }
+
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') { e.preventDefault(); this.closeMenu(); }
+    };
+    const onOutside = (e: PointerEvent): void => {
+      if (!root.contains(e.target as Node) && e.target !== anchor) this.closeMenu();
+    };
+    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onOutside, true);
+    this.menuCleanup = () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('pointerdown', onOutside, true);
+      root.remove();
+    };
+
+    requestAnimationFrame(() => {
+      const r = anchor.getBoundingClientRect();
+      root.style.top = `${r.bottom + 4}px`;
+      root.style.left = `${Math.max(4, r.right - root.offsetWidth)}px`;
+    });
+  }
+
+  private closeMenu(): void {
+    this.menuCleanup?.();
+    this.menuCleanup = null;
   }
 }
 
@@ -196,6 +297,105 @@ export class WorkspaceManager {
     this.root.replaceChildren();
     this.buildLayout(ws);
     for (const [n, btn] of this.tabButtons) btn.classList.toggle('wsp-tab-active', n === name);
+    this.persist();
+  }
+
+  /**
+   * Split an area in two. 'v' inserts a new area directly below it in the same
+   * column; 'h' inserts a new single-area column immediately to its right. The
+   * source's flexGrow is halved between the two. The new area mirrors the
+   * source's editor unless that editor is a singleton (e.g. the 3D Viewport) —
+   * then it defaults to the outliner so the singleton is never duplicated.
+   */
+  splitArea(area: Area, dir: 'v' | 'h'): void {
+    const ws = this.workspaces.find((w) => w.name === this.active);
+    if (!ws) return;
+    this.captureCurrentLayout();
+    const pos = this.locate(area);
+    if (!pos) return;
+    const { ci, ai } = pos;
+    const col = ws.columns[ci];
+    const src = col.areas[ai];
+    const f = this.factory(src.editor);
+    const newType = f?.singleton ? 'outliner' : src.editor;
+    if (dir === 'v') {
+      const half = src.size / 2;
+      src.size = half;
+      col.areas.splice(ai + 1, 0, { editor: newType, size: half });
+    } else {
+      const half = col.size / 2;
+      col.size = half;
+      ws.columns.splice(ci + 1, 0, { size: half, areas: [{ editor: newType, size: 1 }] });
+    }
+    this.rebuildActive(ws);
+  }
+
+  /**
+   * Close an area, dropping it from its column (neighbors renormalize their
+   * flexGrow); an emptied column is removed. Refuses when it is the very last
+   * area. Singletons the closed area hosted survive via release()'s parking.
+   */
+  closeArea(area: Area): void {
+    const ws = this.workspaces.find((w) => w.name === this.active);
+    if (!ws || this.areas.length <= 1) return; // never close the last area
+    this.captureCurrentLayout();
+    const pos = this.locate(area);
+    if (!pos) return;
+    const { ci, ai } = pos;
+    const col = ws.columns[ci];
+    col.areas.splice(ai, 1);
+    if (col.areas.length === 0) ws.columns.splice(ci, 1);
+    this.rebuildActive(ws);
+  }
+
+  /**
+   * Merge an area over its neighbor (the corner-drag "out" gesture): 'up'
+   * consumes the area directly above it in the same column; 'right' consumes the
+   * next column but ONLY when that column holds exactly one area (the column
+   * grid can't merge into a multi-area column). No-op when no valid neighbor —
+   * the neighbor is simply closed, so this area's flexGrow renormalizes over it.
+   */
+  mergeArea(area: Area, dir: 'up' | 'right'): void {
+    const colEls = [...this.root.querySelectorAll(':scope > .wsp-col')] as HTMLElement[];
+    const pos = this.locate(area);
+    if (!pos) return;
+    const { ci, ai } = pos;
+    let neighborEl: HTMLElement | null = null;
+    if (dir === 'up') {
+      if (ai <= 0) return; // top of the column — nothing above
+      const areaEls = [...colEls[ci].querySelectorAll(':scope > .wsp-area')] as HTMLElement[];
+      neighborEl = areaEls[ai - 1] ?? null;
+    } else {
+      const nextCol = colEls[ci + 1];
+      if (!nextCol) return; // rightmost column
+      const areaEls = [...nextCol.querySelectorAll(':scope > .wsp-area')] as HTMLElement[];
+      if (areaEls.length !== 1) return; // can't merge into a multi-area column
+      neighborEl = areaEls[0];
+    }
+    const neighbor = neighborEl && this.areas.find((a) => a.root === neighborEl);
+    if (neighbor) this.closeArea(neighbor);
+  }
+
+  /** DOM position (column + area index) of an area, matching ws.columns order
+   *  as captureCurrentLayout() reconstructs it. */
+  private locate(area: Area): { ci: number; ai: number } | null {
+    const colEls = [...this.root.querySelectorAll(':scope > .wsp-col')] as HTMLElement[];
+    for (let ci = 0; ci < colEls.length; ci++) {
+      const areaEls = [...colEls[ci].querySelectorAll(':scope > .wsp-area')] as HTMLElement[];
+      const ai = areaEls.indexOf(area.root);
+      if (ai >= 0) return { ci, ai };
+    }
+    return null;
+  }
+
+  /** Tear down and rebuild the active workspace from its (mutated) config —
+   *  the same release → clear → buildLayout dance switchTo() uses. */
+  private rebuildActive(ws: WorkspaceConfig): void {
+    this.fullArea = null;
+    for (const area of this.areas) area.release();
+    this.areas = [];
+    this.root.replaceChildren();
+    this.buildLayout(ws);
     this.persist();
   }
 

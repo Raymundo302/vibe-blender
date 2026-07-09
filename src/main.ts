@@ -356,7 +356,8 @@ const DEFAULT_WORKSPACES: WorkspaceConfig[] = [
   {
     name: 'Layout',
     columns: [
-      { size: 0.78, areas: [{ editor: 'viewport', size: 1 }] },
+      // Timeline docked under the viewport (Blender's default), bottom 20%.
+      { size: 0.78, areas: [{ editor: 'viewport', size: 0.8 }, { editor: 'timeline', size: 0.2 }] },
       { size: 0.22, areas: [{ editor: 'outliner', size: 0.38 }, { editor: 'properties', size: 0.62 }] },
     ],
   },

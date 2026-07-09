@@ -138,11 +138,33 @@ runE2e(async (t) => {
   await t.sleep(60);
 
   // --- Wireframe overlay: a cube top edge darkens in matcap mode. ----------
-  // Sample the midpoint of the cube's top-front edge (on the surface).
-  const edgeNoWire = lum(await pixelAt(0.5, -0.999, 0.999));
+  // Sample the DARKEST pixel in a short vertical strip crossing the top-front
+  // edge: the wire is 1px, and a single projected pixel rounds off the line
+  // whenever the canvas geometry changes (it broke when the default Layout
+  // docked a Timeline pane and shortened the viewport).
+  const darkestAt = (wx, wy, wz) => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const vp = app.renderer.currentViewProj(app.scene, app.camera);
+    const m = vp.m;
+    const cx = m[0]*${wx} + m[4]*${wy} + m[8]*${wz} + m[12];
+    const cy = m[1]*${wx} + m[5]*${wy} + m[9]*${wz} + m[13];
+    const cw = m[3]*${wx} + m[7]*${wy} + m[11]*${wz} + m[15];
+    const px = Math.round((cx/cw*0.5+0.5) * c.width);
+    const py = Math.round((cy/cw*0.5+0.5) * c.height);
+    const out = new Uint8Array(4);
+    let best = 1e9, bestPx = [255,255,255];
+    for (let dy = -3; dy <= 3; dy++) {
+      gl.readPixels(px, py + dy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+      const l = 0.2126*out[0] + 0.7152*out[1] + 0.0722*out[2];
+      if (l < best) { best = l; bestPx = [out[0], out[1], out[2]]; }
+    }
+    return bestPx;
+  })()`);
+  const edgeNoWire = lum(await darkestAt(0.5, -0.999, 0.999));
   await setPref('wireOverlay', true);
   await t.sleep(60);
-  const edgeWire = lum(await pixelAt(0.5, -0.999, 0.999));
+  const edgeWire = lum(await darkestAt(0.5, -0.999, 0.999));
   await setPref('wireOverlay', false);
   t.check('wireframe overlay darkens a cube edge in matcap mode',
     edgeNoWire - edgeWire > 40,
