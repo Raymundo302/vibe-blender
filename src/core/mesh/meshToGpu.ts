@@ -22,6 +22,12 @@ export interface MeshRenderData {
   triangleCount: number;
   /** xyz pairs, one segment per unique edge (wireframe / overlays). */
   edgePositions: Float32Array;
+  /** Adjacent-face normals per edge vertex (n1 / n2; boundary edges repeat
+   *  n1). The wire shader culls edges whose BOTH faces face away — without
+   *  this, hidden edges poke through at shared silhouette corners where the
+   *  depth bias lets their first pixels win. */
+  edgeFaceNormals1: Float32Array;
+  edgeFaceNormals2: Float32Array;
   edgeCount: number;
 }
 
@@ -84,13 +90,34 @@ export function meshToRenderData(mesh: EditableMesh, smooth = false): MeshRender
   }
 
   const edges = mesh.edges();
+  // Adjacent-face normals per edge (up to two).
+  const edgeFaces = new Map<string, Vec3[]>();
+  for (const face of mesh.faces.values()) {
+    const fn = mesh.faceNormal(face.id);
+    const vs = face.verts;
+    for (let i = 0; i < vs.length; i++) {
+      const a = vs[i], b = vs[(i + 1) % vs.length];
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      const list = edgeFaces.get(key);
+      if (list) list.push(fn); else edgeFaces.set(key, [fn]);
+    }
+  }
   const edgePositions = new Float32Array(edges.size * 6);
+  const edgeFaceNormals1 = new Float32Array(edges.size * 6);
+  const edgeFaceNormals2 = new Float32Array(edges.size * 6);
   let e = 0;
   for (const edge of edges.values()) {
     const a = mesh.verts.get(edge.v0)!.co;
     const b = mesh.verts.get(edge.v1)!.co;
-    edgePositions[e++] = a.x; edgePositions[e++] = a.y; edgePositions[e++] = a.z;
-    edgePositions[e++] = b.x; edgePositions[e++] = b.y; edgePositions[e++] = b.z;
+    const key = edge.v0 < edge.v1 ? `${edge.v0}_${edge.v1}` : `${edge.v1}_${edge.v0}`;
+    const fns = edgeFaces.get(key) ?? [];
+    const n1 = fns[0] ?? new Vec3(0, 0, 1);
+    const n2 = fns[1] ?? n1;
+    for (const co of [a, b]) {
+      edgeFaceNormals1[e] = n1.x; edgeFaceNormals2[e] = n2.x; edgePositions[e++] = co.x;
+      edgeFaceNormals1[e] = n1.y; edgeFaceNormals2[e] = n2.y; edgePositions[e++] = co.y;
+      edgeFaceNormals1[e] = n1.z; edgeFaceNormals2[e] = n2.z; edgePositions[e++] = co.z;
+    }
   }
 
   return {
@@ -100,6 +127,8 @@ export function meshToRenderData(mesh: EditableMesh, smooth = false): MeshRender
     triangleUVs: uvArr,
     triangleCount: triCount,
     edgePositions,
+    edgeFaceNormals1,
+    edgeFaceNormals2,
     edgeCount: edges.size,
   };
 }

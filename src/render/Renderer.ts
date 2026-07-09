@@ -213,6 +213,8 @@ export class Renderer {
       ]),
       edges: new VertexArray(this.ctx.gl, [
         { location: 0, size: 3, data: data.edgePositions },
+        { location: 1, size: 3, data: data.edgeFaceNormals1 },
+        { location: 2, size: 3, data: data.edgeFaceNormals2 },
       ]),
       version,
       bounds,
@@ -502,14 +504,15 @@ export class Renderer {
         this.wirePass.begin(view, proj);
         gl.colorMask(false, false, false, false);
         for (const obj of visible) {
-          this.wirePass.setObject(scene.worldMatrix(obj));
+          this.wirePass.setObject(scene.worldMatrix(obj), view);
           this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
         }
         gl.colorMask(true, true, true, true);
       }
-      this.wirePass.begin(view, proj, shadePrefs.wireHiddenLine ? 0.002 : 0);
+      this.wirePass.begin(view, proj, shadePrefs.wireHiddenLine ? 0.002 : 0,
+        shadePrefs.wireHiddenLine);
       for (const obj of visible) {
-        this.wirePass.setObject(scene.worldMatrix(obj));
+        this.wirePass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
     } else if (this.shadingMode === 'studio') {
@@ -577,9 +580,9 @@ export class Renderer {
     // the shaded result, depth-tested against it with a small bias so lines on
     // the surface win. Occlusion comes free from the solid pass's depth buffer.
     if (shadePrefs.wireOverlay && this.shadingMode !== 'wireframe') {
-      this.wirePass.begin(view, proj, 0.002);
+      this.wirePass.begin(view, proj, 0.002, true);
       for (const obj of visible) {
-        this.wirePass.setObject(scene.worldMatrix(obj));
+        this.wirePass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
     }
