@@ -234,7 +234,19 @@ viewportWrap.append(idleHint);
 // vibe.json under the dev server). Skips the autosave-restore prompt: an
 // explicit deep link IS the chosen scene. Fetch failures fall through to a
 // normal boot with a status message.
-const sceneParam = new URLSearchParams(location.search).get('scene');
+// ?shading=<mode> and ?ao=1|0 deep links — set the viewport look at boot
+// (screenshots, demos, e2e captures). Not persisted: a link expresses a view,
+// not a preference change.
+const bootParams = new URLSearchParams(location.search);
+const shadingParam = bootParams.get('shading');
+if (shadingParam === 'matcap' || shadingParam === 'wireframe'
+  || shadingParam === 'studio' || shadingParam === 'rendered') {
+  renderer.shadingMode = shadingParam;
+}
+const aoParam = bootParams.get('ao');
+if (aoParam !== null) shadePrefs.ao = aoParam !== '0';
+
+const sceneParam = bootParams.get('scene');
 if (sceneParam) {
   fetch(sceneParam)
     .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
