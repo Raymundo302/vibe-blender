@@ -504,6 +504,6 @@ runE2e(async (t) => {
   await setPref('ao', false);
   t.check('grazing diamond: near-corner crease darkens',
     offNear - onNear > 8, `off=${offNear.toFixed(1)} on=${onNear.toFixed(1)}`);
-  t.check('grazing diamond: FAR-corner crease darkens (slab thickness)',
+  t.check('grazing diamond: FAR-corner crease darkens',
     offFar - onFar > 8, `off=${offFar.toFixed(1)} on=${onFar.toFixed(1)}`);
 });

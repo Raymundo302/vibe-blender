@@ -58,10 +58,13 @@ precision highp float;
 in vec3 v_viewNormal;
 out vec4 outNormal;
 void main() {
-  // Face the camera (view -Z) so both winding sides give a consistent normal.
-  vec3 n = normalize(v_viewNormal);
-  if (n.z < 0.0) n = -n;
-  outNormal = vec4(n * 0.5 + 0.5, 1.0);
+  // Stored RAW (signed). Do NOT flip against the screen axis here: a surface
+  // can be half the FOV off the screen axis yet still face the camera, so a
+  // screen-z flip inverts near-edge-on faces WHOLESALE — their AO then reads
+  // the entire hemisphere as occluded (angle-dependent black faces; at grazing
+  // pitch the FLOOR itself goes near-edge-on and its shadows vanish). Every
+  // consumer flips per-pixel against its own view vector instead.
+  outNormal = vec4(normalize(v_viewNormal) * 0.5 + 0.5, 1.0);
 }`;
 
 const FS_VERT = /* glsl */ `#version 300 es
@@ -151,39 +154,19 @@ float scoreTap(vec3 sP, vec3 P, vec3 N, vec3 V, float invRadius) {
   return mix(-1.0, dot(dv, V) * invd, falloff);
 }
 
-// One marched tap. The depth buffer only knows CAMERA-VISIBLE surfaces, so a
-// visible surface is treated as a SLAB one radius deep (EEVEE-style thickness),
-// not a paper shell. The candidate occluder is the point on the tap pixel's
-// view ray CLOSEST to the center P, clamped inside [surface, surface + radius]
-// along the ray — the normal case (surface behind/level with P) clamps to the
-// surface itself, while a surface fronting P extrudes toward P's depth. This
-// reconstructs approximate hidden geometry behind silhouettes; without it,
-// back-facing occluders contribute nothing and a cube's contact shadow dies at
-// its far corner (the visible top/right walls there sit beyond the radius; the
-// true occluder — the back wall — is not in the depth buffer at all).
+// One marched tap: score the visible surface at the tap pixel. Deliberately
+// NO slab/thickness reconstruction of hidden geometry: every guessed-matter
+// variant tried (fixed slab, incidence-scaled, elevation-gated) manufactured
+// phantom occluders across empty depth gaps — ball shadows at silhouettes,
+// grey wash over grazing floors, whole camera-facing faces going black at
+// axis-aligned yaws (see research/ao-orbit-sweep.png history, 2026-07-08).
+// The cost: occluders whose camera-facing surfaces sit beyond the radius
+// (a cube's far wall at extreme grazing) fade — the classic screen-space AO
+// information limit, shared by EEVEE-class viewports.
 float horizonTap(vec2 suv, vec3 P, vec3 N, vec3 V, float invRadius) {
   float sd = texture(u_depth, suv).r;
   if (sd >= 1.0) return -1.0;                 // background
-  vec3 sP = viewPos(suv, sd);
-  float sSurf = length(sP);
-  vec3 rayDir = sP / sSurf;
-  float sNear = dot(P, rayDir);               // ray param closest to the center
-  // Slab depth scales with INCIDENCE: a ray hitting the surface head-on may
-  // extrude a full radius (solid volume genuinely continues behind it — this
-  // is what completes the shadow diamond behind a cube's far corner), while a
-  // ray grazing a silhouette tangentially extrudes ~nothing — a fixed-depth
-  // slab there pokes laterally past the object and cast ball-shaped phantom
-  // shadows that tracked the silhouette corners as the camera orbited.
-  vec3 sN = normalize(texture(u_normal, suv).xyz * 2.0 - 1.0);
-  float incid = clamp(-dot(rayDir, sN), 0.0, 1.0);
-  float sQ = clamp(sNear, sSurf, sSurf + incid / invRadius);
-  // Score the visible surface AND the slab point, keep the stronger: the slab
-  // point is closest to P but can dive below the center's tangent plane (a
-  // steep camera's rays point down), where the elevation gate rejects it — the
-  // surface point must stay a candidate or plain wall contact shadows weaken.
-  float c = scoreTap(sP, P, N, V, invRadius);
-  if (sQ > sSurf + 1e-4) c = max(c, scoreTap(rayDir * sQ, P, N, V, invRadius));
-  return c;
+  return scoreTap(viewPos(suv, sd), P, N, V, invRadius);
 }
 
 void main() {
@@ -194,6 +177,7 @@ void main() {
   vec3 P = viewPos(uv, d);
   vec3 N = normalize(texture(u_normal, uv).xyz * 2.0 - 1.0);
   vec3 V = normalize(-P);           // view vector (toward camera)
+  if (dot(N, V) < 0.0) N = -N;      // face the camera per-pixel (see prepass)
   float viewDepth = -P.z;
 
   // Project the world-space radius to a screen march length in pixels at this
@@ -314,6 +298,7 @@ void main() {
   if (cd >= 1.0) { outColor = vec4(texture(u_src, uv).r); return; }
   vec3 cP = viewPos(uv, cd);
   vec3 cN = normalize(texture(u_normal, uv).xyz * 2.0 - 1.0);
+  if (dot(cN, cP) > 0.0) cN = -cN;  // face the camera per-pixel (see prepass)
   // Plane-distance tolerance scales with depth (relative), so a receding floor
   // whose neighbours differ a lot in z still blurs, while a real depth cliff or
   // crease (points off the plane) is rejected.
@@ -365,6 +350,7 @@ void main() {
   if (cd >= 1.0) { outColor = vec4(1.0); return; }   // background: unoccluded
   vec3 cP = viewPos(uv, cd);
   vec3 cN = normalize(texture(u_normal, uv).xyz * 2.0 - 1.0);
+  if (dot(cN, cP) > 0.0) cN = -cN;  // face the camera per-pixel (see prepass)
   float tol = 0.05 * abs(cP.z) + 0.01;
 
   // The 4 half-res texel centers around this pixel + their bilinear weights.

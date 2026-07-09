@@ -31,14 +31,20 @@ uniform vec2 u_aoTexel;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
-  // Key light: warm white, from upper-right-front. Fill: cool, from lower-left-back.
-  vec3 keyDir  = normalize(vec3(0.4, 0.6, 0.7));
-  vec3 fillDir = normalize(vec3(-0.5, -0.2, -0.4));
-  vec3 keyCol  = vec3(1.0, 0.96, 0.88) * 0.9;
-  vec3 fillCol = vec3(0.78, 0.86, 1.0) * 0.35;
-  float k = max(dot(n, keyDir), 0.0);
-  float f = max(dot(n, fillDir), 0.0);
-  vec3 lit = vec3(0.12) + keyCol * k + fillCol * f;
+  // Blender-studiolight-style rig: WRAPPED key + fill so shading rolls off
+  // gently past the terminator, plus a hemispheric ambient. Hard N.L with a
+  // small constant ambient left any face perpendicular to both lights nearly
+  // black — whole cube faces went dark at certain orbit angles.
+  vec3 keyDir  = normalize(vec3(0.35, 0.5, 0.78));   // upper-right, camera side
+  vec3 fillDir = normalize(vec3(-0.65, -0.1, 0.3));  // opposite side, still frontal
+  vec3 keyCol  = vec3(1.0, 0.97, 0.9) * 0.72;
+  vec3 fillCol = vec3(0.8, 0.87, 1.0) * 0.24;
+  const float WRAP = 0.4;
+  float k = clamp((dot(n, keyDir) + WRAP) / (1.0 + WRAP), 0.0, 1.0);
+  float f = clamp((dot(n, fillDir) + WRAP) / (1.0 + WRAP), 0.0, 1.0);
+  // Hemispheric ambient: camera-facing surfaces sit a touch brighter.
+  float hemi = mix(0.15, 0.26, n.z * 0.5 + 0.5);
+  vec3 lit = vec3(hemi) + keyCol * k + fillCol * f;
   vec3 base = u_color * v_tint;
   float ao = texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
   outColor = vec4(base * lit * ao, 1.0);
