@@ -10,6 +10,7 @@ import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
 import { LoopCutOperator } from '../tools/loopCut';
+import { KnifeOperator } from '../tools/knife';
 import { BevelOperator } from '../tools/bevel';
 import { CreaseOperator } from '../tools/creaseOp';
 import { fillVerts, fillEdges } from '../core/mesh/ops/fill';
@@ -338,6 +339,12 @@ export class InputManager {
   /** Non-null while a box-select operator is active; its LMB drag defines the
    *  rect, so pointerdown anchors (not confirms) and pointerup confirms. */
   private boxSelectOp: BoxSelectOperator | null = null;
+  /** Non-null while the knife operator is active; its LMB clicks add polyline
+   *  points (rather than confirming), and a double-click / Enter confirms. */
+  private knifeOp: KnifeOperator | null = null;
+  /** Timestamp (performance.now) of the last knife point placement, for the
+   *  double-click-to-confirm gesture. */
+  private lastKnifeClick = 0;
   /** True while an LMB sculpt brush stroke owns the active operator; like the
    *  gizmo drag it confirms on pointer *release* (see onPointerUp). */
   private sculptStroke = false;
@@ -410,6 +417,7 @@ export class InputManager {
     else this.activeOp.cancel(this.ctx);
     this.activeOp = null;
     this.boxSelectOp = null;
+    this.knifeOp = null;
     this.renderer.gizmoVisible = true;
     this.renderer.axisIndicator = null;
   }
@@ -418,6 +426,21 @@ export class InputManager {
     this.pointer = this.toLocal(e);
 
     if (this.activeOp) {
+      // Knife: LMB adds a polyline point; a rapid second click on the same spot
+      // (double-click) with >=2 points confirms the cut (Enter also confirms).
+      if (this.knifeOp && e.button === 0) {
+        const now = performance.now();
+        const lp = this.knifeOp.lastPoint;
+        const near = lp !== null && Math.hypot(this.pointer.x - lp.x, this.pointer.y - lp.y) < 6;
+        if (this.knifeOp.pointCount >= 2 && near && now - this.lastKnifeClick < 350) {
+          this.endOperator(true);
+        } else {
+          this.knifeOp.addPoint(this.pointer);
+          this.lastKnifeClick = now;
+        }
+        e.preventDefault();
+        return;
+      }
       // Box select's LMB press anchors the rect (a drag, not a click-confirm).
       if (this.boxSelectOp && e.button === 0 && !this.boxSelectOp.anchored) {
         this.boxSelectOp.anchor(this.pointer);
@@ -1255,6 +1278,18 @@ export class InputManager {
     if (key === 'r' && e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       this.startOperator(new LoopCutOperator(this.renderer));
+      return;
+    }
+    // K: knife. Click to lay a screen-space polyline over the mesh, Enter or
+    // double-click cuts, Esc/RMB cancels. The operator owns its own SVG overlay.
+    if (key === 'k' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const op = new KnifeOperator(this.canvas.parentElement as HTMLElement);
+      this.startOperator(op);
+      if (this.activeOp === op) {
+        this.knifeOp = op;
+        this.lastKnifeClick = 0;
+      }
       return;
     }
     // G/R/S: modal move/rotate/scale of the selected elements' verts.
