@@ -266,6 +266,9 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       // Shader nodes (v6/P14): the graph is JSON-pure by construction.
       nodeGraph: m.nodeGraph,
       useNodes: m.useNodes,
+      // Node-bake resolution — optional; omitted when default (128) so old
+      // files stay byte-identical (undefined is dropped by JSON.stringify).
+      bakeRes: m.bakeRes,
     })),
     objects: scene.objects.map((o) => serializeObject(o, scene)),
   };
@@ -311,6 +314,7 @@ interface MaterialData {
   metalDataUrl: string | null;
   nodeGraph: NodeGraph | null;
   useNodes: boolean;
+  bakeRes?: number;
 }
 interface CollectionData {
   name: string;
@@ -556,6 +560,13 @@ function parseMaterials(v: unknown): MaterialData[] {
               }
             })(),
       useNodes: mat.useNodes === true,
+      // Bake resolution (optional, backward-compatible): only 128/256/512/1024
+      // are honored; any other/absent value → undefined (bake uses 128).
+      bakeRes: (() => {
+        if (mat.bakeRes === undefined) return undefined;
+        const r = numField(mat.bakeRes, `materials[${mi}].bakeRes`);
+        return [128, 256, 512, 1024].includes(r) ? r : undefined;
+      })(),
     };
   });
 }
@@ -987,6 +998,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       metalDataUrl: md.metalDataUrl,
       nodeGraph: md.nodeGraph,
       useNodes: md.useNodes,
+      bakeRes: md.bakeRes,
     };
     scene.materials.push(mat);
     if (md.id > maxMaterialId) maxMaterialId = md.id;

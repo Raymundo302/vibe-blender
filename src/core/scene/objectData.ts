@@ -115,9 +115,21 @@ export interface Material {
   /** When true (and nodeGraph exists), shading comes from the graph: the
    *  tracer evaluates it per hit; the Rendered viewport uses baked textures. */
   useNodes: boolean;
+  /** Node-bake resolution for the Rendered viewport (128/256/512/1024).
+   *  Optional; absent → 128 (the historical fixed size). Serialized. */
+  bakeRes?: number;
   /** Runtime node-bake cache (Rendered viewport, NOT serialized): the graph
-   *  baked to textures at `version` (a counter the shader editor bumps). */
-  baked?: { version: number; baseUrl: string; roughUrl: string; metalUrl: string };
+   *  baked to `size`² textures at `version` (a counter the shader editor
+   *  bumps). `meshVersion` is set only when generated coords were rasterized
+   *  from the mesh, so a geometry edit re-bakes. */
+  baked?: {
+    version: number;
+    size: number;
+    meshVersion?: number;
+    baseUrl: string;
+    roughUrl: string;
+    metalUrl: string;
+  };
   /** Bumped by the shader editor on ANY graph mutation → re-bake + re-trace. */
   nodeGraphVersion?: number;
   /** Runtime decoded pixels cache — NOT serialized (rebuilt on load/select). */

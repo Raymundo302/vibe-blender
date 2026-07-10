@@ -146,11 +146,96 @@ runE2e(async (t) => {
   t.check('S5: uv-driven noise (no UV map) is ~flat vs generated (control)',
     meanDiffUv < meanDiff, `uvDiff=${meanDiffUv.toFixed(3)} < genDiff=${meanDiff.toFixed(3)}`);
 
-  // --- Cleanup: drop the node material so the app is left clean. ---
+  // --- STAGE 6: the BAKE path now honors GENERATED coords (the P16 gap this
+  // suite documented). Earlier the Rendered-viewport bake had no surface
+  // positions, so texCoord.generated collapsed to (u,v,0) and a generated-driven
+  // material baked IDENTICALLY to a uv-driven one. Now the bake CPU-rasterizes
+  // the mesh's generated coords into UV space, so on a UV-unwrapped cube (whose
+  // cross layout differs from its normalized 3D position) the generated bake
+  // VARIES and DIFFERS from the uv bake. ---
+  const bakeSetup = await evalAsync(`(async () => {
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const S = window.__app.scene;
+    const cube = S.add('BakeCube', prim.makeCube(1)); // ships a default unwrap
+    const mat = S.addMaterial('BakeMat');
+    cube.materialId = mat.id;
+    S.selectOnly(cube.id);
+    window.__bakeMatId = mat.id;
+    window.__bakeCubeId = cube.id;
+    return { uvFaces: cube.mesh.uvs.size, matId: mat.id };
+  })()`);
+  t.check('S6: bake cube ships a default UV unwrap (bake can rasterize gen)',
+    bakeSetup.uvFaces > 0, `uvFaces=${bakeSetup.uvFaces}`);
+
+  // Set the checker's coordinate source, force a fresh bake in Rendered mode,
+  // decode the baked base map and return a coarse byte signature + distinct
+  // luminance-level count + dimensions.
+  const bakeWith = async (socket, res) => {
+    await t.evaluate(`(() => {
+      const mat = window.__app.scene.getMaterial(window.__bakeMatId);
+      mat.nodeGraph = {
+        nodes: [
+          { id: 0, type: 'principled', x: 520, y: 150, params: {} },
+          { id: 1, type: 'texCoord', x: 40, y: 140, params: {} },
+          { id: 2, type: 'checker', x: 280, y: 140, params: { scale: 4 } },
+        ],
+        links: [
+          { fromNode: 1, fromSocket: '${socket}', toNode: 2, toSocket: 'uv' },
+          { fromNode: 2, fromSocket: 'color', toNode: 0, toSocket: 'baseColor' },
+        ],
+        nextNodeId: 3,
+      };
+      mat.useNodes = true;
+      mat.bakeRes = ${res === null ? 'undefined' : res};
+      mat.nodeGraphVersion = (mat.nodeGraphVersion || 0) + 1;
+      mat.baked = undefined;
+      window.__app.renderer.shadingMode = 'rendered';
+      window.__app.renderer.render(window.__app.scene, window.__app.camera);
+    })()`);
+    return await evalAsync(`(async () => {
+      const mat = window.__app.scene.getMaterial(window.__bakeMatId);
+      if (!mat.baked) return { baked: false };
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = mat.baked.baseUrl; });
+      const cnv = document.createElement('canvas');
+      cnv.width = img.naturalWidth; cnv.height = img.naturalHeight;
+      const g = cnv.getContext('2d'); g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, cnv.width, cnv.height).data;
+      const sig = []; for (let i = 0; i < d.length; i += 64) sig.push(d[i]);
+      const set = new Set(); for (let i = 0; i < d.length; i += 4) set.add(d[i]);
+      return { baked: true, w: cnv.width, h: cnv.height, distinct: set.size, sig, bakeSize: mat.baked.size };
+    })()`);
+  };
+
+  const genBake = await bakeWith('generated', null);
+  t.check('S6: generated-driven graph baked a base texture', genBake.baked === true);
+  t.check('S6: default bake resolution is 128×128', genBake.w === 128 && genBake.h === 128,
+    `${genBake.w}×${genBake.h}`);
+  t.check('S6: generated bake VARIES (not the uniform UV fallback)', genBake.distinct > 1,
+    `distinct=${genBake.distinct}`);
+
+  const uvBake = await bakeWith('uv', null);
+  t.check('S6: uv-driven graph baked a base texture', uvBake.baked === true);
+  let bakeDiff = 0;
+  const bn = Math.min(genBake.sig.length, uvBake.sig.length);
+  for (let i = 0; i < bn; i++) if (Math.abs(genBake.sig[i] - uvBake.sig[i]) > 8) bakeDiff++;
+  t.check('S6: generated bake DIFFERS from uv bake (gen coords now baked, gap closed)',
+    bakeDiff > 0, `changedSamples=${bakeDiff}/${bn}`);
+
+  // --- STAGE 7: per-material bake resolution option. ---
+  const res256 = await bakeWith('generated', 256);
+  t.check('S7: bakeRes 256 produces 256×256 maps',
+    res256.baked === true && res256.w === 256 && res256.h === 256 && res256.bakeSize === 256,
+    `${res256.w}×${res256.h} bakeSize=${res256.bakeSize}`);
+
+  // --- Cleanup: drop the node material + the bake cube so the app is left clean. ---
   await t.evaluate(`(() => {
-    const mat = window.__app.scene.getMaterial(${matId});
+    const S = window.__app.scene;
+    const mat = S.getMaterial(${matId});
     mat.useNodes = false;
     mat.nodeGraph = null;
+    if (window.__bakeCubeId != null) S.remove(window.__bakeCubeId);
+    if (window.__bakeMatId != null) S.removeMaterial(window.__bakeMatId);
     window.__app.renderer.shadingMode = 'matcap';
   })()`);
 });

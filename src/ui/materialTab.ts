@@ -158,7 +158,7 @@ export class NewMaterialCommand implements Command {
 /** Which scalar/vector field of a Material an edit command targets. */
 export type MaterialFieldKey =
   | 'name' | 'baseColor' | 'metallic' | 'roughness' | 'emissive' | 'emissiveStrength'
-  | 'subsurfaceWeight' | 'subsurfaceRadius';
+  | 'subsurfaceWeight' | 'subsurfaceRadius' | 'bakeRes';
 
 type MaterialFieldValue = string | number | [number, number, number];
 
@@ -325,6 +325,7 @@ class MaterialTab {
   private subsurfaceNum!: HTMLSpanElement;
   private subsurfaceRadiusInput!: HTMLInputElement;
   private texKindSelect!: HTMLSelectElement;
+  private bakeResSelect!: HTMLSelectElement;
   private texImageRow!: HTMLElement;
   private texFileInput!: HTMLInputElement;
   private texThumb!: HTMLImageElement;
@@ -504,6 +505,38 @@ class MaterialTab {
     this.fields.append(this.texImageRow);
 
     this.buildMapFields();
+
+    // Node-bake resolution (P16 follow-up). The Rendered viewport bakes a
+    // useNodes graph to `bakeRes`² textures; higher = crisper procedural detail,
+    // slower to bake. Default 128 keeps a graph edit under a few ms.
+    const nodesHeading = document.createElement('div');
+    nodesHeading.className = 'material-tab-nodes-title properties-group-title';
+    nodesHeading.textContent = 'Nodes';
+    this.fields.append(nodesHeading);
+
+    this.bakeResSelect = document.createElement('select');
+    this.bakeResSelect.className = 'material-tab-bakeres';
+    for (const r of [128, 256, 512, 1024]) {
+      const opt = document.createElement('option');
+      opt.value = String(r);
+      opt.textContent = `${r}×${r}`;
+      this.bakeResSelect.append(opt);
+    }
+    this.bakeResSelect.addEventListener('change', () => this.onBakeResChange());
+    this.fields.append(this.fieldRow('Bake Res', this.bakeResSelect));
+  }
+
+  /** Change the material's node-bake resolution in one undo step. Bumps nothing
+   *  else — ensureBaked re-bakes because its cache key includes the size. */
+  private onBakeResChange(): void {
+    const mat = this.material();
+    if (!mat) return;
+    const after = Number(this.bakeResSelect.value);
+    const before = mat.bakeRes ?? 128;
+    if (before === after) return;
+    mat.bakeRes = after;
+    this.undo.push(new MaterialEditCommand(mat, 'bakeRes', before, after));
+    this.lastSig = null;
   }
 
   /** P13 map-slot UI: Normal Map (file + Bump toggle + Strength), Roughness Map,
@@ -893,6 +926,7 @@ class MaterialTab {
       mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
       mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}` : '-',
       mat ? `${mat.normalDataUrl ? mat.normalDataUrl.length : 0}:${mat.normalIsBump}:${mat.normalStrength}:${mat.roughDataUrl ? mat.roughDataUrl.length : 0}:${mat.metalDataUrl ? mat.metalDataUrl.length : 0}` : '-',
+      mat ? `${mat.bakeRes ?? 128}` : '-',
     ].join('#');
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -956,6 +990,9 @@ class MaterialTab {
     this.normalStrengthNum.textContent = mat.normalStrength.toFixed(2);
     this.setMapThumb(this.roughThumb, mat.roughDataUrl);
     this.setMapThumb(this.metalThumb, mat.metalDataUrl);
+
+    // Nodes: bake resolution (default 128 when unset).
+    this.bakeResSelect.value = String(mat.bakeRes ?? 128);
   }
 
   /** Show a map thumbnail when a data url is present, else hide it. */

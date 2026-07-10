@@ -640,3 +640,45 @@ describe('v9 keyframe extras (easing + free handles)', () => {
     expect(() => applySceneJson(JSON.stringify(json), new Scene(), new OrbitCamera())).toThrow(/interp must be one of/);
   });
 });
+
+describe('sceneJson material bakeRes (P16 follow-up)', () => {
+  it('round-trips a set bakeRes', () => {
+    const scene = new Scene();
+    const cube = scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Nodes');
+    mat.bakeRes = 512;
+    cube.materialId = mat.id;
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.materials[0].bakeRes).toBe(512);
+  });
+
+  it('omits bakeRes from the file when unset (byte-identical / no format bump)', () => {
+    const scene = new Scene();
+    scene.addMaterial('Plain'); // bakeRes left undefined
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect('bakeRes' in json.materials[0]).toBe(false);
+  });
+
+  it('tolerates absence (old files) → bakeRes stays undefined', () => {
+    const scene = new Scene();
+    scene.addMaterial('Old');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    // Simulate a pre-P16 file: no bakeRes key at all.
+    delete json.materials[0].bakeRes;
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.materials[0].bakeRes).toBeUndefined();
+  });
+
+  it('ignores a disallowed bakeRes value on load', () => {
+    const scene = new Scene();
+    scene.addMaterial('Weird');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    json.materials[0].bakeRes = 333;
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.materials[0].bakeRes).toBeUndefined();
+  });
+});

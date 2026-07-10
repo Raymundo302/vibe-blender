@@ -555,7 +555,8 @@ export class Renderer {
         // maps, scalars forced to 1 so the map-multiply becomes replacement.
         let effMat = mat;
         if (mat.useNodes && mat.nodeGraph) {
-          ensureBaked(mat, nodeImageCache());
+          ensureBaked(mat, nodeImageCache(),
+            () => obj.evaluatedMesh(scene.modifierContext(obj)));
           if (mat.baked) {
             effMat = {
               ...mat,

@@ -26031,6 +26031,7 @@
           "name": "Scatter",
           "enabled": true,
           "params": {
+            "align": "none",
             "alignNormal": true,
             "colorVariation": 1,
             "count": 120,
