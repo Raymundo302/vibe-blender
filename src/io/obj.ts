@@ -13,7 +13,25 @@ import type { Scene } from '../core/scene/Scene';
  * skipped silently. Faces support `f a b c`, `f a/b/c`, and NEGATIVE (relative)
  * indices per the spec. Objects split on `o`/`g`; a file with neither becomes a
  * single object named "imported".
+ *
+ * AXIS CONVENTION: OBJ files are Y-up by convention; our world is Z-up (since
+ * the 2026-07-08 switch). Matching Blender, we rotate about X by ±90° on the
+ * way in / out so a round-trip through Blender is identity:
+ *   EXPORT (Z-up → Y-up): (x, y, z) → (x, z, -y)   [Rx(-90°)]
+ *   IMPORT (Y-up → Z-up): (x, y, z) → (x, -z, y)   [Rx(+90°)]
+ * Both are proper rotations (det +1) so handedness is preserved, and import∘
+ * export is the identity (x, -(-y), z) = (x, y, z).
  */
+
+/** Z-up world point → Y-up OBJ vertex (rotate -90° about X). */
+function zupToYup([x, y, z]: [number, number, number]): [number, number, number] {
+  return [x, z, -y];
+}
+
+/** Y-up OBJ vertex → Z-up world point (rotate +90° about X). */
+function yupToZup([x, y, z]: [number, number, number]): [number, number, number] {
+  return [x, -z, y];
+}
 
 /** Round to 6 decimals, drop trailing zeros, collapse -0 → 0 (stable output). */
 function fmt(n: number): string {
@@ -35,8 +53,9 @@ export function exportObj(scene: Scene): string {
     const local = new Map<number, number>(); // vertId → 0-based within this object
     let k = 0;
     for (const v of obj.mesh.verts.values()) {
-      const w = mat.transformPoint(v.co); // local → world space
-      lines.push(`v ${fmt(w.x)} ${fmt(w.y)} ${fmt(w.z)}`);
+      const w = mat.transformPoint(v.co); // local → world space (Z-up)
+      const [ox, oy, oz] = zupToYup([w.x, w.y, w.z]); // → Y-up OBJ space
+      lines.push(`v ${fmt(ox)} ${fmt(oy)} ${fmt(oz)}`);
       local.set(v.id, k++);
     }
 
@@ -109,7 +128,7 @@ export function parseObj(text: string): ParsedObj[] {
       if (parts.length < 4 || ![x, y, z].every(Number.isFinite)) {
         throw new Error(`OBJ line ${li + 1}: malformed vertex "${line}"`);
       }
-      positions.push([x, y, z]);
+      positions.push(yupToZup([x, y, z])); // Y-up OBJ → Z-up world
     } else if (key === 'o' || key === 'g') {
       startObject(parts.slice(1).join(' ') || 'object');
     } else if (key === 'f') {

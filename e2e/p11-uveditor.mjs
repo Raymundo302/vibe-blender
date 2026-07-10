@@ -102,4 +102,52 @@ runE2e(async (t) => {
   await t.sleep(40);
   const cleared = await t.evaluate(`document.querySelector('.uv-editor').__uvEditor.selectedFaces().length`);
   t.check('Alt+A clears the selection', cleared === 0, `${cleared}`);
+
+  // 9. Wheel zoom + MMB pan (P11 view controls) — verify the view state moves and
+  //    that a zoomed-in view still round-trips island selection.
+  const uvApi = `document.querySelector('.uv-editor').__uvEditor`;
+  const view = () => t.evaluate(`${uvApi}.view()`);
+  // Fresh canvas rect + center (the docked-timeline layout can shift things).
+  const uvRect = await t.evaluate(`(() => {
+    const r = document.querySelector('.uv-editor-canvas').getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  })()`);
+  const ucx = uvRect.left + uvRect.width / 2;
+  const ucy = uvRect.top + uvRect.height / 2;
+
+  // Reset to a known view, then wheel UP (deltaY < 0) over the canvas center.
+  await t.evaluate(`${uvApi}.resetView()`);
+  const zoomBefore = (await view()).zoom;
+  await t.mouse('mouseWheel', ucx, ucy, 'none', { deltaX: 0, deltaY: -240 });
+  await t.sleep(60);
+  const zoomAfter = (await view()).zoom;
+  t.check('wheel over the UV canvas zooms in (zoom increases)',
+    zoomAfter > zoomBefore + 0.05, `before=${zoomBefore} after=${zoomAfter}`);
+
+  // Reset, then MMB-drag to pan → offset changes.
+  await t.evaluate(`${uvApi}.resetView()`);
+  const panBefore = await view();
+  await t.mouse('mousePressed', ucx, ucy, 'middle');
+  await t.mouse('mouseMoved', ucx + 55, ucy + 35, 'middle');
+  await t.mouse('mouseMoved', ucx + 55, ucy + 35, 'middle');
+  await t.mouse('mouseReleased', ucx + 55, ucy + 35, 'middle');
+  await t.sleep(60);
+  const panAfter = await view();
+  t.check('MMB drag pans the UV view (offset changes)',
+    Math.abs(panAfter.panX - panBefore.panX) > 10 && Math.abs(panAfter.panY - panBefore.panY) > 10,
+    `before=${JSON.stringify(panBefore)} after=${JSON.stringify(panAfter)}`);
+
+  // Zoomed view still round-trips island selection: reset, zoom in over center
+  // (the big island's UV 0.5,0.5 stays under the cursor → still at canvas
+  // center), then click center → the big island (fids[0]) selects.
+  await t.evaluate(`${uvApi}.resetView()`);
+  await t.mouse('mouseWheel', ucx, ucy, 'none', { deltaX: 0, deltaY: -180 });
+  await t.sleep(60);
+  const zoomedIn = (await view()).zoom > 1.1;
+  t.check('view is zoomed in for the selection round-trip', zoomedIn);
+  await t.click(ucx, ucy);
+  const zoomedSel = await t.evaluate(`${uvApi}.selectedFaces()`);
+  t.check('island selection still works while zoomed in',
+    zoomedSel.length === 1 && zoomedSel[0] === fids[0], JSON.stringify(zoomedSel));
+  await t.evaluate(`${uvApi}.resetView()`);
 });

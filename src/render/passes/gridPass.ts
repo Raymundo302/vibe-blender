@@ -11,9 +11,22 @@ layout(location = 0) in vec3 a_position;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 out vec3 v_worldPos;
+
+// FRACTIONAL depth push AWAY from the eye (opposite sign to wirePass's pull), so
+// exactly-coplanar mesh faces at z=0 win the depth fight cleanly and the ground
+// grid stops z-fighting into dashes under them (e.g. the donut's Table). Mirrors
+// wirePass's convention: a fraction of view distance, NOT a constant NDC shift —
+// NDC depth compresses far from the camera, so a fixed NDC bias would over-push
+// once the camera steps back; a fixed fraction keeps the margin proportional at
+// every range (grid loses only within ~bias*z of a surface, mm–cm scale). The
+// grid still depth-TESTS, so geometry in front continues to occlude it.
+const float GRID_ZBIAS = 0.0005;
+
 void main() {
   v_worldPos = a_position;
-  gl_Position = u_proj * u_view * vec4(a_position, 1.0);
+  vec4 viewPos = u_view * vec4(a_position, 1.0);
+  viewPos.xyz *= (1.0 + GRID_ZBIAS);   // radial push back: screen xy unchanged
+  gl_Position = u_proj * viewPos;
 }`;
 
 // Antialiased 1-unit grid on the XY ground plane (Z-up world), axis lines

@@ -244,6 +244,9 @@ export class UVEditor {
       selectAt: (cssX: number, cssY: number, additive = false) =>
         this.selectAt(cssX, cssY, additive),
       transforming: () => this.transform?.mode ?? null,
+      // Current view transform (wheel zoom + MMB pan state) for e2e coverage.
+      view: () => ({ zoom: this.zoom, panX: this.panX, panY: this.panY }),
+      resetView: () => { this.zoom = 1; this.panX = 0; this.panY = 0; },
     };
   }
 

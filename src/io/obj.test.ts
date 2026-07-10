@@ -51,10 +51,28 @@ describe('exportObj', () => {
     const o = scene.add('Cube', makeCube());
     o.transform = new Transform(new Vec3(10, 0, 0)); // translate +X by 10
     const obj = exportObj(scene);
-    // Cube half-extent 1 → x ranges 9..11 after the offset.
+    // Cube half-extent 1 → x ranges 9..11 after the offset (X is axis-invariant).
     const xs = linesOf(obj, 'v').map((l) => Number(l.split(' ')[1]));
     expect(Math.min(...xs)).toBeCloseTo(9, 6);
     expect(Math.max(...xs)).toBeCloseTo(11, 6);
+  });
+
+  it('converts Z-up world → Y-up OBJ (cube on the ground)', () => {
+    // A unit cube (half-extent 1) sitting ON the ground: its base at z=0, top at
+    // z=2 in the Z-up world. After export it must be Y-up: y in 0..2, z centered.
+    const scene = new Scene();
+    const o = scene.add('Cube', makeCube());
+    o.transform = new Transform(new Vec3(0, 0, 1)); // lift so z spans 0..2
+    const obj = exportObj(scene);
+    const vs = linesOf(obj, 'v').map((l) => l.split(' ').slice(1).map(Number));
+    const ys = vs.map((v) => v[1]);
+    const zs = vs.map((v) => v[2]);
+    // "Up" is now OBJ Y, spanning the same 0..2 the world Z did.
+    expect(Math.min(...ys)).toBeCloseTo(0, 6);
+    expect(Math.max(...ys)).toBeCloseTo(2, 6);
+    // World Y (now OBJ -Z) was centered at 0 → OBJ z stays centered at 0.
+    expect(Math.min(...zs)).toBeCloseTo(-1, 6);
+    expect(Math.max(...zs)).toBeCloseTo(1, 6);
   });
 
   it('offsets the second object\'s face indices by the first\'s vert count', () => {
@@ -84,9 +102,12 @@ describe('exportObj', () => {
 });
 
 describe('parseObj', () => {
-  it('round-trips our own export (counts + positions)', () => {
+  it('round-trips our own export back to the original Z-up positions (identity)', () => {
+    // Use an asymmetric placement (cube lifted onto the ground) so the axis
+    // conversion is actually exercised — a symmetric cube would pass trivially.
     const scene = new Scene();
-    scene.add('Cube', makeCube());
+    const o = scene.add('Cube', makeCube());
+    o.transform = new Transform(new Vec3(0, 0, 1)); // base at z=0, top at z=2
     const obj = exportObj(scene);
     const parsed = parseObj(obj);
 
@@ -95,19 +116,14 @@ describe('parseObj', () => {
     expect(parsed[0].positions).toHaveLength(8);
     expect(parsed[0].faces).toHaveLength(6);
 
-    // The parsed positions are the cube corners (remap reorders them by first
-    // face reference, so compare as sorted sets, not index-for-index).
+    // Export→import must reproduce the ORIGINAL Z-up world coordinates exactly.
     const key = (p: number[]) => p.map((n) => n.toFixed(3)).join(',');
-    const exportedV = obj
-      .split('\n')
-      .filter((l) => l.startsWith('v '))
-      .map((l) => l.split(' ').slice(1).map(Number));
-    expect(parsed[0].positions.map(key).sort()).toEqual(exportedV.map(key).sort());
-
-    // Reconstructing the first face through the local index map yields the same
-    // world coordinates as the exported +Z face (verts 5,6,7,8 → 0-based 4..7).
-    const face0World = parsed[0].faces[0].map((i) => key(parsed[0].positions[i]));
-    expect(face0World).toEqual([4, 5, 6, 7].map((i) => key(exportedV[i])));
+    const mesh = o.mesh;
+    const worldV = [...mesh.verts.values()].map((v) => {
+      const w = scene.worldMatrix(o).transformPoint(v.co);
+      return key([w.x, w.y, w.z]);
+    });
+    expect(parsed[0].positions.map(key).sort()).toEqual(worldV.sort());
   });
 
   it('round-trips a two-object export into two objects', () => {
@@ -121,6 +137,23 @@ describe('parseObj', () => {
       expect(o.positions).toHaveLength(8);
       expect(o.faces.flat().every((i) => i >= 0 && i < 8)).toBe(true);
     }
+  });
+
+  it('imports a known Y-up OBJ upright (Y-up → Z-up, tallest axis becomes Z)', () => {
+    // A thin pillar standing along OBJ Y (Y-up "up"): after import its height
+    // must live on world Z (Z-up "up"), landing upright rather than lying down.
+    const text = [
+      'o Pillar',
+      'v 0 0 0', 'v 1 0 0', 'v 1 10 0', 'v 0 10 0', // a wall rising along +Y
+      'f 1 2 3 4',
+    ].join('\n');
+    const parsed = parseObj(text);
+    expect(parsed).toHaveLength(1);
+    const zs = parsed[0].positions.map((p) => p[2]); // world Z (up)
+    const ys = parsed[0].positions.map((p) => p[1]); // world Y (depth)
+    // The 0..10 extent moved onto world Z (up); world Y stays flat at 0.
+    expect(Math.max(...zs) - Math.min(...zs)).toBeCloseTo(10, 6);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(0, 6);
   });
 
   it('parses the a/b/c face form (takes the vertex index)', () => {
@@ -151,7 +184,8 @@ describe('parseObj', () => {
     expect(parsed.map((o) => o.name)).toEqual(['First', 'Second']);
     // Second object's global indices 4,5,6 remap to local 0,1,2.
     expect(parsed[1].faces[0]).toEqual([0, 1, 2]);
-    expect(parsed[1].positions[0]).toEqual([2, 0, 0]);
+    // OBJ `v 2 0 0` (Y-up) imports to Z-up (x, -z, y) = (2, 0, 0). Normalize -0.
+    expect(parsed[1].positions[0].map((n) => n + 0)).toEqual([2, 0, 0]);
   });
 
   it('throws on garbage input (no vertices)', () => {
