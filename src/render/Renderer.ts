@@ -714,8 +714,15 @@ export class Renderer {
     if (shadePrefs.intersections) {
       this.updateIntersectionLines(scene, visible.filter((o) => o.kind === 'mesh'));
       if (this.intersectionLines) {
+        // Blended for the ribbon's anti-aliased edges (grid-pass pattern);
+        // depth writes off so the soft rim can't shadow later overlays.
         this.intersectPass.begin(view, proj, 0.004, canvas.width, canvas.height);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
         this.intersectionLines.draw(gl.TRIANGLES);
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
       }
     }
 

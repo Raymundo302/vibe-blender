@@ -8,9 +8,9 @@ import type { Mat4 } from '../../core/math/mat4';
  * NOT gl.LINES: a 1px mid-grey hairline is invisible against the matcap greys
  * it usually sits on (and WebGL lineWidth is capped at 1 on ANGLE/core
  * profiles). Each segment is a screen-space RIBBON — two triangles extruded
- * perpendicular to the segment's screen direction in the vertex shader — with
- * a light grey core and a thin dark rim so the line reads on any surface
- * brightness: white faces, mid-grey matcap, dark background.
+ * perpendicular to the segment's screen direction in the vertex shader — a
+ * solid light grey band with anti-aliased (alpha-faded) edges, wide enough to
+ * read against the matcap greys. Drawn blended, depth writes off.
  *
  * Vertex layout (6 verts per segment, built by segmentsToRibbon):
  *   location 0  a_position  this endpoint (world space)
@@ -64,10 +64,18 @@ precision highp float;
 in float v_side;
 out vec4 outColor;
 void main() {
-  // Light grey core with a thin dark rim — readable on light AND dark surfaces.
-  outColor = abs(v_side) < 0.55
-    ? vec4(0.72, 0.72, 0.76, 1.0)
-    : vec4(0.12, 0.12, 0.14, 1.0);
+  // Solid light grey core; the rim fades out through a TRANSLUCENT darkening
+  // (~35% black at its strongest) so the line keeps contrast on surfaces close
+  // to its own grey without reading as a second line. A full-opacity dark rim
+  // read as "a grey line on top of a black line" (Ray, 2026-07-10); a plain
+  // alpha fade washed out against the matcap mid-greys.
+  float t = abs(v_side);
+  if (t < 0.5) {
+    outColor = vec4(0.72, 0.72, 0.76, 1.0);
+  } else {
+    float a = 0.35 * (1.0 - smoothstep(0.5, 1.0, t));
+    outColor = vec4(0.0, 0.0, 0.0, a);
+  }
 }`;
 
 /**
