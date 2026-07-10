@@ -103,8 +103,19 @@ runE2e(async (t) => {
     };
   })()`);
   t.check('S1: donut fixture loaded (9 objects)', load.objects === 9, `objects=${load.objects}`);
-  t.check('S1: fixture predates UVs — 0 uvs, 0 seams, 0 textures',
-    load.uv === 0 && load.seam === 0 && load.tex === 0, `uv=${load.uv} seam=${load.seam} tex=${load.tex}`);
+  // The fixture predates UVs, but primitives are rebuilt through the makers at
+  // load — which SHIP default unwraps since 2026-07-09. Clear them so the dry
+  // run still exercises the from-scratch unwrap flow it was written for.
+  await t.evaluate(`(() => {
+    for (const o of window.__app.scene.objects) if (o.mesh) { o.mesh.uvs.clear(); o.mesh.touch?.(); }
+  })()`);
+  const cleared = await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    let uv = 0; for (const o of S.objects) if (o.mesh) uv += o.mesh.uvs.size;
+    return uv;
+  })()`);
+  t.check('S1: UV-less starting state established — 0 uvs, 0 seams, 0 textures',
+    cleared === 0 && load.seam === 0 && load.tex === 0, `uv=${cleared} seam=${load.seam} tex=${load.tex}`);
   t.check('S1: icing + torus objects present', load.icing != null && load.torus != null,
     `icing=${load.icing} torus=${load.torus}`);
   const icingId = load.icing;
@@ -176,7 +187,8 @@ runE2e(async (t) => {
   // U → Unwrap (real UV menu), operating on ALL faces (none selected).
   await evalAsync(`(() => { const S = window.__app.scene; S.editMode.setElementMode('face', S.editObject.mesh); S.editMode.clearSelection(); })()`);
   await t.sleep(60);
-  t.check('S2: no UVs before unwrap', (await t.evaluate(`window.__app.scene.editObject.mesh.uvs.size`)) === 0);
+  await t.evaluate(`(() => { const m = window.__app.scene.editObject.mesh; m.uvs.clear(); m.touch?.(); })()`);
+  t.check('S2: no UVs before unwrap (cleared defaults)', (await t.evaluate(`window.__app.scene.editObject.mesh.uvs.size`)) === 0);
   await t.mouse('mouseMoved', cx, cy);
   await t.key('u', 'KeyU', 0); // U → UV menu
   await t.sleep(90);
@@ -371,7 +383,8 @@ runE2e(async (t) => {
     S.editMode.clearSelection();
   })()`);
   await t.sleep(100);
-  t.check('S5: torus has no seams and no UVs before Smart Project',
+  await t.evaluate(`(() => { const m = window.__app.scene.editObject.mesh; m.uvs.clear(); m.touch?.(); })()`);
+  t.check('S5: torus has no seams and no UVs before Smart Project (cleared defaults)',
     (await t.evaluate(`window.__app.scene.editObject.mesh.seams.size`)) === 0 &&
     (await t.evaluate(`window.__app.scene.editObject.mesh.uvs.size`)) === 0);
   await t.mouse('mouseMoved', cx, cy);
