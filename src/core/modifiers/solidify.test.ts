@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import './builtins'; // side-effect: registers 'solidify'
 import { createModifier } from './Modifier';
-import { makePlane } from '../mesh/primitives';
+import { makePlane, makeTorus } from '../mesh/primitives';
 import { Vec3 } from '../math/vec3';
 
 describe('Solidify modifier — single quad', () => {
@@ -100,4 +100,23 @@ describe('Solidify modifier — offset mapping', () => {
     for (let id = 0; id < 4; id++) expect(out.verts.get(id)!.co.z).toBeCloseTo(thickness / 2, 6);
     for (let id = 4; id < 8; id++) expect(out.verts.get(id)!.co.z).toBeCloseTo(-thickness / 2, 6);
   });
+});
+
+it('tolerates stale UV entries for deleted faces (primitives ship unwrapped)', () => {
+  // A torus with its bottom faces deleted keeps uvs entries for the dead
+  // faces (EditableMesh convention) — solidify must skip them, not throw.
+  const m = makeTorus();
+  const dead: number[] = [];
+  for (const [fid, f] of m.faces) {
+    let z = 0;
+    for (const vid of f.verts) z += m.verts.get(vid)!.co.z;
+    if (z / f.verts.length < -0.02) dead.push(fid);
+  }
+  m.deleteFaces(dead);
+  expect(m.uvs.size).toBeGreaterThan(m.faces.size); // stale entries present
+  const out = createModifier('solidify').apply(m);
+  expect(out.faces.size).toBeGreaterThan(0);
+  // Live faces' UVs made it to both shells: 2 entries per surviving source face
+  // (rim quads stay unmapped, documented).
+  expect(out.uvs.size).toBe(m.faces.size * 2);
 });

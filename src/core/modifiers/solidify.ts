@@ -109,6 +109,10 @@ class SolidifyModifier implements Modifier {
     // are left WITHOUT UVs (documented) — they are fresh side walls with no
     // meaningful mapping from the source surface.
     for (const [fid, uv] of mesh.uvs) {
+      // Stale entries for deleted faces are legal (EditableMesh convention:
+      // consumers ignore them; the serializer prunes) — since primitives ship
+      // default unwraps, a delete-faces edit routinely leaves some behind.
+      if (!mesh.faces.has(fid)) continue;
       const copy = uv.map(([u, v]) => [u, v] as [number, number]);
       out.setFaceUVs(outerFace.get(fid)!, copy);
       out.setFaceUVs(innerFace.get(fid)!, copy.slice().reverse());
