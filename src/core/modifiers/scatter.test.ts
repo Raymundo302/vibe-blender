@@ -178,6 +178,106 @@ describe('Scatter modifier — UVs (P11-5)', () => {
   });
 });
 
+describe('Scatter modifier — align to normal (punch-list: sprinkles lie flat)', () => {
+  // A source with basis-probe verts: O at the origin, then unit X/Y/Z markers.
+  // After one instance is placed, (Zmarker' − O') recovers the world direction
+  // the instance's LOCAL +Z axis maps to — i.e. the "up" of the placement.
+  const probeSource = () =>
+    EditableMesh.fromData(
+      [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], // O, X, Y, Z
+      [[0, 1, 2], [0, 2, 3]],                        // two tris → valid area
+    );
+  // Single-quad hosts with a known face normal (Newell winding).
+  const plusZHost = () =>
+    EditableMesh.fromData([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], [[0, 1, 2, 3]]);
+  const plusXHost = () =>
+    EditableMesh.fromData([[0, -1, -1], [0, 1, -1], [0, 1, 1], [0, -1, 1]], [[0, 1, 2, 3]]);
+
+  /** Instance basis directions (local +X/+Y/+Z → world) from a count-1 scatter. */
+  function instanceBasis(out: EditableMesh, hostVerts: number) {
+    const all = [...out.verts.values()];
+    const o = all[hostVerts + 0].co;      // O'
+    const x = all[hostVerts + 1].co;      // X'
+    const y = all[hostVerts + 2].co;      // Y'
+    const z = all[hostVerts + 3].co;      // Z'
+    return { bx: x.sub(o), by: y.sub(o), bz: z.sub(o), pos: o };
+  }
+
+  it("align 'normal' on a +Z face → local +Z maps to +Z (unrotated up)", () => {
+    const { srcObj, ctx } = setup(plusZHost(), probeSource());
+    const out = mk({
+      source: srcObj.id, count: 1, seed: 5,
+      align: 'normal', randomRotation: false, randomScale: 0, colorVariation: 0,
+    }).apply(plusZHost(), ctx);
+    const { bz } = instanceBasis(out, 4);
+    expect(bz.equalsApprox(new Vec3(0, 0, 1))).toBe(true);
+  });
+
+  it("align 'normal' on a +X face → local +Z maps to +X (lies on the surface)", () => {
+    const { srcObj, ctx } = setup(plusXHost(), probeSource());
+    const out = mk({
+      source: srcObj.id, count: 1, seed: 5,
+      align: 'normal', randomRotation: false, randomScale: 0, colorVariation: 0,
+    }).apply(plusXHost(), ctx);
+    const { bx, by, bz } = instanceBasis(out, 4);
+    expect(bz.equalsApprox(new Vec3(1, 0, 0))).toBe(true);
+    // Orthonormal frame: the three axes stay unit-length and mutually square.
+    expect(bx.length()).toBeCloseTo(1);
+    expect(by.length()).toBeCloseTo(1);
+    expect(bx.dot(by)).toBeCloseTo(0);
+    expect(bx.dot(bz)).toBeCloseTo(0);
+  });
+
+  it("align 'none' reproduces the legacy axis-aligned mapping (local +Z → +X)", () => {
+    // Legacy path with default up = world +Y maps local +Z to world +X — a
+    // hand-derived, seed-independent value that pins the pre-`align` behavior.
+    const { srcObj, ctx } = setup(plusZHost(), probeSource());
+    const out = mk({
+      source: srcObj.id, count: 1, seed: 5,
+      align: 'none', alignNormal: false, randomRotation: false, randomScale: 0, colorVariation: 0,
+    }).apply(plusZHost(), ctx);
+    const { bx, by, bz } = instanceBasis(out, 4);
+    expect(bz.equalsApprox(new Vec3(1, 0, 0))).toBe(true); // local +Z → world +X
+    expect(by.equalsApprox(new Vec3(0, 1, 0))).toBe(true); // local +Y → world +Y
+    expect(bx.equalsApprox(new Vec3(0, 0, 1))).toBe(true); // local +X → world +Z
+  });
+
+  it('align does not disturb positions — centroids identical across modes for a seed', () => {
+    // A source centred on the origin makes each instance centroid == its sampled
+    // surface point, independent of orientation. So the SAME seed must yield the
+    // SAME centroids under 'normal' and 'none' — proving the placement RNG stream
+    // (positions/tints) is untouched by the new orientation code.
+    const { srcObj, ctx } = setup(makePlane(6), makePlane(2));
+    const mkOut = (align: string) =>
+      mk({ source: srcObj.id, count: 30, seed: 11, align })
+        .apply(makePlane(6), ctx);
+    const cA = instanceCentroids(mkOut('normal'), 4, 4);
+    const cB = instanceCentroids(mkOut('none'), 4, 4);
+    expect(cA.length).toBe(cB.length);
+    expect(cA.length).toBeGreaterThan(0);
+    for (let i = 0; i < cA.length; i++) {
+      expect(cA[i].equalsApprox(cB[i], 1e-9)).toBe(true);
+    }
+  });
+
+  it("align 'normal' is deterministic — same seed → byte-identical output", () => {
+    const { srcObj, ctx } = setup(makePlane(6), makeCube());
+    const a = mk({ source: srcObj.id, count: 25, seed: 4, align: 'normal' }).apply(makePlane(6), ctx);
+    const b = mk({ source: srcObj.id, count: 25, seed: 4, align: 'normal' }).apply(makePlane(6), ctx);
+    expect(serializeMesh(a)).toBe(serializeMesh(b));
+  });
+
+  it('constructor default: no params → normal; params without align → none (back-compat)', () => {
+    // New UI-added Scatter (no params) defaults to align:'normal'.
+    expect(createModifier('scatter').params().align).toBe('normal');
+    // Deserialized older scene (params present, no align) defaults to 'none' so
+    // it loads looking exactly as saved.
+    expect(createModifier('scatter', { count: 10, seed: 1 }).params().align).toBe('none');
+    // Explicit align in params is honoured.
+    expect(createModifier('scatter', { count: 10, align: 'normal' }).params().align).toBe('normal');
+  });
+});
+
 describe('Scatter modifier — no-op guards', () => {
   it('no ctx → identity (object modifier must no-op without a scene)', () => {
     const out = mk({ source: 0, count: 50 }).apply(makePlane(4));

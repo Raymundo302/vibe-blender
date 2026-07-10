@@ -105,9 +105,24 @@ class ScatterModifier implements Modifier {
   private minDistance = 0;
   private upOnly = false;
   private colorVariation = 0;
+  // Orientation mode (P-punchlist "sprinkles align-to-normal"):
+  //   'normal' — orient each instance so its LOCAL +Z axis points along the
+  //              scattered face's normal (sprinkles rest ON the icing), with
+  //              the existing per-instance random YAW about that normal.
+  //   'none'   — the legacy axis-aligned path (local +Y → up), byte-identical
+  //              to the pre-`align` algorithm for a given seed.
+  // Default is context-dependent (see constructor): a freshly UI-added Scatter
+  // defaults to 'normal' (the wanted look), but a DESERIALIZED modifier whose
+  // saved params predate this field defaults to 'none' so old scenes — the
+  // frozen donut fixture included — load looking exactly as they were saved.
+  private align: 'normal' | 'none' = 'normal';
 
   constructor(params?: ModifierParams) {
-    if (params) this.ingest(params);
+    if (params) {
+      // Old saved scatter params carry no `align`; keep their look unchanged.
+      if (params.align === undefined) this.align = 'none';
+      this.ingest(params);
+    }
   }
 
   apply(mesh: EditableMesh, ctx?: ModifierContext): EditableMesh {
@@ -181,18 +196,44 @@ class ScatterModifier implements Modifier {
         ? this.scale * (1 + (rng() * 2 - 1) * this.randomScale)
         : this.scale;
 
-      // Orientation basis: local +Y → up. up = surface normal when aligning,
-      // else world +Y. Deterministic tangent from a non-parallel reference.
-      const up = this.alignNormal ? normal : Vec3.Y;
-      const ref = Math.abs(up.x) < 0.9 ? Vec3.X : Vec3.Z;
-      let tanX = ref.cross(up).normalize();
-      let tanZ = up.cross(tanX);
-      if (this.randomRotation) {
-        const ang = rng() * Math.PI * 2;
-        const c = Math.cos(ang), sn = Math.sin(ang);
-        const nx = tanX.scale(c).add(tanZ.scale(sn));
-        const nz = tanX.scale(-sn).add(tanZ.scale(c));
-        tanX = nx; tanZ = nz;
+      // Per-instance random YAW (rotation about the up/normal axis). Drawn from
+      // the SAME rng slot as before — only when randomRotation — so the seed
+      // stream (and thus positions/tints) is untouched by the `align` field.
+      const yaw = this.randomRotation ? rng() * Math.PI * 2 : 0;
+
+      // Orientation basis. `basisX/basisY/basisZ` are the world directions that
+      // the instance's LOCAL +X/+Y/+Z map to.
+      let basisX: Vec3, basisY: Vec3, basisZ: Vec3;
+      if (this.align === 'normal') {
+        // Align-to-surface: local +Z → face normal. Build an orthonormal frame
+        // from the normal, guarding the near-parallel-to-Z degenerate case, then
+        // spin the tangents by yaw around the normal.
+        const n = normal.normalize();
+        const ref = Math.abs(n.z) < 0.9 ? Vec3.Z : Vec3.X;
+        let tanX = ref.cross(n).normalize();
+        let tanY = n.cross(tanX);
+        if (yaw !== 0) {
+          const c = Math.cos(yaw), sn = Math.sin(yaw);
+          const nx = tanX.scale(c).add(tanY.scale(sn));
+          const ny = tanX.scale(-sn).add(tanY.scale(c));
+          tanX = nx; tanY = ny;
+        }
+        basisX = tanX; basisY = tanY; basisZ = n;
+      } else {
+        // Legacy path: local +Y → up (surface normal when alignNormal, else +Y).
+        // Deterministic tangent from a non-parallel reference. Byte-identical to
+        // the pre-`align` algorithm.
+        const up = this.alignNormal ? normal : Vec3.Y;
+        const ref = Math.abs(up.x) < 0.9 ? Vec3.X : Vec3.Z;
+        let tanX = ref.cross(up).normalize();
+        let tanZ = up.cross(tanX);
+        if (this.randomRotation) {
+          const c = Math.cos(yaw), sn = Math.sin(yaw);
+          const nx = tanX.scale(c).add(tanZ.scale(sn));
+          const nz = tanX.scale(-sn).add(tanZ.scale(c));
+          tanX = nx; tanZ = nz;
+        }
+        basisX = tanX; basisY = up; basisZ = tanZ;
       }
 
       // Instance color: one pastel tint per instance when colorVariation > 0.
@@ -208,7 +249,7 @@ class ScatterModifier implements Modifier {
       const newVertId: number[] = new Array(srcCo.length);
       for (let i = 0; i < srcCo.length; i++) {
         const v = srcCo[i].scale(s);
-        const world = tanX.scale(v.x).add(up.scale(v.y)).add(tanZ.scale(v.z)).add(pos);
+        const world = basisX.scale(v.x).add(basisY.scale(v.y)).add(basisZ.scale(v.z)).add(pos);
         newVertId[i] = out.addVert(world);
       }
       for (const f of srcFaces) {
@@ -254,6 +295,7 @@ class ScatterModifier implements Modifier {
       seed: this.seed,
       scale: this.scale,
       randomScale: this.randomScale,
+      align: this.align,
       alignNormal: this.alignNormal,
       randomRotation: this.randomRotation,
       offset: this.offset,
@@ -270,6 +312,7 @@ class ScatterModifier implements Modifier {
       case 'seed': if (typeof value === 'number') this.seed = Math.round(value); break;
       case 'scale': if (typeof value === 'number') this.scale = value; break;
       case 'randomScale': if (typeof value === 'number') this.randomScale = clamp01(value); break;
+      case 'align': if (value === 'normal' || value === 'none') this.align = value; break;
       case 'alignNormal': if (typeof value === 'boolean') this.alignNormal = value; break;
       case 'randomRotation': if (typeof value === 'boolean') this.randomRotation = value; break;
       case 'offset': if (typeof value === 'number') this.offset = value; break;
@@ -292,6 +335,10 @@ class ScatterModifier implements Modifier {
       { key: 'seed', label: 'Seed', kind: 'int', step: 1 },
       { key: 'scale', label: 'Scale', kind: 'number', step: 0.05 },
       { key: 'randomScale', label: 'Random Scale', kind: 'number', min: 0, max: 1, step: 0.05 },
+      { key: 'align', label: 'Align', kind: 'select', options: [
+        { value: 'normal', label: 'To Normal' },
+        { value: 'none', label: 'None' },
+      ] },
       { key: 'alignNormal', label: 'Align to Normal', kind: 'bool' },
       { key: 'randomRotation', label: 'Random Rotation', kind: 'bool' },
       { key: 'offset', label: 'Offset', kind: 'number', step: 0.02 },
