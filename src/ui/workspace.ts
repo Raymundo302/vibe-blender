@@ -399,7 +399,22 @@ export class WorkspaceManager {
     this.persist();
   }
 
+  /** Renormalize column/area sizes to sum to 1. Flexbox distributes only a
+   *  FRACTION of the free space when grow factors sum below 1 (spec behavior),
+   *  so a close/merge that removes a 0.4-grow column would leave 40% of the
+   *  window as dead space (Ray hit exactly this). Normalizing on every build
+   *  also heals drifted stored configs. */
+  private normalizeSizes(ws: WorkspaceConfig): void {
+    const colSum = ws.columns.reduce((s, c) => s + (c.size > 0 ? c.size : 0), 0) || 1;
+    for (const col of ws.columns) {
+      col.size = (col.size > 0 ? col.size : 0.01) / colSum;
+      const areaSum = col.areas.reduce((s, a) => s + (a.size > 0 ? a.size : 0), 0) || 1;
+      for (const a of col.areas) a.size = (a.size > 0 ? a.size : 0.01) / areaSum;
+    }
+  }
+
   private buildLayout(ws: WorkspaceConfig): void {
+    this.normalizeSizes(ws);
     ws.columns.forEach((col, ci) => {
       if (ci > 0) this.root.append(this.makeGutter('v', ci));
       const colEl = document.createElement('div');

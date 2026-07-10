@@ -203,6 +203,24 @@ runE2e(async (t) => {
   await t.sleep(150);
   t.check('refuses to close the last area', (await areaCount()) === 1);
 
+  // Close/merge must never leave dead space: flex-grow sums below 1 make
+  // flexbox fill only that fraction of the row (spec quirk; Ray hit a 40%
+  // dead zone after closing a column).
+  {
+    const fill = await t.evaluate(`(() => {
+      const mgr = window.__app.workspaces;
+      const src = mgr.areas[0];
+      mgr.splitArea(src, 'h');
+      const extra = mgr.areas[mgr.areas.length - 1];
+      mgr.closeArea(extra);
+      const root = document.querySelector('#workspace-root');
+      const used = [...root.children].reduce((s, el) => s + el.getBoundingClientRect().width, 0);
+      return { used: Math.round(used), rootW: Math.round(root.getBoundingClientRect().width) };
+    })()`);
+    t.check('closing a column leaves no dead space (children fill the root)',
+      Math.abs(fill.used - fill.rootW) < 12, JSON.stringify(fill));
+  }
+
   // (g) Persistence: split, reload, the extra area survives.
   await menuAction(`document.querySelector('.wsp-area')`, 'split-v');
   await t.sleep(150);
