@@ -38,6 +38,7 @@ import { RestoreToast } from './ui/restoreToast';
 import { exportObj, parseObj } from './io/obj';
 import { EditableMesh } from './core/mesh/EditableMesh';
 import { AddObjectsCommand } from './core/undo/objectCommands';
+import { createNodesApi } from './core/nodes/api';
 import type { OperatorContext } from './core/operator/Operator';
 import './ui/theme.css';
 import { applyStoredTheme } from './ui/themes';
@@ -398,6 +399,7 @@ topbar.mountTabs(workspaces.createTabs());
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
+  nodes: createNodesApi({ scene, undo }),
   animRender: {
     render: (opts: { mode: 'webm' | 'png'; start?: number; end?: number; fps?: number }) => animRender.render(opts),
     cancel: () => animRender.cancel(),
