@@ -279,6 +279,21 @@ class ModifierTab {
       select.value = typeof current === 'string' ? current : 'x';
       select.addEventListener('change', () => commit('Edit Modifier', select.value));
       row.append(select);
+    } else if (field.kind === 'select') {
+      // Generic enumerated string param, options supplied by the field.
+      const select = document.createElement('select');
+      select.className = 'modifier-param';
+      select.dataset.key = field.key;
+      const options = field.options ?? [];
+      for (const { value, label: optLabel } of options) {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = optLabel;
+        select.append(opt);
+      }
+      select.value = typeof current === 'string' ? current : options[0]?.value ?? '';
+      select.addEventListener('change', () => commit('Edit Modifier', select.value));
+      row.append(select);
     } else {
       // number | int
       const input = document.createElement('input');

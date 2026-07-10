@@ -11,7 +11,7 @@ import type { Mat4 } from '../math/mat4';
  * renders every modifier type without knowing any of them.
  */
 
-export type ModifierFieldKind = 'number' | 'int' | 'bool' | 'axis' | 'object';
+export type ModifierFieldKind = 'number' | 'int' | 'bool' | 'axis' | 'object' | 'select';
 
 export interface ModifierField {
   key: string;
@@ -20,6 +20,8 @@ export interface ModifierField {
   min?: number;
   max?: number;
   step?: number;
+  /** For kind 'select': the enumerated string options to offer. */
+  options?: { value: string; label: string }[];
 }
 
 export type ModifierParams = Record<string, number | boolean | string>;
