@@ -81,7 +81,8 @@ describe('Solidify modifier — UVs (P11-5)', () => {
   });
 
   it('a face without UVs yields no UVs', () => {
-    const out = createModifier('solidify', { thickness: 0.1 }).apply(makePlane(2));
+    const m = makePlane(2); m.uvs.clear(); // primitives now ship UVs; test the UV-less path
+    const out = createModifier('solidify', { thickness: 0.1 }).apply(m);
     expect(out.uvs.size).toBe(0);
   });
 

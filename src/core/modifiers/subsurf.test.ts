@@ -244,7 +244,8 @@ describe('Subdivision Surface modifier — UVs (P11-5)', () => {
   });
 
   it('a face without UVs stays without UVs', () => {
-    const out = createModifier('subsurf', { levels: 1 }).apply(makePlane(2));
+    const m = makePlane(2); m.uvs.clear(); // primitives now ship UVs; test the UV-less path
+    const out = createModifier('subsurf', { levels: 1 }).apply(m);
     expect(out.uvs.size).toBe(0);
   });
 

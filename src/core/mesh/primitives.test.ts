@@ -187,6 +187,151 @@ describe('makeCircle', () => {
   });
 });
 
+describe('primitive UV unwraps', () => {
+  const EPS = 1e-6;
+
+  /** UVs cover every face and every corner is within [0, 1+ε] (Blender-conventional). */
+  function expectFullUnwrap(mesh: EditableMesh, maxU = 1) {
+    expect(mesh.uvs.size).toBe(mesh.faces.size);
+    for (const [fid, uvs] of mesh.uvs) {
+      const face = mesh.faces.get(fid)!;
+      expect(uvs.length).toBe(face.verts.length); // one uv per corner
+      for (const [u, v] of uvs) {
+        expect(Number.isFinite(u) && Number.isFinite(v)).toBe(true);
+        expect(u).toBeGreaterThanOrEqual(-EPS);
+        expect(u).toBeLessThanOrEqual(maxU + EPS);
+        expect(v).toBeGreaterThanOrEqual(-EPS);
+        expect(v).toBeLessThanOrEqual(1 + EPS);
+      }
+    }
+  }
+
+  it('makePlane: single quad maps to the unit square in vert winding order', () => {
+    const plane = makePlane();
+    expectFullUnwrap(plane);
+    const fid = [...plane.faces.keys()][0];
+    expect(plane.uvs.get(fid)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+  });
+
+  it('makeCube: cross layout, all 6 faces mapped, strip edges pixel-exact', () => {
+    const cube = makeCube();
+    expectFullUnwrap(cube);
+    const ids = [...cube.faces.keys()]; // insertion order: +Z,-Z,+X,-X,+Y,-Y
+    const front = cube.uvs.get(ids[5])!; // -Y front, column 0
+    const right = cube.uvs.get(ids[2])!; // +X right, column 1
+    // Front occupies the middle row of column 0 (u 0..0.25, v 1/3..2/3).
+    expect(front).toEqual([[0, 1 / 3], [0.25, 1 / 3], [0.25, 2 / 3], [0, 2 / 3]]);
+    // Front's right edge (u=0.25) is byte-identical to right's left edge (u=0.25).
+    expect(right[0][0]).toBe(0.25); // right face left-top corner
+    expect(right[1][0]).toBe(0.25); // right face left-bottom corner
+    expect(front[1][0]).toBe(0.25); // front face right-bottom corner
+    expect(front[2][0]).toBe(0.25); // front face right-top corner
+    // Top (+Z) sits above the front column (v 2/3..1); bottom (-Z) below (v 0..1/3).
+    for (const [, v] of cube.uvs.get(ids[0])!) expect(v).toBeGreaterThanOrEqual(2 / 3 - EPS);
+    for (const [, v] of cube.uvs.get(ids[1])!) expect(v).toBeLessThanOrEqual(1 / 3 + EPS);
+  });
+
+  it('makeUvSphere: equirectangular, equator v=0.5, poles v=0/1, seam u=1', () => {
+    const segments = 32, rings = 16;
+    const sphere = makeUvSphere(1, segments, rings);
+    expectFullUnwrap(sphere);
+    // Some corner sits exactly on the equator (ring 8 → v = (16-8)/16 = 0.5).
+    let sawEquator = false, sawTop = false, sawBottom = false, sawSeamU1 = false;
+    for (const uvs of sphere.uvs.values()) {
+      for (const [u, v] of uvs) {
+        if (Math.abs(v - 0.5) < EPS) sawEquator = true;
+        if (Math.abs(v - 1) < EPS) sawTop = true;   // north pole corners
+        if (Math.abs(v - 0) < EPS) sawBottom = true; // south pole corners
+        if (Math.abs(u - 1) < EPS) sawSeamU1 = true; // wrap seam right edge
+      }
+    }
+    expect(sawEquator).toBe(true);
+    expect(sawTop).toBe(true);
+    expect(sawBottom).toBe(true);
+    expect(sawSeamU1).toBe(true);
+  });
+
+  it('makeCylinder: sides in the top half, seam u 0.96875→1, caps as circles', () => {
+    const segments = 32;
+    const cyl = makeCylinder(1, 2, segments);
+    expectFullUnwrap(cyl);
+    const ids = [...cyl.faces.keys()]; // 0..segments-1 sides, then top cap, bottom cap
+    // Every side-face corner lives in the top half (v 0.5..1).
+    for (let j = 0; j < segments; j++)
+      for (const [, v] of cyl.uvs.get(ids[j])!) expect(v).toBeGreaterThanOrEqual(0.5 - EPS);
+    // The last side face wraps to u=1 on its right corners, NOT back to 0.
+    const seam = cyl.uvs.get(ids[segments - 1])!;
+    expect(seam[0][0]).toBeCloseTo(31 / 32, 12); // 0.96875
+    expect(seam[1][0]).toBe(1);
+    expect(seam[2][0]).toBe(1);
+    // Caps live in the bottom half, centered at (0.25,0.25) / (0.75,0.25), r=0.2.
+    for (const [u, v] of cyl.uvs.get(ids[segments])!) { // top cap
+      expect(v).toBeLessThanOrEqual(0.45 + EPS);
+      expect(Math.hypot(u - 0.25, v - 0.25)).toBeCloseTo(0.2, 6);
+    }
+    for (const [u, v] of cyl.uvs.get(ids[segments + 1])!) // bottom cap
+      expect(Math.hypot(u - 0.75, v - 0.25)).toBeCloseTo(0.2, 6);
+  });
+
+  it('makeTorus: grid unwrap with seam u=1 and v=1 at both wraps', () => {
+    const majorSeg = 48, minorSeg = 12;
+    const torus = makeTorus(1, 0.25, majorSeg, minorSeg);
+    expectFullUnwrap(torus);
+    let sawU1 = false, sawV1 = false;
+    for (const uvs of torus.uvs.values())
+      for (const [u, v] of uvs) {
+        if (Math.abs(u - 1) < EPS) sawU1 = true;
+        if (Math.abs(v - 1) < EPS) sawV1 = true;
+      }
+    expect(sawU1).toBe(true); // last major segment's far edge
+    expect(sawV1).toBe(true); // last minor segment's far edge
+  });
+
+  it('makeIcoSphere: per-face spherical projection (wrap fix may push u past 1, ≤2)', () => {
+    const ico = makeIcoSphere(1, 2);
+    // NOTE: the seam wrap fix intentionally adds 1.0 to a face's small-u corners,
+    // so u can exceed 1 by design (display clamps later). Assert ≤ 2.
+    expectFullUnwrap(ico, 2);
+    // v spans the sphere (some corner near the top, some near the bottom).
+    let minV = 1, maxV = 0;
+    for (const uvs of ico.uvs.values())
+      for (const [, v] of uvs) { minV = Math.min(minV, v); maxV = Math.max(maxV, v); }
+    expect(minV).toBeLessThan(0.2);
+    expect(maxV).toBeGreaterThan(0.8);
+  });
+
+  it('makeCircle: planar map centered at (0.5,0.5); no face → no UVs', () => {
+    const c = makeCircle(1, 24, true);
+    expectFullUnwrap(c);
+    const fid = [...c.faces.keys()][0];
+    // The vert at angle 0 sits at x=r → u=1, v=0.5; the map is centered.
+    for (const [u, v] of c.uvs.get(fid)!) {
+      expect(Math.hypot(u - 0.5, v - 0.5)).toBeCloseTo(0.5, 6); // on the unit circle's edge
+    }
+    // No fill face → nothing to map.
+    const empty = makeCircle(1, 24, false);
+    expect(empty.uvs.size).toBe(0);
+  });
+
+  it('every registry primitive default ships a full unwrap', () => {
+    for (const def of PRIMITIVES) {
+      const mesh = def.make();
+      // Ico's wrap fix can exceed 1; everyone else stays in the unit square.
+      const maxU = def.name === 'Ico Sphere' ? 2 : 1;
+      expect(mesh.uvs.size).toBe(mesh.faces.size);
+      for (const [fid, uvs] of mesh.uvs) {
+        expect(uvs.length).toBe(mesh.faces.get(fid)!.verts.length);
+        for (const [u, v] of uvs) {
+          expect(u).toBeGreaterThanOrEqual(-EPS);
+          expect(u).toBeLessThanOrEqual(maxU + EPS);
+          expect(v).toBeGreaterThanOrEqual(-EPS);
+          expect(v).toBeLessThanOrEqual(1 + EPS);
+        }
+      }
+    }
+  });
+});
+
 describe('PRIMITIVES registry', () => {
   it('has 7 entries in Blender Add > Mesh order (Circle after Cube)', () => {
     expect(PRIMITIVES.map((p) => p.name)).toEqual([

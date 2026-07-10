@@ -114,7 +114,8 @@ describe('Mirror / Array modifiers — UVs (P11-5)', () => {
   });
 
   it('Mirror: a face without UVs yields no UVs on either copy', () => {
-    const out = createModifier('mirror', { axis: 'x' }).apply(makeCube());
+    const m = makeCube(); m.uvs.clear(); // primitives now ship UVs; test the UV-less path
+    const out = createModifier('mirror', { axis: 'x' }).apply(m);
     expect(out.uvs.size).toBe(0);
   });
 

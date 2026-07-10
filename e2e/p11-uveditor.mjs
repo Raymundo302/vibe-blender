@@ -12,6 +12,7 @@ runE2e(async (t) => {
   const fids = await t.evaluate(`(() => {
     const s = window.__app.scene;
     const obj = s.activeObject;
+    obj.mesh.uvs.clear(); // primitives now ship a default unwrap; seed exactly two islands
     const fids = [...obj.mesh.faces.keys()];
     obj.mesh.setFaceUVs(fids[0], [[0.1,0.1],[0.9,0.1],[0.9,0.9],[0.1,0.9]]); // big island, contains (0.5,0.5)
     obj.mesh.setFaceUVs(fids[1], [[0.92,0.92],[0.98,0.92],[0.98,0.98],[0.92,0.98]]); // tiny disjoint island

@@ -68,6 +68,10 @@ runE2e(async (t) => {
   // ========================================================================
   await t.evaluate(`(() => { const s = window.__app.scene; s.editMode.setElementMode('face', s.editObject.mesh); s.editMode.clearSelection(); })()`);
   await t.sleep(60);
+  // Fresh primitives now ship a default unwrap. Clear it so this suite exercises
+  // the empty → Unwrap → populated → undo → empty arc (the Unwrap command
+  // snapshots this cleared state, so the later Ctrl+Z restores to empty).
+  await t.evaluate(`(() => { const m = window.__app.scene.editObject.mesh; m.uvs.clear(); m.version++; })()`);
   t.check('no UVs before unwrap', (await t.evaluate(`${mesh()}.uvs.size`)) === 0);
 
   await t.mouse('mouseMoved', cx, cy);

@@ -160,7 +160,8 @@ describe('Scatter modifier — UVs (P11-5)', () => {
     const src = makePlane(2);
     src.setFaceUVs(0, [[0, 0], [1, 0], [1, 1], [0, 1]]);
     const { srcObj, ctx } = setup(makePlane(6), src);
-    const out = mk({ source: srcObj.id, count: 3, seed: 4 }).apply(makePlane(6), ctx);
+    const host = makePlane(6); host.uvs.clear(); // primitives now ship UVs; keep the host UV-less
+    const out = mk({ source: srcObj.id, count: 3, seed: 4 }).apply(host, ctx);
     // Host face 0 has no UVs; the 3 instanced faces (ids 1..3) each copy source.
     expect(out.uvs.size).toBe(3);
     for (const us of out.uvs.values()) {
@@ -169,8 +170,10 @@ describe('Scatter modifier — UVs (P11-5)', () => {
   });
 
   it('a UV-less source yields UV-less instances', () => {
-    const { srcObj, ctx } = setup(makePlane(6), makePlane(2));
-    const out = mk({ source: srcObj.id, count: 5, seed: 1 }).apply(makePlane(6), ctx);
+    const src = makePlane(2); src.uvs.clear();        // primitives now ship UVs; strip both
+    const { srcObj, ctx } = setup(makePlane(6), src);
+    const host = makePlane(6); host.uvs.clear();
+    const out = mk({ source: srcObj.id, count: 5, seed: 1 }).apply(host, ctx);
     expect(out.uvs.size).toBe(0);
   });
 });

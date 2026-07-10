@@ -8,6 +8,7 @@ import { serializeScene, applySceneJson } from '../../io/sceneJson';
 describe('UV + seam attributes (P11 core)', () => {
   it('setFaceUVs validates corner count, clones, and clears', () => {
     const mesh = makeCube();
+    mesh.uvs.clear(); // primitives now ship a default unwrap; start from a clean slate
     const faceId = [...mesh.faces.keys()][0];
     expect(() => mesh.setFaceUVs(faceId, [[0, 0]])).toThrow(/corners/);
     const quad: [number, number][] = [[0, 0], [1, 0], [1, 1], [0, 1]];
@@ -31,6 +32,7 @@ describe('UV + seam attributes (P11 core)', () => {
 
   it('UVs land in the GPU corner stream (0,0 for un-uvd faces)', () => {
     const mesh = makeCube();
+    mesh.uvs.clear(); // clear the default unwrap so the un-uvd (0,0) path is exercised
     const faceId = [...mesh.faces.keys()][0];
     mesh.setFaceUVs(faceId, [[0.25, 0.5], [1, 0], [1, 1], [0, 1]]);
     const data = meshToRenderData(mesh);
@@ -44,6 +46,7 @@ describe('UV + seam attributes (P11 core)', () => {
     const scene = new Scene();
     const camera = new OrbitCamera();
     const obj = scene.add('Cube', makeCube());
+    obj.mesh.uvs.clear(); // start from a clean slate; assert exactly the one UV we set
     const faceId = [...obj.mesh.faces.keys()][2];
     obj.mesh.setFaceUVs(faceId, [[0, 0], [0.5, 0], [0.5, 0.5], [0, 0.5]]);
     const [a, b] = [...obj.mesh.verts.keys()];
