@@ -94,6 +94,32 @@ export function tickStep(frameStart: number, frameEnd: number, width: number): n
   return pxPerFrame >= 8 ? 5 : 10;
 }
 
+/**
+ * Adaptive MAJOR grid step (frames) from the 1-2-5×10ⁿ ladder restricted to
+ * {1, 5, 10, 50, 100, 500, ...}, picked so major lines sit ≥ `minPx` apart.
+ * Zoom out → the step climbs (5→10→50→100); zoom in → it descends toward 1.
+ * Minor lines are always major/5 (so major/minor === 5), and none when major
+ * is 1 (a per-frame grid needs no sub-divisions).
+ */
+export function majorGridStep(
+  viewStart: number,
+  viewEnd: number,
+  width: number,
+  minPx = 60,
+): number {
+  const plotW = Math.max(1, width - PAD_LEFT - PAD_RIGHT);
+  const span = Math.max(1e-6, viewEnd - viewStart);
+  const pxPerFrame = plotW / span;
+  const mults = [5, 2]; // ×5, ×2 alternately → 1,5,10,50,100,500,…
+  let major = 1;
+  let i = 0;
+  while (major * pxPerFrame < minPx && major < 1e9) {
+    major *= mults[i % 2];
+    i++;
+  }
+  return major;
+}
+
 /** Round + clamp a (fractional) frame into [start, end]. */
 export function clampFrame(frame: number, start: number, end: number): number {
   return Math.max(start, Math.min(end, Math.round(frame)));
@@ -145,6 +171,18 @@ export class TimelinePane {
   private cssW = 0;
   private cssH = 0;
 
+  // Pane-local view window (float frames). ALL drawing + hit-testing map through
+  // these — NOT scene.frameStart/End. The view NEVER auto-resets (editing the
+  // Start/End header fields only moves the scene range, not the view); it changes
+  // only via wheel zoom, MMB pan, and '.' zoom-to-selected.
+  private viewStart = 0;
+  private viewEnd = 1;
+
+  // MMB pan drag state.
+  private panning = false;
+  private panLastX = 0;
+  private panPointerId = -1;
+
   // Playback: fractional playhead + last tick timestamp.
   private wasPlaying = false;
   private playPos = 0;
@@ -168,6 +206,7 @@ export class TimelinePane {
   private readonly onPointerDown: (e: PointerEvent) => void;
   private readonly onPointerMove: (e: PointerEvent) => void;
   private readonly onPointerUp: (e: PointerEvent) => void;
+  private readonly onWheel: (e: WheelEvent) => void;
   private readonly onKeyDownCapture: (e: KeyboardEvent) => void;
   private readonly onEnter: () => void;
   private readonly onLeave: () => void;
@@ -177,6 +216,12 @@ export class TimelinePane {
 
   constructor(deps: TimelineDeps) {
     this.scene = deps.scene;
+
+    // Initialise the view to the scene range padded ~2% (never auto-resets after).
+    const span0 = Math.max(1, this.scene.frameEnd - this.scene.frameStart);
+    const pad0 = span0 * 0.02;
+    this.viewStart = this.scene.frameStart - pad0;
+    this.viewEnd = this.scene.frameEnd + pad0;
 
     this.element = document.createElement('div');
     this.element.className = 'timeline';
@@ -277,10 +322,12 @@ export class TimelinePane {
     // Scrub / select / drag interactions on the canvas (NOT InputManager).
     this.onPointerDown = (e) => this.handlePointerDown(e);
     this.onPointerMove = (e) => this.handlePointerMove(e);
-    this.onPointerUp = () => this.handlePointerUp();
+    this.onPointerUp = (e) => this.handlePointerUp(e);
+    this.onWheel = (e) => this.handleWheel(e);
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     window.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
 
     // Hover gate for X / Delete so the timeline only eats those keys when the
     // pointer is over it (otherwise object-mode X still deletes objects).
@@ -299,11 +346,14 @@ export class TimelinePane {
       keyFramesShown: (): DiamondInfo[] => this.keyFramesShown(),
       rowCount: (): number => this.rows.length,
       canvas: this.canvas,
-      frameToX: (f: number) => frameToX(f, this.scene.frameStart, this.scene.frameEnd, this.cssW),
+      frameToX: (f: number) => this.xOf(f),
       selectedKeys: (): { objectId: number; frame: number; channelPath?: string }[] => this.selectedKeys(),
       diamondXY: (objectId: number, frame: number, channelPath?: string) => this.diamondXY(objectId, frame, channelPath),
       channelRows: (): { objectId: number; channelPath: string; frames: number[] }[] => this.channelRows(),
       toggleExpand: (objectId: number) => { this.toggleExpand(objectId); },
+      view: (): { start: number; end: number } => ({ start: this.viewStart, end: this.viewEnd }),
+      setView: (start: number, end: number) => { this.applyView(start, end); },
+      gridSteps: (): { major: number; minor: number } => this.gridSteps(),
       autoKey: autoKeyState,
     };
   }
@@ -325,6 +375,7 @@ export class TimelinePane {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     window.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('keydown', this.onKeyDownCapture, true);
     this.element.removeEventListener('pointerenter', this.onEnter);
     this.element.removeEventListener('pointerleave', this.onLeave);
@@ -356,7 +407,98 @@ export class TimelinePane {
     return e.clientY - this.canvas.getBoundingClientRect().top;
   }
 
+  // --- View transform ------------------------------------------------------
+
+  /** Pixel X of a (fractional) frame through the current view window. */
+  private xOf(frame: number): number {
+    return frameToX(frame, this.viewStart, this.viewEnd, this.cssW);
+  }
+
+  /** Canvas-local pixel X → (fractional) frame through the current view. */
+  private frameOf(x: number): number {
+    return xToFrame(x, this.viewStart, this.viewEnd, this.cssW);
+  }
+
+  /**
+   * Set the view window with a graceful degenerate guard: min span 0.25 frames,
+   * max span 100× the scene range (clamped about the window centre).
+   */
+  private applyView(start: number, end: number): void {
+    let s = start, e = end;
+    if (!Number.isFinite(s) || !Number.isFinite(e)) return;
+    if (e < s) [s, e] = [e, s];
+    const span = e - s;
+    const sceneSpan = Math.max(1, this.scene.frameEnd - this.scene.frameStart);
+    const minSpan = 0.25;
+    const maxSpan = sceneSpan * 100;
+    if (span < minSpan) {
+      const c = (s + e) / 2;
+      s = c - minSpan / 2; e = c + minSpan / 2;
+    } else if (span > maxSpan) {
+      const c = (s + e) / 2;
+      s = c - maxSpan / 2; e = c + maxSpan / 2;
+    }
+    this.viewStart = s;
+    this.viewEnd = e;
+  }
+
+  /** Zoom about the frame under canvas-local px `x` (that frame stays put). */
+  private zoomAt(x: number, factor: number): void {
+    const fa = this.frameOf(x);
+    this.applyView(fa + (this.viewStart - fa) * factor, fa + (this.viewEnd - fa) * factor);
+  }
+
+  /** Pan the view by a pixel delta (drag-right shows earlier frames). */
+  private panByPx(dxPx: number): void {
+    const plotW = Math.max(1, this.cssW - PAD_LEFT - PAD_RIGHT);
+    const span = this.viewEnd - this.viewStart;
+    const dFrame = -dxPx * (span / plotW);
+    this.applyView(this.viewStart + dFrame, this.viewEnd + dFrame);
+  }
+
+  private handleWheel(e: WheelEvent): void {
+    e.preventDefault();
+    // ~1.15 per notch; scroll up (deltaY<0) zooms in (view span shrinks).
+    const factor = e.deltaY < 0 ? 1 / 1.15 : 1.15;
+    this.zoomAt(this.localX(e), factor);
+  }
+
+  /** Zoom the view to the selected keys (+10% margin); no selection → fit scene. */
+  private zoomToSelected(): void {
+    const frames = this.selectedKeys().map((k) => k.frame);
+    if (frames.length === 0) {
+      const pad = Math.max(1, this.scene.frameEnd - this.scene.frameStart) * 0.02;
+      this.applyView(this.scene.frameStart - pad, this.scene.frameEnd + pad);
+      return;
+    }
+    let min = Math.min(...frames);
+    let max = Math.max(...frames);
+    if (max - min < 1e-6) {
+      // Single key/frame → a sensible ±5 frame window.
+      min -= 5; max += 5;
+    } else {
+      const m = (max - min) * 0.1;
+      min -= m; max += m;
+    }
+    this.applyView(min, max);
+  }
+
+  private gridSteps(): { major: number; minor: number } {
+    const major = majorGridStep(this.viewStart, this.viewEnd, this.cssW);
+    return { major, minor: major === 1 ? 0 : major / 5 };
+  }
+
   private handlePointerDown(e: PointerEvent): void {
+    // --- MMB → pan the view left/right ---
+    if (e.button === 1) {
+      e.preventDefault();
+      this.panning = true;
+      this.panLastX = e.clientX;
+      this.panPointerId = e.pointerId;
+      try { this.canvas.setPointerCapture(e.pointerId); } catch { /* no pointer id */ }
+      this.canvas.classList.add('panning');
+      return;
+    }
     if (e.button !== 0) return;
     const x = this.localX(e);
     const y = this.localY(e);
@@ -387,13 +529,19 @@ export class TimelinePane {
     // Empty ruler / track → scrub (clears selection unless shift-adding).
     if (!e.shiftKey) this.selection.clear();
     this.scrubbing = true;
-    this.scrubTo(xToFrame(x, this.scene.frameStart, this.scene.frameEnd, this.cssW));
+    this.scrubTo(this.frameOf(x));
   }
 
   private handlePointerMove(e: PointerEvent): void {
+    if (this.panning) {
+      const dx = e.clientX - this.panLastX;
+      this.panLastX = e.clientX;
+      this.panByPx(dx);
+      return;
+    }
     if (this.dragging) {
       const targetAnchor = clampFrame(
-        xToFrame(this.localX(e), this.scene.frameStart, this.scene.frameEnd, this.cssW),
+        this.frameOf(this.localX(e)),
         // Keys may live outside [start,end]; allow the anchor anywhere ≥ 0.
         0, Number.MAX_SAFE_INTEGER,
       );
@@ -405,10 +553,18 @@ export class TimelinePane {
       return;
     }
     if (!this.scrubbing) return;
-    this.scrubTo(xToFrame(this.localX(e), this.scene.frameStart, this.scene.frameEnd, this.cssW));
+    this.scrubTo(this.frameOf(this.localX(e)));
   }
 
-  private handlePointerUp(): void {
+  private handlePointerUp(e: PointerEvent): void {
+    if (this.panning) {
+      this.panning = false;
+      this.canvas.classList.remove('panning');
+      try { if (this.panPointerId >= 0) this.canvas.releasePointerCapture(this.panPointerId); } catch { /* already released */ }
+      this.panPointerId = -1;
+      return;
+    }
+    void e;
     if (this.dragging) {
       this.dragging = false;
       if (this.dragMoved && this.dragDelta !== 0) this.commitMove(this.dragDelta);
@@ -436,7 +592,7 @@ export class TimelinePane {
     const cy = RULER_H + rowIndex * ROW_H + ROW_H / 2;
     if (Math.abs(y - cy) > 8) return null;
     for (const d of row.diamonds) {
-      const dx = frameToX(d.frame, this.scene.frameStart, this.scene.frameEnd, this.cssW);
+      const dx = this.xOf(d.frame);
       if (Math.abs(x - dx) <= 6) return { objectId: row.object.id, frame: d.frame, channelPath: row.channelPath };
     }
     return null;
@@ -452,7 +608,7 @@ export class TimelinePane {
     const row = this.rows[rowIndex];
     if (!row.diamonds.some((d) => d.frame === frame)) return null;
     return {
-      x: frameToX(frame, this.scene.frameStart, this.scene.frameEnd, this.cssW),
+      x: this.xOf(frame),
       y: RULER_H + rowIndex * ROW_H + ROW_H / 2,
     };
   }
@@ -597,6 +753,18 @@ export class TimelinePane {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
+    // '.' zooms the view to the selected keys — but ONLY when the pane is
+    // hovered (the 3D viewport uses '.' for frame-selected; never swallow it
+    // when the pointer isn't over the timeline).
+    if (e.key === '.' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+      if (!this.hovered) return;
+      const af = document.activeElement;
+      if (af && /^(INPUT|TEXTAREA|SELECT)$/.test(af.tagName)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.zoomToSelected();
+      return;
+    }
     // Only claim X / Delete when the pane is hovered AND has a key selection,
     // and no form field is focused — otherwise let it fall through to the app.
     const isDelete = e.key === 'x' || e.key === 'X' || e.key === 'Delete';
@@ -811,17 +979,46 @@ export class TimelinePane {
     c.fillStyle = '#1c1c1c';
     c.fillRect(0, 0, W, H);
 
+    // Frame-range band: a slightly lighter backdrop over [frameStart,frameEnd]
+    // (Blender's in-range highlight). Behind everything but the base fill.
+    {
+      const bx0 = Math.max(0, this.xOf(frameStart));
+      const bx1 = Math.min(W, this.xOf(frameEnd));
+      if (bx1 > bx0) {
+        c.fillStyle = 'rgba(255,255,255,0.035)';
+        c.fillRect(bx0, 0, bx1 - bx0, H);
+      }
+    }
+
     // Ruler background.
     c.fillStyle = '#262626';
     c.fillRect(0, 0, W, RULER_H);
 
-    // Ticks + numbers.
-    const step = tickStep(frameStart, frameEnd, W);
+    // Adaptive recursive grid: major lines from the {1,5,10,50,…} ladder,
+    // minor lines at major/5 (very subtle; none when the major step is 1).
+    const major = majorGridStep(this.viewStart, this.viewEnd, W);
+    const minor = major === 1 ? 0 : major / 5;
     c.font = '10px monospace';
     c.textBaseline = 'middle';
-    const first = Math.ceil(frameStart / step) * step;
-    for (let f = first; f <= frameEnd; f += step) {
-      const x = frameToX(f, frameStart, frameEnd, W);
+
+    // Minor lines first (drawn under the majors).
+    if (minor > 0) {
+      c.strokeStyle = 'rgba(255,255,255,0.045)';
+      const firstMin = Math.ceil(this.viewStart / minor) * minor;
+      for (let f = firstMin; f <= this.viewEnd; f += minor) {
+        if (Math.abs(((f % major) + major) % major) < 1e-6) continue; // skip majors
+        const x = this.xOf(f);
+        c.beginPath();
+        c.moveTo(x + 0.5, RULER_H);
+        c.lineTo(x + 0.5, H);
+        c.stroke();
+      }
+    }
+
+    // Major lines + ruler ticks + frame numbers.
+    const firstMaj = Math.ceil(this.viewStart / major) * major;
+    for (let f = firstMaj; f <= this.viewEnd; f += major) {
+      const x = this.xOf(f);
       c.strokeStyle = '#3a3a3a';
       c.beginPath();
       c.moveTo(x + 0.5, RULER_H);
@@ -834,7 +1031,7 @@ export class TimelinePane {
       c.stroke();
       c.fillStyle = '#9a9a9a';
       c.textAlign = 'center';
-      c.fillText(String(f), x, RULER_H / 2);
+      c.fillText(String(Math.round(f)), x, RULER_H / 2);
     }
 
     // Track rows: label + diamonds.
@@ -869,13 +1066,13 @@ export class TimelinePane {
       for (const d of row.diamonds) {
         const selected = this.selection.has(keyOf(row.object.id, d.frame, row.channelPath));
         const drawFrame = selected && this.dragging ? d.frame + this.dragDelta : d.frame;
-        const x = frameToX(drawFrame, frameStart, frameEnd, W);
+        const x = this.xOf(drawFrame);
         this.drawDiamond(x, cy, d.filled, selected);
       }
     });
 
     // Playhead.
-    const px = frameToX(this.scene.frameCurrent, frameStart, frameEnd, W);
+    const px = this.xOf(this.scene.frameCurrent);
     c.strokeStyle = this.accent;
     c.lineWidth = 1.5;
     c.beginPath();

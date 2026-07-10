@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { frameToX, xToFrame, tickStep, clampFrame, PAD_LEFT, PAD_RIGHT } from './timeline';
+import { frameToX, xToFrame, tickStep, majorGridStep, clampFrame, PAD_LEFT, PAD_RIGHT } from './timeline';
 
 describe('timeline frame↔pixel math', () => {
   const W = 500; // canvas CSS width
@@ -55,6 +55,31 @@ describe('tickStep', () => {
     expect(tickStep(0, cramped, 500)).toBe(10);
     // span so that pxPerFrame is comfortably over 8 → step 5
     expect(tickStep(0, Math.floor(plot / 20), 500)).toBe(5);
+  });
+});
+
+describe('majorGridStep (adaptive recursive grid)', () => {
+  const W = 500; // plot width 392
+
+  it('climbs the {1,5,10,50,100,500} ladder as you zoom out', () => {
+    // Very zoomed in: ~39 px/frame → step 5 keeps majors ≥ 60px apart.
+    expect(majorGridStep(0, 10, W)).toBe(5);
+    // Wider spans push the step up the ladder (392px plot / span px/frame).
+    expect(majorGridStep(0, 40, W)).toBe(10);
+    expect(majorGridStep(0, 100, W)).toBe(50);
+    expect(majorGridStep(0, 2000, W)).toBe(500);
+  });
+
+  it('descends to a per-frame grid when hugely zoomed in', () => {
+    // ~392 px/frame → a 1-frame major is already > 60px.
+    expect(majorGridStep(0, 1, W)).toBe(1);
+  });
+
+  it('only ever returns ladder values (minor = major/5 divides evenly)', () => {
+    const ladder = new Set([1, 5, 10, 50, 100, 500, 1000, 5000]);
+    for (const span of [2, 7, 23, 60, 140, 800, 3000]) {
+      expect(ladder.has(majorGridStep(0, span, W))).toBe(true);
+    }
   });
 });
 

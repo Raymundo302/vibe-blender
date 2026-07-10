@@ -194,4 +194,135 @@ runE2e(async (t) => {
   t.check('playback advanced ~fps*0.6 frames (single clock, not doubled)',
     advanced >= expected * 0.6 && advanced <= expected * 1.4,
     `advanced=${advanced} expected≈${expected.toFixed(1)} (fps=${fps})`);
+
+  // 11. View navigation — wheel zoom-to-mouse, MMB pan, view is independent of
+  //     the header fields, '.' zoom-to-selected, and the adaptive grid.
+  const PAD_LEFT = 96, PAD_RIGHT = 12; // module consts (see timeline.ts)
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    s.frameStart = 1; s.frameEnd = 24; s.frameCurrent = 1; s.playing = false;
+  })()`);
+  // Known baseline view sized to the actual plot width (~9 px/frame) so the grid
+  // is at a normal density regardless of how wide this pane happens to be.
+  await t.evaluate(`(() => {
+    const w = window.__timeline.canvas.getBoundingClientRect().width;
+    const plotW = Math.max(1, w - ${PAD_LEFT} - ${PAD_RIGHT});
+    window.__timeline.setView(0, plotW / 9);
+  })()`);
+  await t.sleep(80);
+  const gsDefault = await t.evaluate(`window.__timeline.gridSteps()`);
+  t.check('gridSteps() default major is 5 or 10',
+    gsDefault.major === 5 || gsDefault.major === 10, JSON.stringify(gsDefault));
+  t.check('gridSteps() default minor is 1 or 2',
+    gsDefault.minor === 1 || gsDefault.minor === 2, JSON.stringify(gsDefault));
+
+  // Zoomed out via setView(0, 2000): major climbs to ≥ 50, minor = major/5.
+  await t.evaluate(`window.__timeline.setView(0, 2000)`);
+  await t.sleep(60);
+  const gsOut = await t.evaluate(`window.__timeline.gridSteps()`);
+  t.check('gridSteps() major ≥ 50 when zoomed way out', gsOut.major >= 50, JSON.stringify(gsOut));
+  t.check('gridSteps() major/minor === 5 (recursive ladder)',
+    gsOut.minor > 0 && gsOut.major / gsOut.minor === 5, JSON.stringify(gsOut));
+
+  // --- Wheel zoom-to-mouse over the canvas centre ---
+  await t.evaluate(`window.__timeline.setView(0, 60)`);
+  await t.sleep(60);
+  const cgeo = await t.evaluate(`(() => {
+    const r = window.__timeline.canvas.getBoundingClientRect();
+    return { left: r.left, top: r.top, w: r.width };
+  })()`);
+  const centerLocalX = cgeo.w / 2;
+  const frameUnder = (v) => v.start + ((centerLocalX - PAD_LEFT) / (cgeo.w - PAD_LEFT - PAD_RIGHT)) * (v.end - v.start);
+  const vBeforeZoom = await t.evaluate(`window.__timeline.view()`);
+  const frameBefore = frameUnder(vBeforeZoom);
+  // Three notches of zoom-in at the canvas centre.
+  await t.evaluate(`(() => {
+    const cv = window.__timeline.canvas;
+    const r = cv.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + 8;
+    for (let i = 0; i < 3; i++) {
+      cv.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+    }
+  })()`);
+  await t.sleep(60);
+  const vAfterZoom = await t.evaluate(`window.__timeline.view()`);
+  const frameAfter = frameUnder(vAfterZoom);
+  const spanBefore = vBeforeZoom.end - vBeforeZoom.start;
+  const spanAfter = vAfterZoom.end - vAfterZoom.start;
+  t.check('wheel zoom-in shrinks the view span', spanAfter < spanBefore * 0.95,
+    `${spanBefore.toFixed(2)} -> ${spanAfter.toFixed(2)}`);
+  t.check('zoom is anchored at the mouse (frame under cursor ≈ unchanged)',
+    Math.abs(frameAfter - frameBefore) <= 0.5, `${frameBefore.toFixed(3)} -> ${frameAfter.toFixed(3)}`);
+
+  // --- MMB drag left → view start/end both increase, span unchanged ---
+  const vBeforePan = await t.evaluate(`window.__timeline.view()`);
+  const panGeo = await t.evaluate(`(() => {
+    const r = window.__timeline.canvas.getBoundingClientRect();
+    return { cx: r.left + r.width / 2, cy: r.top + 8 };
+  })()`);
+  await t.mouse('mouseMoved', panGeo.cx, panGeo.cy);
+  await t.mouse('mousePressed', panGeo.cx, panGeo.cy, 'middle');
+  await t.mouse('mouseMoved', panGeo.cx - 120, panGeo.cy, 'middle');
+  await t.mouse('mouseReleased', panGeo.cx - 120, panGeo.cy, 'middle');
+  await t.sleep(60);
+  const vAfterPan = await t.evaluate(`window.__timeline.view()`);
+  const spanPanBefore = vBeforePan.end - vBeforePan.start;
+  const spanPanAfter = vAfterPan.end - vAfterPan.start;
+  t.check('MMB drag-left increases view start (content moved left)',
+    vAfterPan.start > vBeforePan.start, `${vBeforePan.start.toFixed(2)} -> ${vAfterPan.start.toFixed(2)}`);
+  t.check('MMB drag-left increases view end',
+    vAfterPan.end > vBeforePan.end, `${vBeforePan.end.toFixed(2)} -> ${vAfterPan.end.toFixed(2)}`);
+  t.check('MMB pan keeps span unchanged (±1%)',
+    Math.abs(spanPanAfter - spanPanBefore) <= spanPanBefore * 0.01,
+    `${spanPanBefore.toFixed(3)} vs ${spanPanAfter.toFixed(3)}`);
+
+  // --- Editing the End header field must NOT move the view ---
+  const vBeforeEnd = await t.evaluate(`window.__timeline.view()`);
+  await t.evaluate(`(() => {
+    const inp = window.__timeline.canvas.closest('.timeline').querySelector('.timeline-end');
+    inp.value = '120'; inp.dispatchEvent(new Event('change'));
+  })()`);
+  await t.sleep(80);
+  const endApplied = await t.evaluate(`window.__app.scene.frameEnd`);
+  const vAfterEnd = await t.evaluate(`window.__timeline.view()`);
+  t.check('End field updated scene.frameEnd', endApplied === 120, `frameEnd=${endApplied}`);
+  t.check('End field did NOT move the view',
+    Math.abs(vAfterEnd.start - vBeforeEnd.start) < 1e-6 && Math.abs(vAfterEnd.end - vBeforeEnd.end) < 1e-6,
+    JSON.stringify({ before: vBeforeEnd, after: vAfterEnd }));
+
+  // --- '.' zoom-to-selected → view centres on the selected key, span shrinks ---
+  // Key the cube back to a clean 1/24 pair (earlier steps left it keyed) and
+  // select the frame-24 diamond.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene; s.frameStart = 1; s.frameEnd = 24; s.frameCurrent = 1;
+  })()`);
+  await t.evaluate(`window.__timeline.setView(0, 60)`);
+  await t.sleep(60);
+  const dsel = await t.evaluate(`(() => {
+    const r = window.__timeline.canvas.getBoundingClientRect();
+    const d = window.__timeline.diamondXY(${await t.evaluate(`window.__app.scene.activeObject.id`)}, 24);
+    return d ? { x: r.left + d.x, y: r.top + d.y } : null;
+  })()`);
+  t.check('a diamond @24 is on screen for the zoom-to-selected test', !!dsel);
+  await t.click(dsel.x, dsel.y);
+  t.check('a key is selected for zoom-to-selected',
+    (await t.evaluate(`window.__timeline.selectedKeys().length`)) >= 1);
+  const vBeforeDot = await t.evaluate(`window.__timeline.view()`);
+  await t.mouse('mouseMoved', dsel.x, dsel.y); // ensure hovered
+  await t.key('.', 'Period');
+  await t.sleep(60);
+  const vAfterDot = await t.evaluate(`window.__timeline.view()`);
+  const centerDot = (vAfterDot.start + vAfterDot.end) / 2;
+  t.check("'.' zoom-to-selected centres the view near the selected key (24)",
+    Math.abs(centerDot - 24) <= 2, `center=${centerDot.toFixed(2)}`);
+  t.check("'.' zoom-to-selected shrinks the span",
+    (vAfterDot.end - vAfterDot.start) < (vBeforeDot.end - vBeforeDot.start),
+    `${(vBeforeDot.end - vBeforeDot.start).toFixed(2)} -> ${(vAfterDot.end - vAfterDot.start).toFixed(2)}`);
+
+  // Leave state clean for later suites.
+  await t.evaluate(`(() => {
+    const s = window.__app.scene;
+    s.frameStart = 1; s.frameEnd = 250; s.frameCurrent = 1; s.playing = false;
+    s.selectedObjects.forEach((o) => { o.anim = undefined; });
+  })()`);
 });

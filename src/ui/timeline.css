@@ -121,3 +121,8 @@
   touch-action: none;
   cursor: ew-resize;
 }
+
+/* Middle-button pan in progress. */
+.timeline-canvas.panning {
+  cursor: grabbing;
+}

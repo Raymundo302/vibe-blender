@@ -11,7 +11,9 @@
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 
-const PORT = 9222;
+// Fixed 9222 by default, but overridable so concurrent runs don't hijack each
+// other's headless Chrome (a stale/parallel 9222 silently pollutes localStorage).
+const PORT = Number(process.env.E2E_PORT) || 9222;
 
 export function runE2e(testFn, { url = process.argv[2] ?? 'http://localhost:5199/' } = {}) {
   main(testFn, url).catch((err) => {
