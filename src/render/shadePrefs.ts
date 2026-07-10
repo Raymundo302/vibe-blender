@@ -34,6 +34,9 @@ export interface ShadePrefs {
   aoSamples: number;
   /** Draw the edge wireframe on top of the shaded modes. */
   wireOverlay: boolean;
+  /** Draw mesh-mesh intersection curves as light grey lines (all shading
+   *  modes) — where two objects' geometry passes through each other. */
+  intersections: boolean;
   /** Wireframe mode: hide backfacing wires + wires behind geometry (depth-
    *  primed hidden-line look) instead of the classic see-through wireframe. */
   wireHiddenLine: boolean;
@@ -58,6 +61,7 @@ export function defaultShadePrefs(): ShadePrefs {
     aoStrength: AO_STRENGTH_RANGE.default,
     aoSamples: AO_SAMPLES_RANGE.default,
     wireOverlay: false,
+    intersections: false,
     wireHiddenLine: false,
   };
 }

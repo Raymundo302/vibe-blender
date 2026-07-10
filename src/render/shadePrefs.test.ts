@@ -20,7 +20,7 @@ describe('shadePrefs persistence', () => {
 
   it('defaults: toggles off, AO tuner at its documented midpoints', () => {
     expect(defaultShadePrefs()).toEqual({
-      ao: false, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
+      ao: false, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48, wireOverlay: false, intersections: false, wireHiddenLine: false,
     });
   });
 
@@ -35,7 +35,7 @@ describe('shadePrefs persistence', () => {
     Object.assign(shadePrefs, defaultShadePrefs());
     loadShadePrefs();
     expect(shadePrefs).toEqual({
-      ao: true, aoMode: 'object', aoMethod: 2, aoRadius: 1.7, aoStrength: 1.6, aoSamples: 48, wireOverlay: false, wireHiddenLine: true,
+      ao: true, aoMode: 'object', aoMethod: 2, aoRadius: 1.7, aoStrength: 1.6, aoSamples: 48, wireOverlay: false, intersections: false, wireHiddenLine: true,
     });
   });
 
@@ -71,7 +71,7 @@ describe('shadePrefs persistence', () => {
     localStorage.setItem('vibe-shading-v3', JSON.stringify({ ao: true }));
     loadShadePrefs();
     expect(shadePrefs).toEqual({
-      ao: true, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48, wireOverlay: false, wireHiddenLine: false,
+      ao: true, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48, wireOverlay: false, intersections: false, wireHiddenLine: false,
     });
   });
 });

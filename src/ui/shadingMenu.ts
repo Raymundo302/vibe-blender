@@ -94,6 +94,7 @@ export class ShadingMenu {
     const checks: { key: keyof typeof shadePrefs; label: string; title: string }[] = [
       { key: 'ao', label: 'Ambient Occlusion', title: 'Screen-space AO in the shaded modes' },
       { key: 'wireOverlay', label: 'Wireframe', title: 'Draw the edge wireframe over the shaded modes' },
+      { key: 'intersections', label: 'Intersections', title: 'Draw light grey lines where meshes intersect each other' },
       { key: 'wireHiddenLine', label: 'Hidden Line (wireframe)', title: 'In Wireframe mode: hide backfacing wires and wires behind geometry' },
     ];
     // AO's tuner sliders + selects live right under its checkbox and grey out with it.

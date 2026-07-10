@@ -22,10 +22,10 @@ runE2e(async (t) => {
   await t.sleep(80);
   t.check('menu shows 4 shading modes',
     (await t.evaluate(`document.querySelectorAll('.shading-menu-mode').length`)) === 4);
-  t.check('menu shows AO / wireframe / hidden-line checkboxes',
+  t.check('menu shows AO / wireframe / intersections / hidden-line checkboxes',
     await t.evaluate(`(() => {
       const keys = [...document.querySelectorAll('[data-shade-pref]')].map((r) => r.dataset.shadePref);
-      return keys.join(',') === 'ao,wireOverlay,wireHiddenLine';
+      return keys.join(',') === 'ao,wireOverlay,intersections,wireHiddenLine';
     })()`));
   await t.key('Escape', 'Escape', 0);
   await t.sleep(60);
@@ -683,6 +683,118 @@ runE2e(async (t) => {
   await t.evaluate(`(() => {
     const p = window.__app.shadePrefs;
     p.ao = false; p.aoMode = 'object'; p.aoMethod = 0; p.aoRadius = 0.3; p.aoStrength = 1;
+    window.__app.renderer.shadingMode = 'matcap';
+  })()`);
+
+  // ===================================================================
+  // INTERSECTIONS — light grey lines where two meshes pass through each other.
+  // A plane scaled 3x cuts horizontally through the default cube at z=0.3; the
+  // cross-section is the 2x2 square at that height, so on a visible cube SIDE
+  // face the intersection curve draws as a lighter grey line (~rgb 158,158,168).
+  // Works in EVERY shading mode (matcap..rendered AND wireframe).
+  // ===================================================================
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    const pl = S.add('CutPlane', prim.makePlane(3));           // spans +-1.5, wider than the cube
+    pl.transform = pl.transform.withPosition(new V(0, 0, 0.3)); // slices the cube at z=0.3
+    S.deselectAll();
+  })()`);
+  t.check('intersections scene: cut plane landed',
+    await t.until(`window.__app.scene.objects.some((o) => o.name === 'CutPlane')`));
+  // Fixed framing: look at the cube's front/right side faces from the +x,-y
+  // quadrant at a moderate downward pitch so the z=0.3 cut line is well-exposed.
+  await t.evaluate(`(() => {
+    const cam = window.__app.camera; cam.yaw = 0.785; cam.pitch = 0.5; cam.distance = 7;
+  })()`);
+  await t.sleep(160); // let the throttled intersection rebuild settle
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+
+  // The matcap cube grey happens to sit very close to the line grey, so an
+  // absolute colour match can't tell them apart. Instead read a small 2D block
+  // centred on the cut line and DIFF off-vs-on: the line curve overwrites a
+  // band of face pixels, turning them the line colours. The ribbon has a light
+  // grey core (~184,184,194) and a dark rim (~31,31,36); count pixels that both
+  // CHANGED (luminance) and landed on either — unambiguous even when the
+  // matcap under it is a similar grey.
+  const faceBlock = (wx, wy, wz, half) => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const m = app.renderer.currentViewProj(app.scene, app.camera).m;
+    const cw = m[3]*${wx} + m[7]*${wy} + m[11]*${wz} + m[15];
+    const cx = m[0]*${wx} + m[4]*${wy} + m[8]*${wz} + m[12];
+    const cy = m[1]*${wx} + m[5]*${wy} + m[9]*${wz} + m[13];
+    const px = Math.round((cx/cw*0.5+0.5) * c.width);
+    const py = Math.round((cy/cw*0.5+0.5) * c.height);
+    const h = ${half}, s = 2*h + 1;
+    const x0 = Math.max(0, Math.min(px - h, c.width - s));
+    const y0 = Math.max(0, Math.min(py - h, c.height - s));
+    const buf = new Uint8Array(s * s * 4);
+    gl.readPixels(x0, y0, s, s, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    return Array.from(buf);
+  })()`);
+  // Count pixels that turned line-coloured between two block captures: a real
+  // luminance change AND a colour close to the ribbon core (184,184,194) or
+  // its dark rim (31,31,36).
+  const lineAppeared = (off, on) => {
+    let n = 0;
+    for (let i = 0; i < on.length; i += 4) {
+      const lOff = 0.2126*off[i] + 0.7152*off[i+1] + 0.0722*off[i+2];
+      const lOn  = 0.2126*on[i]  + 0.7152*on[i+1]  + 0.0722*on[i+2];
+      const dCore = Math.abs(on[i]-184) + Math.abs(on[i+1]-184) + Math.abs(on[i+2]-194);
+      const dRim  = Math.abs(on[i]-31)  + Math.abs(on[i+1]-31)  + Math.abs(on[i+2]-36);
+      if (Math.abs(lOn - lOff) > 12 && (dCore < 45 || dRim < 45)) n++;
+    }
+    return n;
+  };
+
+  const IPROBE = [0.2, -1.0, 0.3]; // on the cube -Y face, at the cut height
+  await setPref('intersections', false);
+  await t.sleep(40);
+  const blkOff = await faceBlock(...IPROBE, 12);
+  await setPref('intersections', true);
+  await t.sleep(160);
+  const blkOn = await faceBlock(...IPROBE, 12);
+  await setPref('intersections', false);
+  await t.sleep(40);
+  const blkOffAgain = await faceBlock(...IPROBE, 12);
+  const appeared = lineAppeared(blkOff, blkOn);
+  const reverted = lineAppeared(blkOff, blkOffAgain);
+  console.log(`      [intersect] matcap appeared=${appeared} reverted=${reverted}`);
+  t.check('intersections ON: light-grey line pixels appear on the cube face',
+    appeared >= 5, `appeared=${appeared}`);
+  t.check('intersections OFF again: those line pixels are gone',
+    reverted <= 1, `still=${reverted}`);
+
+  // Works in wireframe mode too (spec: all shading modes).
+  await t.evaluate(`window.__app.renderer.shadingMode = 'wireframe'`);
+  await setPref('intersections', false);
+  await t.sleep(60);
+  const wireOff = await faceBlock(...IPROBE, 12);
+  await setPref('intersections', true);
+  await t.sleep(160);
+  const wireOn = await faceBlock(...IPROBE, 12);
+  await setPref('intersections', false);
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  const wireAppeared = lineAppeared(wireOff, wireOn);
+  console.log(`      [intersect] wireframe appeared=${wireAppeared}`);
+  t.check('intersections draw in wireframe mode too',
+    wireAppeared >= 5, `appeared=${wireAppeared}`);
+
+  // Checkbox row exists in the shading dropdown.
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
+  await t.sleep(80);
+  t.check('intersections checkbox row exists in the shading dropdown',
+    await t.evaluate(`!!document.querySelector('[data-shade-pref="intersections"] input[type=checkbox]')`));
+  await t.key('Escape', 'Escape', 0);
+
+  // Cleanup: drop the cut plane, clear the pref + shading mode.
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) if (o.name === 'CutPlane') S.remove(o.id);
+    S.deselectAll();
+    window.__app.shadePrefs.intersections = false;
     window.__app.renderer.shadingMode = 'matcap';
   })()`);
 });

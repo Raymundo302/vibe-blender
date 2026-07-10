@@ -3,6 +3,7 @@ import { VertexArray } from './gl/VertexArray';
 import { MeshPass } from './passes/meshPass';
 import { StudioPass } from './passes/studioPass';
 import { WirePass } from './passes/wirePass';
+import { IntersectPass, segmentsToRibbon } from './passes/intersectPass';
 import { GridPass } from './passes/gridPass';
 import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
@@ -31,6 +32,7 @@ import { SdfAtlas } from './sdfAtlas';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
+import { meshIntersectionSegments } from '../core/mesh/intersect';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import { Mat4 } from '../core/math/mat4';
@@ -87,6 +89,7 @@ export class Renderer {
   private readonly meshPass: MeshPass;
   private readonly studioPass: StudioPass;
   private readonly wirePass: WirePass;
+  private readonly intersectPass: IntersectPass;
   private readonly gridPass: GridPass;
   private readonly outlinePass: OutlinePass;
   private readonly pickingPass: PickingPass;
@@ -103,6 +106,20 @@ export class Renderer {
   private readonly lightDirPass: LightDirPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
+  /**
+   * Mesh-mesh intersection curves ("Intersections" shading option): one cached
+   * position-only line VertexArray (world space) covering every intersecting
+   * pair of visible meshes. Rebuilt only when the composite geometry+transform
+   * key changes AND the throttle has elapsed (mirrors the SDF-atlas pattern —
+   * a modal drag bumps the key every frame but re-CSG-ing per frame would
+   * hitch). `cpuTriCache` holds each object's OBJECT-space triangle positions
+   * keyed by its gpuMesh version so a rebuild only re-transforms, not
+   * re-flattens, the mesh.
+   */
+  private intersectionLines: VertexArray | null = null;
+  private intersectionKey = '';
+  private intersectionBuiltAt = 0;
+  private readonly cpuTriCache = new Map<number, { version: string; tris: Float32Array }>();
   /** Equirect HDRI texture for the Rendered-mode background, or null. */
   private hdriTexture: WebGLTexture | null = null;
   /** The `world.hdri` data URL currently uploaded (null tracks "none"). */
@@ -160,6 +177,7 @@ export class Renderer {
     this.meshPass = new MeshPass(gl, createMatcapTexture(gl));
     this.studioPass = new StudioPass(gl);
     this.wirePass = new WirePass(gl);
+    this.intersectPass = new IntersectPass(gl);
     this.gridPass = new GridPass(gl);
     this.outlinePass = new OutlinePass(gl, canvas.width, canvas.height);
     this.pickingPass = new PickingPass(gl, canvas.width, canvas.height);
@@ -224,6 +242,93 @@ export class Renderer {
     };
     this.gpuMeshes.set(obj.id, entry);
     return entry;
+  }
+
+  /** Object-space triangle positions for an object's DISPLAYED mesh, cached by
+   *  its gpuMesh version so intersection rebuilds only re-transform (below) and
+   *  don't re-flatten the mesh every time. */
+  private objectSpaceTris(obj: SceneObject, scene: Scene, version: string): Float32Array {
+    const cached = this.cpuTriCache.get(obj.id);
+    if (cached && cached.version === version) return cached.tris;
+    const editing = scene.editMode?.objectId === obj.id;
+    const mesh = editing ? obj.mesh : obj.evaluatedMesh(scene.modifierContext(obj));
+    const tris = meshToRenderData(mesh, obj.shadeSmooth).trianglePositions;
+    this.cpuTriCache.set(obj.id, { version, tris });
+    return tris;
+  }
+
+  /**
+   * Rebuild (throttled) the cached mesh-mesh intersection line VertexArray for
+   * the given visible mesh objects. Key = every object's id + gpuMesh version +
+   * world-matrix elements; unchanged key → keep the cache. On a real change,
+   * transform each object's cached object-space triangles to WORLD space on the
+   * CPU (so non-uniform scale is baked in — exactly what we want), then run
+   * meshIntersectionSegments on every distinct pair whose world AABBs overlap
+   * and upload the concatenated segments. Empty result → null (nothing drawn).
+   * Self-intersection of a single mesh is out of scope (distinct pairs only).
+   */
+  private updateIntersectionLines(scene: Scene, meshes: SceneObject[]): void {
+    let key = '';
+    for (const obj of meshes) {
+      const v = this.gpuMesh(obj, scene).version;
+      key += `${obj.id}:${v}:${scene.worldMatrix(obj).m.join(',')};`;
+    }
+    if (key === this.intersectionKey) return;
+    const now = performance.now();
+    // Time-only throttle — do NOT condition on having lines: a heavy mesh
+    // dragged around while intersecting nothing would otherwise re-run the
+    // whole pair sweep every frame (null result = no cache = no throttle).
+    if (now - this.intersectionBuiltAt < 150) return;
+    this.intersectionKey = key;
+    this.intersectionBuiltAt = now;
+
+    // World-space triangles + world AABB per object.
+    const worldTris: Float32Array[] = [];
+    const aabbs: { min: Vec3; max: Vec3 }[] = [];
+    for (const obj of meshes) {
+      const version = this.gpuMesh(obj, scene).version;
+      const src = this.objectSpaceTris(obj, scene, version);
+      const world = scene.worldMatrix(obj);
+      const dst = new Float32Array(src.length);
+      let minx = Infinity, miny = Infinity, minz = Infinity;
+      let maxx = -Infinity, maxy = -Infinity, maxz = -Infinity;
+      for (let i = 0; i < src.length; i += 3) {
+        const p = world.transformPoint(new Vec3(src[i], src[i + 1], src[i + 2]));
+        dst[i] = p.x; dst[i + 1] = p.y; dst[i + 2] = p.z;
+        if (p.x < minx) minx = p.x; if (p.x > maxx) maxx = p.x;
+        if (p.y < miny) miny = p.y; if (p.y > maxy) maxy = p.y;
+        if (p.z < minz) minz = p.z; if (p.z > maxz) maxz = p.z;
+      }
+      worldTris.push(dst);
+      aabbs.push({ min: new Vec3(minx, miny, minz), max: new Vec3(maxx, maxy, maxz) });
+    }
+
+    const segs: number[] = [];
+    for (let i = 0; i < meshes.length; i++) {
+      for (let j = i + 1; j < meshes.length; j++) {
+        const a = aabbs[i], b = aabbs[j];
+        if (a.min.x > b.max.x || a.max.x < b.min.x
+          || a.min.y > b.max.y || a.max.y < b.min.y
+          || a.min.z > b.max.z || a.max.z < b.min.z) continue;
+        const pair = meshIntersectionSegments(worldTris[i], worldTris[j]);
+        for (let k = 0; k < pair.length; k++) segs.push(pair[k]);
+      }
+    }
+
+    this.intersectionLines?.dispose();
+    if (segs.length) {
+      // Screen-space ribbon stream (6 verts/segment) — see segmentsToRibbon:
+      // a 1px gl.LINES hairline was invisible against the matcap greys the
+      // intersection curve usually sits on.
+      const ribbon = segmentsToRibbon(segs);
+      this.intersectionLines = new VertexArray(this.ctx.gl, [
+        { location: 0, size: 3, data: ribbon.positions },
+        { location: 1, size: 3, data: ribbon.others },
+        { location: 2, size: 2, data: ribbon.params },
+      ]);
+    } else {
+      this.intersectionLines = null;
+    }
   }
 
   /**
@@ -598,6 +703,19 @@ export class Renderer {
       for (const obj of visible) {
         this.wirePass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
+      }
+    }
+
+    // Mesh-mesh intersection curves (shading-dropdown "Intersections" option):
+    // light grey lines where two objects' geometry passes through each other.
+    // Drawn AFTER the solid pass and the wire overlay, in EVERY shading mode
+    // (incl. wireframe), with a slightly stronger bias than the wire overlay so
+    // the line wins against both surfaces and their wires. Depth test stays on.
+    if (shadePrefs.intersections) {
+      this.updateIntersectionLines(scene, visible.filter((o) => o.kind === 'mesh'));
+      if (this.intersectionLines) {
+        this.intersectPass.begin(view, proj, 0.004, canvas.width, canvas.height);
+        this.intersectionLines.draw(gl.TRIANGLES);
       }
     }
 
