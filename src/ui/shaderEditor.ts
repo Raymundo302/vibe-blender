@@ -21,6 +21,7 @@ import {
 } from '../core/nodes/nodeGraph';
 import { GraphEditCommand, bumpGraphVersion, snapshotMaterial } from '../core/undo/graphCommands';
 import { decodeNodeImage } from '../core/nodes/imageCache';
+import { createRampWidget, normalizeStops, type RampStop, type RampWidgetHost } from './rampWidget';
 import './shaderEditor.css';
 
 // Node geometry, in GRAPH units (scaled by zoom for drawing / hit-testing).
@@ -65,6 +66,7 @@ export class ShaderEditor {
   private cssH = 0;
 
   private selectedNodeId: number | null = null;
+  private rampSelected = 0;
   private hovered = false;
   private spaceHeld = false;
   private pointerGraph: [number, number] = [0, 0];
@@ -345,12 +347,14 @@ export class ShaderEditor {
 
     const node = this.nodeAt(gx, gy);
     if (node) {
+      if (this.selectedNodeId !== node.id) this.rampSelected = 0;
       this.selectedNodeId = node.id;
       const material = this.activeMaterial()!;
       this.nodeDrag = { id: node.id, dx: gx - node.x, dy: gy - node.y, before: snapshotMaterial(material), moved: false };
       this.rebuildParams();
     } else {
       this.selectedNodeId = null;
+      this.rampSelected = 0;
       this.rebuildParams();
     }
   }
@@ -511,6 +515,7 @@ export class ShaderEditor {
       created = addNode(ed.graph, type, gx, gy);
     });
     if (created) this.selectedNodeId = (created as GraphNode).id;
+    this.rampSelected = 0;
     this.rebuildParams();
   }
 
@@ -610,14 +615,36 @@ export class ShaderEditor {
         reader.readAsDataURL(f);
       });
       row.append(file);
+    } else if (p.kind === 'ramp') {
+      row.append(createRampWidget(this.rampHost(material, node, p.key)));
     } else {
-      // ramp → skip a custom widget; show disabled placeholder text.
       const ramp = document.createElement('span');
       ramp.className = 'shader-param-ramp';
-      ramp.textContent = '(ramp)';
+      ramp.textContent = '(unsupported)';
       row.append(ramp);
     }
     return row;
+  }
+
+  /**
+   * Bridge a ColorRamp node's `ramp` param to the ramp widget. Edits ride the
+   * same GraphEditCommand snapshot-undo as every other param; the selected-stop
+   * index is persisted on the editor so it survives the poll-driven param-strip
+   * rebuild that a version bump triggers.
+   */
+  private rampHost(material: Material, node: GraphNode, key: string): RampWidgetHost {
+    return {
+      getStops: () => normalizeStops(node.params[key]),
+      getSelected: () => this.rampSelected,
+      setSelected: (i: number) => { this.rampSelected = i; },
+      commit: (name: string, stops: RampStop[], selected: number) => {
+        this.rampSelected = selected;
+        const snap = stops.map((s) => ({ pos: s.pos, color: [s.color[0], s.color[1], s.color[2]] }));
+        const cmd = GraphEditCommand.capture(name, material, () => { node.params[key] = { stops: snap }; });
+        this.undo.push(cmd);
+        bumpGraphVersion(material);
+      },
+    };
   }
 
   // --- Header sync ----------------------------------------------------------

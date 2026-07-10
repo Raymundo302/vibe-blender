@@ -128,6 +128,80 @@ runE2e(async (t) => {
     return m.nodeGraph.links.length === 0; })()`);
   t.check('Ctrl+Z reverts the link', linkGone, linkedJson);
 
+  // 7b. ColorRamp ramp widget: add a ColorRamp node, drag a stop, +/− stops.
+  await t.mouse('mouseMoved', px, py);
+  await t.sleep(40);
+  await t.key('a', 'KeyA', 8); // shift → add menu
+  await t.sleep(60);
+  t.check('add menu lists ColorRamp',
+    await t.evaluate(`[...document.querySelectorAll('.shader-add-item')].some(b => b.dataset.type === 'colorRamp')`));
+  await t.evaluate(`[...document.querySelectorAll('.shader-add-item')].find(b => b.dataset.type === 'colorRamp').click()`);
+  await t.sleep(120);
+  const rampId = await t.evaluate(`(() => { const m = window.__app.scene.getMaterial(${matId});
+    const n = m.nodeGraph.nodes.find(n => n.type === 'colorRamp'); return n ? n.id : -1; })()`);
+  t.check('ColorRamp node added', rampId >= 0);
+
+  // Select it so the param strip mounts the ramp widget.
+  const rampCenter = await t.evaluate(`window.__shaderEditor.nodeCenterPos(${rampId})`);
+  await t.click(rampCenter.x, rampCenter.y);
+  await t.sleep(120);
+  t.check('ramp widget renders (.ramp-widget)',
+    await t.evaluate(`!!document.querySelector('.ramp-widget')`));
+  t.check('ramp widget shows 2 stop markers',
+    await t.evaluate(`document.querySelectorAll('.ramp-stop').length === 2`));
+
+  const stopsLen = () => `(() => { const m = window.__app.scene.getMaterial(${matId});
+    const n = m.nodeGraph.nodes.find(n => n.id === ${rampId}); return n.params.ramp.stops.length; })()`;
+  const stop0pos = () => `(() => { const m = window.__app.scene.getMaterial(${matId});
+    const n = m.nodeGraph.nodes.find(n => n.id === ${rampId});
+    const s = [...n.params.ramp.stops].sort((a,b)=>a.pos-b.pos); return s[0].pos; })()`;
+
+  // Drag the first stop marker (pos 0) rightward to ≈0.4.
+  const verBeforeDrag = await t.evaluate(gver());
+  const bar = await t.evaluate(`(() => { const r = document.querySelector('.ramp-bar').getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height }; })()`);
+  const m0 = await t.evaluate(`(() => { const el = document.querySelectorAll('.ramp-stop')[0]; const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  const dragTo = { x: bar.left + bar.width * 0.4, y: bar.top + bar.height / 2 };
+  await t.mouse('mouseMoved', m0.x, m0.y);
+  await t.mouse('mousePressed', m0.x, m0.y, 'left');
+  await t.mouse('mouseMoved', (m0.x + dragTo.x) / 2, dragTo.y);
+  await t.mouse('mouseMoved', dragTo.x, dragTo.y);
+  await t.mouse('mouseReleased', dragTo.x, dragTo.y, 'left');
+  await t.sleep(120);
+  const draggedPos = await t.evaluate(stop0pos());
+  t.check('dragging a stop marker changed its position', draggedPos > 0.25, JSON.stringify(draggedPos));
+  t.check('stop drag bumped nodeGraphVersion', (await t.evaluate(gver())) > verBeforeDrag);
+
+  // Ctrl+Z reverts the drag (position back to ~0).
+  await t.evaluate(`document.activeElement && document.activeElement.blur()`);
+  await t.mouse('mouseMoved', px, py);
+  await t.key('z', 'KeyZ', 2); // ctrl → undo drag
+  await t.sleep(150);
+  t.check('Ctrl+Z reverts the stop drag', (await t.evaluate(stop0pos())) < 0.1, JSON.stringify(await t.evaluate(stop0pos())));
+
+  // + adds a stop (array grows to 3).
+  await t.evaluate(`document.querySelector('.ramp-widget .ramp-add').click()`);
+  await t.sleep(100);
+  t.check('+ adds a ramp stop', (await t.evaluate(stopsLen())) === 3, JSON.stringify(await t.evaluate(stopsLen())));
+
+  // − removes the selected stop (back to 2).
+  await t.evaluate(`document.querySelector('.ramp-widget .ramp-remove').click()`);
+  await t.sleep(100);
+  t.check('− removes a ramp stop', (await t.evaluate(stopsLen())) === 2, JSON.stringify(await t.evaluate(stopsLen())));
+
+  // − at the 2-stop minimum is a no-op (min 2 enforced).
+  await t.evaluate(`document.querySelector('.ramp-widget .ramp-remove').click()`);
+  await t.sleep(100);
+  t.check('− is a no-op at the 2-stop minimum', (await t.evaluate(stopsLen())) === 2);
+
+  // Clean up the ColorRamp node so the later delete tests see just the Value+Principled.
+  await t.click(rampCenter.x, rampCenter.y);
+  await t.sleep(60);
+  await t.mouse('mouseMoved', rampCenter.x, rampCenter.y);
+  await t.key('x', 'KeyX');
+  await t.sleep(80);
+
   // 8. Delete: value node is deletable; principled output is refused.
   const selValue = await t.evaluate(`window.__shaderEditor.nodeCenterPos(${valueId})`);
   await t.click(selValue.x, selValue.y);
