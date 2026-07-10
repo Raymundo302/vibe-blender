@@ -715,7 +715,7 @@ runE2e(async (t) => {
   // absolute colour match can't tell them apart. Instead read a small 2D block
   // centred on the cut line and DIFF off-vs-on: the line curve overwrites a
   // band of face pixels, turning them the line colours. The ribbon has a light
-  // grey core (~184,184,194) and a dark rim (~31,31,36); count pixels that both
+  // grey core (~115,115,122) and a soft dark rim; count pixels that both
   // CHANGED (luminance) and landed on either — unambiguous even when the
   // matcap under it is a similar grey.
   const faceBlock = (wx, wy, wz, half) => t.evaluate(`(() => {
@@ -735,14 +735,14 @@ runE2e(async (t) => {
     return Array.from(buf);
   })()`);
   // Count pixels that turned line-coloured between two block captures: a real
-  // luminance change AND a colour close to the ribbon core (184,184,194) or
-  // its dark rim (31,31,36).
+  // luminance change AND a colour close to the ribbon core (115,115,122) or
+  // its soft dark rim.
   const lineAppeared = (off, on) => {
     let n = 0;
     for (let i = 0; i < on.length; i += 4) {
       const lOff = 0.2126*off[i] + 0.7152*off[i+1] + 0.0722*off[i+2];
       const lOn  = 0.2126*on[i]  + 0.7152*on[i+1]  + 0.0722*on[i+2];
-      const dCore = Math.abs(on[i]-184) + Math.abs(on[i+1]-184) + Math.abs(on[i+2]-194);
+      const dCore = Math.abs(on[i]-115) + Math.abs(on[i+1]-115) + Math.abs(on[i+2]-122);
       const dRim  = Math.abs(on[i]-31)  + Math.abs(on[i+1]-31)  + Math.abs(on[i+2]-36);
       if (Math.abs(lOn - lOff) > 12 && (dCore < 45 || dRim < 45)) n++;
     }

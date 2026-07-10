@@ -71,7 +71,7 @@ void main() {
   // alpha fade washed out against the matcap mid-greys.
   float t = abs(v_side);
   if (t < 0.5) {
-    outColor = vec4(0.72, 0.72, 0.76, 1.0);
+    outColor = vec4(0.45, 0.45, 0.48, 1.0);  // darker grey (Ray, 2026-07-10)
   } else {
     float a = 0.35 * (1.0 - smoothstep(0.5, 1.0, t));
     outColor = vec4(0.0, 0.0, 0.0, a);
