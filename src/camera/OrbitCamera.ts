@@ -15,8 +15,19 @@ export class OrbitCamera {
   pitch = Math.PI / 6;
 
   fovY = (50 * Math.PI) / 180;
-  near = 0.1;
   far = 1000;
+
+  /**
+   * Near plane follows the zoom: 5% of the orbit distance, capped at the
+   * classic 0.1 (identical to the old fixed value at distance ≥ 2) and floored
+   * for depth precision. A FIXED 0.1 near let the wheel dolly the eye inside
+   * the near plane (zoom() used to floor distance at 0.05 < 0.1), slicing the
+   * target away into a degenerate blown-white "stuck" frame — the 2026-07-10
+   * wheel-zoom bug (research/zoom-stuck-frame.png, root cause 2026-07-11).
+   */
+  get near(): number {
+    return Math.max(0.001, Math.min(0.1, this.distance * 0.05));
+  }
 
   private static readonly PITCH_LIMIT = Math.PI / 2 - 0.001;
 
@@ -62,7 +73,9 @@ export class OrbitCamera {
 
   zoom(wheelDelta: number): void {
     this.distance *= Math.exp(wheelDelta * 0.001);
-    this.distance = Math.max(0.05, Math.min(500, this.distance));
+    // Floor low enough that the wheel keeps responding on deep zoom-ins; the
+    // distance-relative near (above) keeps the target in front of the plane.
+    this.distance = Math.max(0.01, Math.min(500, this.distance));
   }
 
   /** World-space ray under a pointer position (CSS px within the viewport). */

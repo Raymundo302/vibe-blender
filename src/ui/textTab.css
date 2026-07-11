@@ -1,0 +1,119 @@
+.text-tab .text-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.text-tab .text-tab-label {
+  flex: 0 0 84px;
+  font-size: 10px;
+}
+.text-tab-content {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12px;
+  background: #1d1d1d;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 4px 6px;
+}
+.text-tab-input {
+  flex: 1;
+  min-width: 0;
+  background: #1d1d1d;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+.text-tab-input:disabled { opacity: 0.4; }
+.text-tab-color {
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #3a3a3a;
+  background: none;
+}
+
+.text-tab-font-current {
+  flex: 1;
+  text-align: left;
+  background: #1d1d1d;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.text-tab-font-list {
+  margin: 2px 0 6px 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  background: #161616;
+}
+.text-tab-font-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  color: #dcdcdc;
+  border: none;
+  border-bottom: 1px solid #262626;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 15px;
+}
+.text-tab-font-option:hover { background: #2a2a2a; }
+.text-tab-font-option.active { background: #35506e; color: #fff; }
+
+.text-tab-segmented {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+}
+.text-tab-seg-btn {
+  flex: 1;
+  background: #262626;
+  color: #cfcfcf;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 3px 4px;
+  cursor: pointer;
+  font-size: 10px;
+}
+.text-tab-seg-btn.active {
+  background: #4a76b8;
+  color: #fff;
+  border-color: #4a76b8;
+}
+
+.text-tab-key-btn {
+  margin-left: 6px;
+  background: none;
+  border: none;
+  color: #e8a33d;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 3px;
+}
+
+.text-tab-convert {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  background: #3a3a3a;
+  color: #f0f0f0;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  padding: 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.text-tab-convert:hover { background: #474747; }

@@ -33,21 +33,32 @@ export const RIBBON_EXPAND_GLSL = /* glsl */ `
 const float WIRE_BASE_PX = ${WIRE_BASE_PX};
 const float WIRE_MIN_PX  = ${WIRE_MIN_PX};
 const float WIRE_MAX_PX  = ${WIRE_MAX_PX};
-float wireHalfPx(float viewDist, float refDist) {
-  return clamp(WIRE_BASE_PX * refDist / max(viewDist, 1e-4), WIRE_MIN_PX, WIRE_MAX_PX);
+// Clamp bounds are PARAMETERS (minPx/maxPx) so a caller can drive them from the
+// prefs (UR9-1 Thin/Thick sliders; proximity-off passes both = maxPx). The
+// bare wireHalfPx keeps the historical constant bounds for callers (the edit
+// cage) that are not pref-driven.
+float wireHalfPxW(float viewDist, float refDist, float minPx, float maxPx) {
+  return clamp(WIRE_BASE_PX * refDist / max(viewDist, 1e-4), minPx, maxPx);
 }
-vec4 wireExpand(vec4 c0, vec4 c1, float viewDist, float refDist,
-                vec2 viewport, float extrudeSign, out float hp) {
+float wireHalfPx(float viewDist, float refDist) {
+  return wireHalfPxW(viewDist, refDist, WIRE_MIN_PX, WIRE_MAX_PX);
+}
+vec4 wireExpandW(vec4 c0, vec4 c1, float viewDist, float refDist,
+                 vec2 viewport, float extrudeSign, float minPx, float maxPx, out float hp) {
   // Screen-space segment direction (guard degenerate/behind-eye projections).
   vec2 s0 = c0.xy / max(abs(c0.w), 1e-6) * viewport;
   vec2 s1 = c1.xy / max(abs(c1.w), 1e-6) * viewport;
   vec2 d = s1 - s0;
   vec2 n = dot(d, d) < 1e-12 ? vec2(1.0, 0.0) : normalize(vec2(-d.y, d.x));
-  hp = wireHalfPx(viewDist, refDist);
+  hp = wireHalfPxW(viewDist, refDist, minPx, maxPx);
   // px offset -> NDC (2/viewport) -> clip (×w, so the perspective divide lands
   // the ribbon at a constant pixel width at any depth).
   c0.xy += n * extrudeSign * hp * (2.0 / viewport) * c0.w;
   return c0;
+}
+vec4 wireExpand(vec4 c0, vec4 c1, float viewDist, float refDist,
+                vec2 viewport, float extrudeSign, out float hp) {
+  return wireExpandW(c0, c1, viewDist, refDist, viewport, extrudeSign, WIRE_MIN_PX, WIRE_MAX_PX, hp);
 }
 `;
 

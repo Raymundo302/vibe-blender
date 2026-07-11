@@ -1,4 +1,5 @@
 import { Shader } from '../gl/Shader';
+import { Vec3 } from '../../core/math/vec3';
 import type { Mat4 } from '../../core/math/mat4';
 
 /**
@@ -62,16 +63,17 @@ void main() {
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in float v_side;
+uniform vec3 u_color;   // intersection line core color (from prefs)
 out vec4 outColor;
 void main() {
-  // Solid light grey core; the rim fades out through a TRANSLUCENT darkening
+  // Solid core in u_color; the rim fades out through a TRANSLUCENT darkening
   // (~35% black at its strongest) so the line keeps contrast on surfaces close
   // to its own grey without reading as a second line. A full-opacity dark rim
   // read as "a grey line on top of a black line" (Ray, 2026-07-10); a plain
-  // alpha fade washed out against the matcap mid-greys.
+  // alpha fade washed out against the matcap mid-greys. Rim behavior stays.
   float t = abs(v_side);
   if (t < 0.5) {
-    outColor = vec4(0.45, 0.45, 0.48, 1.0);  // darker grey (Ray, 2026-07-10)
+    outColor = vec4(u_color, 1.0);
   } else {
     float a = 0.35 * (1.0 - smoothstep(0.5, 1.0, t));
     outColor = vec4(0.0, 0.0, 0.0, a);
@@ -92,14 +94,18 @@ export class IntersectPass {
   }
 
   /** Bind per-frame state. `zBias` > 0 pulls the ribbon toward the camera;
-   *  width/height = canvas size in px. */
-  begin(view: Mat4, proj: Mat4, zBias: number, width: number, height: number): void {
+   *  width/height = canvas size in px; `color` = the line core color (prefs). */
+  begin(
+    view: Mat4, proj: Mat4, zBias: number, width: number, height: number,
+    color: Vec3 = new Vec3(0.45, 0.45, 0.48),
+  ): void {
     this.shader.use();
     this.shader.setMat4('u_view', view);
     this.shader.setMat4('u_proj', proj);
     this.shader.setFloat('u_zBias', zBias);
     this.shader.setVec2('u_viewport', width, height);
     this.shader.setFloat('u_halfWidth', 1.6);
+    this.shader.setVec3('u_color', color);
   }
 }
 

@@ -7,9 +7,11 @@ import { defaultWorld, type World } from './worldData';
 import type { Modifier, ModifierContext } from '../modifiers/Modifier';
 import {
   DEFAULT_MATERIAL,
+  cloneTextData,
   defaultCamera,
   defaultEmpty,
   defaultLight,
+  defaultTextData,
   makeMaterial,
   type CameraData,
   type EmptyData,
@@ -17,6 +19,7 @@ import {
   type LightType,
   type Material,
   type ObjectKind,
+  type TextData,
 } from './objectData';
 
 /** An outliner group (Phase 10). Objects reference one by collectionId. */
@@ -58,6 +61,9 @@ export class SceneObject {
   anim?: import('../anim/fcurve').AnimData;
   /** HTML-plane payload (UR7-1), or undefined = not an HTML plane. */
   html?: import('./objectData').HtmlPlaneData;
+  /** Text payload (UR8-2) — set iff kind === 'text'. The mesh is regenerated
+   *  from this by the text driver whenever the payload changes. */
+  text?: TextData;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -188,6 +194,21 @@ export class Scene {
   addEmpty(name: string, data?: EmptyData): SceneObject {
     const obj = new SceneObject(this.nextId++, name, new EditableMesh(), 'empty');
     obj.empty = data ?? defaultEmpty();
+    this.objects.push(obj);
+    return obj;
+  }
+
+  /**
+   * Add a text object (UR8-2). Carries a real mesh (unlike light/camera/empty),
+   * but it starts EMPTY: the text driver regenerates it from the payload via
+   * buildTextMesh (canvas-bound, so it can't run in this pure-core method). The
+   * object's viewport color is white so the per-glyph face/outline tints show
+   * their true colors (matcap multiplies obj.color × tint). Not auto-selected.
+   */
+  addText(name: string, data?: TextData): SceneObject {
+    const obj = new SceneObject(this.nextId++, name, new EditableMesh(), 'text');
+    obj.text = data ?? defaultTextData();
+    obj.color = [1, 1, 1];
     this.objects.push(obj);
     return obj;
   }
@@ -438,6 +459,9 @@ export class Scene {
     if (src.empty) obj.empty = { ...src.empty };
     // HTML-plane payload is flat plain data — a shallow spread is a deep copy.
     if (src.html) obj.html = { ...src.html };
+    // Text payload (UR8-2): deep-copy so the duplicate's mesh regenerates from
+    // its own payload (the cloned mesh above is a fine starting point).
+    if (src.text) obj.text = cloneTextData(src.text);
     obj.transform = src.transform; // Transform is immutable — sharing is safe.
     obj.visible = src.visible;
     obj.shadeSmooth = src.shadeSmooth;

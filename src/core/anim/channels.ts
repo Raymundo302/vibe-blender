@@ -51,6 +51,12 @@ export function readChannel(scene: Scene, obj: SceneObject, path: string): numbe
     if (sub === 'playing') return obj.html.playing ? 1 : 0;
     return null;
   }
+  // Text extrude depth (UR8-2): the keyable `text.thickness` channel. The mesh
+  // is regenerated from the payload by the text driver after the sampler writes.
+  if (head === 'text' && obj.text) {
+    if (sub === 'thickness') return obj.text.thickness;
+    return null;
+  }
   return null;
 }
 
@@ -94,6 +100,12 @@ export function writeChannel(scene: Scene, obj: SceneObject, path: string, value
   // the boolean. >0.5 = playing so any positive keyed value reads as "on".
   if (head === 'html' && obj.html) {
     if (sub === 'playing') { obj.html.playing = value > 0.5; return true; }
+    return false;
+  }
+  // Text extrude depth (UR8-2): sets obj.text.thickness; the text driver picks
+  // up the payload change and regenerates the mesh on the next tick.
+  if (head === 'text' && obj.text) {
+    if (sub === 'thickness') { obj.text.thickness = Math.max(0, value); return true; }
     return false;
   }
   return false;

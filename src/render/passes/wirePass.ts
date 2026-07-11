@@ -1,6 +1,6 @@
 import { Shader } from '../gl/Shader';
 import { Vec3 } from '../../core/math/vec3';
-import { RIBBON_EXPAND_GLSL, RIBBON_FRAG } from './ribbon';
+import { RIBBON_EXPAND_GLSL, RIBBON_FRAG, WIRE_MIN_PX, WIRE_MAX_PX } from './ribbon';
 import type { Mat4 } from '../../core/math/mat4';
 
 /**
@@ -51,6 +51,8 @@ uniform float u_hideBack; // 1 = cull edges whose BOTH faces face away. Without
                           // stub of each back edge win the depth test.
 uniform vec2 u_viewport;  // canvas size in px (ribbon width in px → clip)
 uniform float u_refDist;  // camera orbit distance (proximity width reference)
+uniform float u_minPx;    // ribbon clamp bounds (px) from prefs; proximity off
+uniform float u_maxPx;    // passes both = wireMaxPx → constant width
 out float v_side;
 out float v_halfPx;
 out vec3 v_color;
@@ -68,7 +70,7 @@ void main() {
   vec4 c0 = clipOf(a_position, dThis);
   vec4 c1 = clipOf(a_other, dOther);
   float hp;
-  gl_Position = wireExpand(c0, c1, dThis, u_refDist, u_viewport, a_param.x, hp);
+  gl_Position = wireExpandW(c0, c1, dThis, u_refDist, u_viewport, a_param.x, u_minPx, u_maxPx, hp);
   v_side = a_param.y;
   v_halfPx = hp;
   v_color = a_color;
@@ -116,6 +118,7 @@ export class WirePass {
   begin(
     view: Mat4, proj: Mat4, zBias = 0, hideBack = false,
     width = 1, height = 1, refDist = 8, color: Vec3 = WIRE_DARK,
+    minPx = WIRE_MIN_PX, maxPx = WIRE_MAX_PX,
   ): void {
     this.shader.use();
     this.shader.setMat4('u_view', view);
@@ -125,6 +128,8 @@ export class WirePass {
     this.shader.setVec2('u_viewport', width, height);
     this.shader.setFloat('u_refDist', refDist);
     this.shader.setVec3('u_color', color);
+    this.shader.setFloat('u_minPx', minPx);
+    this.shader.setFloat('u_maxPx', maxPx);
   }
 
   setObject(model: Mat4, view: Mat4): void {

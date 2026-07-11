@@ -1,5 +1,5 @@
 import type { Renderer, ShadingMode } from '../render/Renderer';
-import { shadePrefs, saveShadePrefs, AO_METHODS, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE } from '../render/shadePrefs';
+import { shadePrefs, saveShadePrefs, AO_METHODS, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE, WIRE_MIN_PX_RANGE, WIRE_MAX_PX_RANGE } from '../render/shadePrefs';
 import type { AoMode } from '../render/shadePrefs';
 
 /**
@@ -100,19 +100,13 @@ export class ShadingMenu {
     optHeading.textContent = 'Options';
     root.appendChild(optHeading);
 
-    const checks: { key: keyof typeof shadePrefs; label: string; title: string }[] = [
-      { key: 'ao', label: 'Ambient Occlusion', title: 'Screen-space AO in the shaded modes' },
-      { key: 'wireOverlay', label: 'Wireframe', title: 'Draw the edge wireframe over the shaded modes' },
-      { key: 'intersections', label: 'Intersections', title: 'Draw light grey lines where meshes intersect each other' },
-      { key: 'hiddenLine', label: 'Hidden Line', title: 'Hide wires + cage behind geometry (off = see the full mesh through it). Per shading mode.' },
-    ];
     // The Hidden Line checkbox is PER shading mode: it shows/sets the CURRENT
     // mode's entry and is re-synced when the mode changes (mode-row clicks).
     let hiddenLineBox: HTMLInputElement | null = null;
     const resyncHiddenLine = (): void => {
       if (hiddenLineBox) hiddenLineBox.checked = shadePrefs.hiddenLine[this.renderer.shadingMode];
     };
-    // AO's tuner sliders + selects live right under its checkbox and grey out with it.
+    // AO's tuner sliders + selects grey out with its checkbox.
     const aoSliders: HTMLInputElement[] = [];
     const aoSelects: { el: HTMLSelectElement; row: HTMLElement }[] = [];
     const syncSliderState = (): void => {
@@ -125,13 +119,17 @@ export class ShadingMenu {
         row.classList.toggle('is-disabled', !shadePrefs.ao);
       }
     };
+
+    type NumKey = 'aoRadius' | 'aoStrength' | 'aoSamples' | 'wireMinPx' | 'wireMaxPx';
     const sliderRow = (
-      key: 'aoRadius' | 'aoStrength' | 'aoSamples', label: string,
+      key: NumKey, label: string,
       range: { min: number; max: number }, step: number, title: string,
+      opts: { attr: 'shadeSlider' | 'wireSlider'; greyWithAo?: boolean } = { attr: 'shadeSlider' },
     ): HTMLElement => {
       const row = document.createElement('label');
       row.className = 'shading-menu-slider';
-      row.dataset.shadeSlider = key;
+      if (opts.attr === 'shadeSlider') row.dataset.shadeSlider = key;
+      else row.dataset.wireSlider = key;
       row.title = title;
       const text = document.createElement('span');
       text.className = 'shading-menu-slider-label';
@@ -151,41 +149,112 @@ export class ShadingMenu {
         value.textContent = fmt(shadePrefs[key]);
         saveShadePrefs();
       });
-      aoSliders.push(input);
+      if (opts.greyWithAo) aoSliders.push(input);
       row.append(text, input, value);
       return row;
     };
 
-    for (const c of checks) {
+    // 0..1 rgb <-> #rrggbb hex for the <input type=color> controls.
+    const toHex = (c: number): string =>
+      Math.round(Math.min(1, Math.max(0, c)) * 255).toString(16).padStart(2, '0');
+    const colorRow = (
+      key: 'wireColor' | 'intersectColor', label: string, title: string,
+    ): HTMLElement => {
       const row = document.createElement('label');
-      row.className = 'topbar-menu-check';
-      row.dataset.shadePref = c.key;
-      row.title = c.title;
+      row.className = 'shading-menu-color-row';
+      row.dataset.shadeColor = key;
+      row.title = title;
+      const text = document.createElement('span');
+      text.className = 'shading-menu-slider-label';
+      text.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.className = 'shading-menu-color';
+      const rgb = shadePrefs[key];
+      input.value = `#${toHex(rgb[0])}${toHex(rgb[1])}${toHex(rgb[2])}`;
+      input.addEventListener('input', () => {
+        const h = input.value;
+        shadePrefs[key] = [
+          parseInt(h.slice(1, 3), 16) / 255,
+          parseInt(h.slice(3, 5), 16) / 255,
+          parseInt(h.slice(5, 7), 16) / 255,
+        ];
+        saveShadePrefs();
+      });
+      row.append(text, input);
+      return row;
+    };
+
+    // A plain indented toggle (checkbox) that writes a boolean pref.
+    const toggleRow = (
+      key: 'wireProximity', label: string, title: string,
+    ): HTMLElement => {
+      const row = document.createElement('label');
+      row.className = 'topbar-menu-check shading-menu-subcheck';
+      row.dataset.wireToggle = key;
+      row.title = title;
       const box = document.createElement('input');
       box.type = 'checkbox';
-      if (c.key === 'hiddenLine') {
-        // Per-mode: reflect + write the CURRENT shading mode's entry.
-        hiddenLineBox = box;
-        box.checked = shadePrefs.hiddenLine[this.renderer.shadingMode];
-        box.addEventListener('change', () => {
-          shadePrefs.hiddenLine[this.renderer.shadingMode] = box.checked;
-          saveShadePrefs();
-        });
-      } else {
-        box.checked = shadePrefs[c.key] as boolean;
-        box.addEventListener('change', () => {
-          (shadePrefs[c.key] as boolean) = box.checked;
-          saveShadePrefs();
-          if (c.key === 'ao') syncSliderState();
-        });
-      }
+      box.checked = shadePrefs[key];
+      box.addEventListener('change', () => { shadePrefs[key] = box.checked; saveShadePrefs(); });
       const text = document.createElement('span');
-      text.textContent = c.label;
+      text.textContent = label;
       row.append(box, text);
-      root.appendChild(row);
-      if (c.key === 'ao') {
-        // AO estimator selectors — Mode picks the family, Method (object only)
-        // picks the estimator. Both grey out with the AO checkbox.
+      return row;
+    };
+
+    // A collapsible disclosure section: a header row (▸/▾ + the feature's enable
+    // checkbox + label) and a body of controls, hidden when collapsed. The
+    // expanded state persists per section in shadePrefs.sections.
+    const makeSection = (
+      id: 'ao' | 'wire' | 'intersect',
+      prefKey: 'ao' | 'wireOverlay' | 'intersections',
+      label: string, title: string,
+      buildBody: (body: HTMLElement) => void,
+    ): void => {
+      const section = document.createElement('div');
+      section.className = 'shading-section';
+      section.dataset.section = id;
+      const header = document.createElement('div');
+      header.className = 'topbar-menu-check shading-section-header';
+      header.dataset.shadePref = prefKey;
+      header.title = title;
+      const caret = document.createElement('span');
+      caret.className = 'shading-disc';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = shadePrefs[prefKey] as boolean;
+      box.addEventListener('click', (e) => e.stopPropagation()); // don't toggle the section
+      box.addEventListener('change', () => {
+        (shadePrefs[prefKey] as boolean) = box.checked;
+        saveShadePrefs();
+        if (prefKey === 'ao') syncSliderState();
+      });
+      const text = document.createElement('span');
+      text.textContent = label;
+      header.append(caret, box, text);
+      const body = document.createElement('div');
+      body.className = 'shading-section-body';
+      const setExpanded = (v: boolean): void => {
+        caret.textContent = v ? '▾' : '▸';
+        body.style.display = v ? '' : 'none';
+      };
+      setExpanded(shadePrefs.sections[id]);
+      header.addEventListener('click', (e) => {
+        if (e.target === box) return;
+        const nv = !shadePrefs.sections[id];
+        shadePrefs.sections[id] = nv;
+        saveShadePrefs();
+        setExpanded(nv);
+      });
+      buildBody(body);
+      section.append(header, body);
+      root.appendChild(section);
+    };
+
+    // --- Ambient Occlusion section ---
+    makeSection('ao', 'ao', 'Ambient Occlusion',
+      'Screen-space AO in the shaded modes', (body) => {
         const selectRow = (
           label: string, dataAttr: 'shadeMode' | 'shadeMethod', title: string,
           fill: (sel: HTMLSelectElement) => void, onChange: (sel: HTMLSelectElement) => void,
@@ -219,7 +288,7 @@ export class ShadingMenu {
           },
           (sel) => { shadePrefs.aoMode = sel.value as AoMode; updateMethodVisibility(); },
         );
-        root.appendChild(mode.row);
+        body.appendChild(mode.row);
 
         const method = selectRow('Method', 'shadeMethod',
           'Object-AO estimator (used when Mode = Object)',
@@ -233,20 +302,64 @@ export class ShadingMenu {
           },
           (sel) => { shadePrefs.aoMethod = Number(sel.value); },
         );
-        root.appendChild(method.row);
+        body.appendChild(method.row);
 
         const updateMethodVisibility = (): void => {
           method.row.style.display = shadePrefs.aoMode === 'object' ? '' : 'none';
         };
         updateMethodVisibility();
 
-        root.appendChild(sliderRow('aoRadius', 'Radius', AO_RADIUS_RANGE, 0.05,
-          'AO sample radius (world units) — bigger reaches broader creases'));
-        root.appendChild(sliderRow('aoStrength', 'Strength', AO_STRENGTH_RANGE, 0.05,
-          'AO darkening amount — 0 off, 1 default, 2 doubled'));
-        root.appendChild(sliderRow('aoSamples', 'Samples', AO_SAMPLES_RANGE, 16,
-          'AO samples per pixel — more is cleaner, fewer is faster'));
-      }
+        body.appendChild(sliderRow('aoRadius', 'Radius', AO_RADIUS_RANGE, 0.05,
+          'AO sample radius (world units) — bigger reaches broader creases',
+          { attr: 'shadeSlider', greyWithAo: true }));
+        body.appendChild(sliderRow('aoStrength', 'Strength', AO_STRENGTH_RANGE, 0.05,
+          'AO darkening amount — 0 off, 1 default, 2 doubled',
+          { attr: 'shadeSlider', greyWithAo: true }));
+        body.appendChild(sliderRow('aoSamples', 'Samples', AO_SAMPLES_RANGE, 16,
+          'AO samples per pixel — more is cleaner, fewer is faster',
+          { attr: 'shadeSlider', greyWithAo: true }));
+      });
+
+    // --- Wireframe section ---
+    makeSection('wire', 'wireOverlay', 'Wireframe',
+      'Draw the edge wireframe over the shaded modes', (body) => {
+        body.appendChild(colorRow('wireColor', 'Color',
+          'Wire line color — drives wireframe mode + the overlay (the edit cage keeps its own colors)'));
+        body.appendChild(toggleRow('wireProximity', 'Thick to Thin',
+          'Scale wire width by proximity (off = a constant width = the Thick value)'));
+        body.appendChild(sliderRow('wireMinPx', 'Thin', WIRE_MIN_PX_RANGE, 0.1,
+          'Minimum wire half-width in pixels (near-far proximity floor)',
+          { attr: 'wireSlider' }));
+        body.appendChild(sliderRow('wireMaxPx', 'Thick', WIRE_MAX_PX_RANGE, 0.1,
+          'Maximum wire half-width in pixels (also the constant width when Thick to Thin is off)',
+          { attr: 'wireSlider' }));
+      });
+
+    // --- Intersections section ---
+    makeSection('intersect', 'intersections', 'Intersections',
+      'Draw light grey lines where meshes intersect each other', (body) => {
+        body.appendChild(colorRow('intersectColor', 'Color',
+          'Intersection line core color (the soft rim stays as-is)'));
+      });
+
+    // --- Hidden Line (plain per-mode checkbox, not a collapsible section) ---
+    {
+      const row = document.createElement('label');
+      row.className = 'topbar-menu-check';
+      row.dataset.shadePref = 'hiddenLine';
+      row.title = 'Hide wires + cage behind geometry (off = see the full mesh through it). Per shading mode.';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      hiddenLineBox = box;
+      box.checked = shadePrefs.hiddenLine[this.renderer.shadingMode];
+      box.addEventListener('change', () => {
+        shadePrefs.hiddenLine[this.renderer.shadingMode] = box.checked;
+        saveShadePrefs();
+      });
+      const text = document.createElement('span');
+      text.textContent = 'Hidden Line';
+      row.append(box, text);
+      root.appendChild(row);
     }
     syncSliderState();
 

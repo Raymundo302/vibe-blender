@@ -632,6 +632,13 @@ runE2e(async (t) => {
   await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.aoMode = 'screen'; p.aoMethod = 0; })()`);
   await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
   await t.sleep(80);
+  // UR9-1: AO controls now live under a collapsible section — expand it so the
+  // Method row's own display:none (vs section-collapsed) is what's measured.
+  await t.evaluate(`(() => {
+    const b = document.querySelector('.shading-section[data-section="ao"] .shading-section-body');
+    if (b && getComputedStyle(b).display === 'none') document.querySelector('.shading-section[data-section="ao"] .shading-disc').click();
+  })()`);
+  await t.sleep(40);
   const ui = await t.evaluate(`(() => {
     const modeSel = document.querySelector('select[data-shade-mode]');
     const methodSel = document.querySelector('select[data-shade-method]');
@@ -664,7 +671,8 @@ runE2e(async (t) => {
   }
 
   // (5) Persistence — driving the selects (object, method 4) fires their change
-  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v4'.
+  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v5' (UR9-1
+  // bumped the storage key from v4).
   const persisted = await t.evaluate(`(() => {
     const modeSel = document.querySelector('select[data-shade-mode]');
     const methodSel = document.querySelector('select[data-shade-method]');
@@ -672,9 +680,9 @@ runE2e(async (t) => {
       modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
       methodSel.value = '2'; methodSel.dispatchEvent(new Event('change'));
     }
-    return localStorage.getItem('vibe-shading-v4') || '';
+    return localStorage.getItem('vibe-shading-v5') || '';
   })()`);
-  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v4)',
+  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v5)',
     persisted.includes('"aoMode":"object"'), `stored=${persisted.slice(0, 90)}`);
 
   // Restore global state: close menu, revert selects to screen (re-persists),
@@ -1169,5 +1177,204 @@ runE2e(async (t) => {
     app.renderer.gizmoVisible = true;
     app.renderer.shadingMode = 'matcap';
     app.scene.deselectAll();
+  })()`);
+
+  // ===================================================================
+  // UR9-1: collapsible AO/Wireframe/Intersections sections + wire color,
+  // proximity toggle, Thin/Thick width, and intersection color.
+  // ===================================================================
+
+  // (1) DISCLOSURE — AO controls hidden until the section is expanded, and the
+  // expanded state persists across a reload (shadePrefs.sections).
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  // Earlier blocks may have expanded the AO section; reset to the collapsed
+  // default before the fresh menu is built so the default-collapsed check holds.
+  await t.evaluate(`window.__app.shadePrefs.sections = { ao: false, wire: false, intersect: false }`);
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
+  await t.sleep(80);
+  const bodyDisplay = (sec) => t.evaluate(`(() => {
+    const b = document.querySelector('.shading-section[data-section="${sec}"] .shading-section-body');
+    return b ? getComputedStyle(b).display : 'no-body';
+  })()`);
+  t.check('UR9 (1) three disclosure sections exist (ao/wire/intersect)',
+    (await t.evaluate(`[...document.querySelectorAll('.shading-section')].map((s)=>s.dataset.section).join(',')`)) === 'ao,wire,intersect');
+  t.check('UR9 (1) AO section controls hidden while collapsed (default)',
+    (await bodyDisplay('ao')) === 'none');
+  t.check('UR9 (1) AO radius slider not visible while collapsed',
+    await t.evaluate(`(() => { const s = document.querySelector('[data-shade-slider="aoRadius"]'); return s ? s.offsetParent === null : 'no-slider'; })()`) === true);
+  // Expand by clicking the disclosure caret (NOT the enable checkbox).
+  await t.evaluate(`document.querySelector('.shading-section[data-section="ao"] .shading-disc').click()`);
+  await t.sleep(60);
+  t.check('UR9 (1) expanding the AO section reveals its controls',
+    (await bodyDisplay('ao')) !== 'none');
+  t.check('UR9 (1) expanded state written to prefs',
+    await t.evaluate(`window.__app.shadePrefs.sections.ao === true`));
+  await t.key('Escape', 'Escape', 0);
+  await t.sleep(40);
+
+  // Persistence across reload.
+  await t.reload();
+  await t.sleep(200);
+  await t.key('Escape', 'Escape', 0); // dismiss splash
+  t.check('UR9 (1) sections.ao persisted across reload',
+    await t.until(`window.__app && window.__app.shadePrefs.sections.ao === true`));
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
+  await t.sleep(80);
+  t.check('UR9 (1) AO section reopens EXPANDED after reload',
+    (await t.evaluate(`(() => { const b = document.querySelector('.shading-section[data-section="ao"] .shading-section-body'); return b ? getComputedStyle(b).display : 'no-body'; })()`)) !== 'none');
+  await t.key('Escape', 'Escape', 0);
+  // Collapse it again so nothing downstream depends on the expanded state.
+  await t.evaluate(`window.__app.shadePrefs.sections.ao = false`);
+
+  // --- Wire scene: single cube, wireframe mode, distance-3 framing (the UR6
+  // probe proves both the near and far vertical edges stay on-screen here). The
+  // wire is driven bright RED so the width probe detects it by COLOR (a red run),
+  // independent of the dark wireframe background. Reused for (2)-(4). -----------
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) { if (S.editMode) S.exitEditMode(); S.remove(o.id); }
+    const prim = await import('/src/core/mesh/primitives.ts');
+    S.add('U9Cube', prim.makeCube(1));
+    S.deselectAll();
+    const cam = window.__app.camera;
+    cam.yaw = 0.5; cam.pitch = 0.4; cam.distance = 3;
+    const app = window.__app;
+    app.renderer.shadingMode = 'wireframe';
+    app.shadePrefs.wireOverlay = false;
+    app.shadePrefs.hiddenLine = { matcap:true, studio:true, rendered:true, wireframe:false };
+    app.shadePrefs.wireProximity = true;
+    app.shadePrefs.wireMinPx = 0.6; app.shadePrefs.wireMaxPx = 3.5;
+    app.shadePrefs.wireColor = [1, 0, 0];   // bright red for the color + width probes
+    window.__u9cube = true;
+  })()`);
+  t.check('UR9 wire scene ready',
+    await t.until(`window.__u9cube && window.__app.scene.objects.length === 1`));
+  await t.sleep(120);
+
+  // Probe the 4 vertical (z-varying) cube edges: sort by depth, scan a horizontal
+  // strip across the nearest + farthest one. Returns the longest RED run (px
+  // width) and the peak red channel.
+  const wireRedProbe = () => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas, S = app.scene;
+    app.renderer.render(S, app.camera);
+    const obj = S.objects[0];
+    const wm = S.worldMatrix(obj).m, m = app.renderer.currentViewProj(S, app.camera).m;
+    const corners = [[1,1],[1,-1],[-1,1],[-1,-1]];
+    const edges = corners.map(([x,y]) => {
+      const wx=wm[0]*x+wm[4]*y+wm[12], wy=wm[1]*x+wm[5]*y+wm[13], wz=wm[2]*x+wm[6]*y+wm[14];
+      const cx=m[0]*wx+m[4]*wy+m[8]*wz+m[12];
+      const cy=m[1]*wx+m[5]*wy+m[9]*wz+m[13];
+      const cw=m[3]*wx+m[7]*wy+m[11]*wz+m[15];
+      return { px:(cx/cw*0.5+0.5)*c.width, py:(cy/cw*0.5+0.5)*c.height, depth:cw };
+    }).sort((a,b)=>a.depth-b.depth);
+    const scan = (e) => {
+      const py = Math.round(e.py);
+      const x0 = Math.max(0, Math.round(e.px)-16);
+      const W = Math.min(c.width-x0, 33);
+      const buf = new Uint8Array(W*4);
+      gl.readPixels(x0, py, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let best=0, run=0, redMax=0;
+      for (let i=0;i<W;i++){
+        const R=buf[i*4],G=buf[i*4+1],B=buf[i*4+2];
+        const isRed = R>110 && (R-G)>70 && (R-B)>70;
+        if (isRed){run++; if(run>best)best=run;} else run=0;
+        if (isRed && R>redMax) redMax=R;
+      }
+      return { width: best, redMax };
+    };
+    return { near: scan(edges[0]), far: scan(edges[edges.length-1]) };
+  })()`);
+
+  // (2) wireColor bright red → wireframe-mode wire pixels are red.
+  await t.sleep(60);
+  const redProbe = await wireRedProbe();
+  await t.screenshot('research/ur9-red-wires.png');
+  console.log(`      [UR9] red wire near.redMax=${redProbe.near.redMax} far.redMax=${redProbe.far.redMax} nearW=${redProbe.near.width}`);
+  t.check('UR9 (2) wireColor red → wireframe wire pixels are red',
+    redProbe.near.redMax > 150, `near.redMax=${redProbe.near.redMax}`);
+
+  // Cage colors unchanged: enter edit mode with red wireColor still set, select
+  // all edges — the cage stays ORANGE (its own color), not red (orangeInEditBBox
+  // rejects red because red's G≈0 fails the orange test).
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    const cube = S.objects[0];
+    S.enterEditMode(cube.id);
+    const e = S.editMode; e.elementMode = 'edge'; e.edges.clear();
+    for (const k of cube.mesh.edges().keys()) e.edges.add(k);
+    e.touch();
+  })()`);
+  await t.until(`(() => { const e = window.__app.scene.editMode; return !!e && e.edges.size >= 12; })()`);
+  await t.sleep(60);
+  const cageOrange = await orangeInEditBBox();
+  console.log(`      [UR9] cage orange pixels (red wireColor set) = ${cageOrange}`);
+  t.check('UR9 (2) edit cage keeps its own orange color (not driven by wireColor)',
+    cageOrange > 10, `orange=${cageOrange}`);
+  await t.evaluate(`(() => { const S = window.__app.scene; if (S.editMode) S.exitEditMode(); S.deselectAll(); })()`);
+  await t.sleep(60);
+
+  // (3) wireProximity OFF → near and far edge widths EQUAL (both clamp bounds =
+  // wireMaxPx, so every edge is a constant width regardless of depth).
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.wireProximity = false; p.wireMaxPx = 3.5; })()`);
+  await t.sleep(60);
+  const eqProbe = await wireRedProbe();
+  console.log(`      [UR9] proximity OFF: nearW=${eqProbe.near.width} farW=${eqProbe.far.width}`);
+  t.check('UR9 (3) proximity off → near and far edge widths are equal',
+    Math.abs(eqProbe.near.width - eqProbe.far.width) <= 1,
+    `nearW=${eqProbe.near.width} farW=${eqProbe.far.width}`);
+
+  // (4) wireMaxPx 6 → the (capped) near edge grows. Baseline cap 1 clamps the
+  // near edge hard; raising the cap to 6 lets its proximity width through.
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.wireProximity = true; p.wireMinPx = 0.6; p.wireMaxPx = 1; })()`);
+  await t.sleep(60);
+  const capLow = await wireRedProbe();
+  await t.evaluate(`window.__app.shadePrefs.wireMaxPx = 6`);
+  await t.sleep(60);
+  const capHigh = await wireRedProbe();
+  console.log(`      [UR9] near width cap1=${capLow.near.width} cap6=${capHigh.near.width}`);
+  t.check('UR9 (4) raising wireMaxPx to 6 widens the near edge wire',
+    capHigh.near.width > capLow.near.width + 1,
+    `cap1=${capLow.near.width} cap6=${capHigh.near.width}`);
+
+  // Restore wire defaults.
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.wireProximity = true; p.wireMinPx = 0.6; p.wireMaxPx = 3.5; p.wireColor = [0.05,0.05,0.06]; })()`);
+
+  // (5) intersectColor CYAN → the intersection ribbon draws cyan. Plane-through-
+  // cube scene, matcap; count cyan pixels appearing on the cut line.
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) { if (S.editMode) S.exitEditMode(); S.remove(o.id); }
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    const cube = S.add('U9Cube', prim.makeCube(1));
+    const pl = S.add('U9CutPlane', prim.makePlane(3));
+    pl.transform = pl.transform.withPosition(new V(0, 0, 0.3));
+    S.deselectAll();
+    const cam = window.__app.camera; cam.yaw = 0.785; cam.pitch = 0.5; cam.distance = 7;
+    window.__app.renderer.shadingMode = 'matcap';
+  })()`);
+  t.check('UR9 (5) intersect scene: cut plane landed',
+    await t.until(`window.__app.scene.objects.some((o) => o.name === 'U9CutPlane')`));
+  await t.sleep(160);
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.intersectColor = [0,1,1]; p.intersections = true; })()`);
+  await t.sleep(180);
+  const cyanBlk = await faceBlock(0.2, -1.0, 0.3, 12);
+  let cyanN = 0;
+  for (let i = 0; i < cyanBlk.length; i += 4) {
+    const R = cyanBlk[i], G = cyanBlk[i + 1], B = cyanBlk[i + 2];
+    if (G > 140 && B > 140 && R < 120 && (G - R) > 50 && (B - R) > 50) cyanN++;
+  }
+  await t.screenshot('research/ur9-cyan-intersect.png');
+  console.log(`      [UR9] cyan intersection pixels = ${cyanN}`);
+  t.check('UR9 (5) intersectColor cyan → intersection ribbon pixels are cyan',
+    cyanN >= 5, `cyan=${cyanN}`);
+
+  // Cleanup.
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) { if (S.editMode) S.exitEditMode(); S.remove(o.id); }
+    const p = window.__app.shadePrefs;
+    p.intersections = false; p.intersectColor = [0.45,0.45,0.48];
+    window.__app.renderer.shadingMode = 'matcap';
   })()`);
 });

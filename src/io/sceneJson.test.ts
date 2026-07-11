@@ -131,12 +131,51 @@ describe('sceneJson round trip', () => {
   });
 });
 
+describe('sceneJson v14 text objects', () => {
+  function makeTextScene(): { scene: Scene; camera: OrbitCamera } {
+    const scene = new Scene();
+    const t = scene.addText('Hello', {
+      content: 'Hi\nthere', font: 'Georgia', size: 0.4, wrap: true, wrapWidth: 8,
+      align: 'center', style: 'both', faceColor: [0.9, 0.1, 0.2], outlineColor: [0, 0, 0.5],
+      thickness: 0.2,
+    });
+    // Give it a small non-empty "generated" mesh so mesh round-trip is exercised.
+    t.mesh = makeCube(0.5);
+    scene.selectOnly(t.id);
+    return { scene, camera: new OrbitCamera() };
+  }
+
+  it('round-trips the text payload (byte-identical serialize→apply→serialize)', () => {
+    const src = makeTextScene();
+    const s1 = serializeScene(src.scene, src.camera);
+    const dst = new Scene();
+    const dstCam = new OrbitCamera();
+    applySceneJson(s1, dst, dstCam);
+    const s2 = serializeScene(dst, dstCam);
+    expect(s2).toBe(s1);
+
+    const t = dst.objects[0];
+    expect(t.kind).toBe('text');
+    expect(t.text).toEqual(src.scene.objects[0].text);
+    // The generated mesh survives verbatim (headless load keeps the stored mesh).
+    expect([...t.mesh.faces.keys()]).toEqual([...src.scene.objects[0].mesh.faces.keys()]);
+  });
+
+  it('rejects a text object missing its payload', () => {
+    const src = makeTextScene();
+    const json = serializeScene(src.scene, src.camera);
+    const broken = JSON.parse(json);
+    delete broken.objects[0].text;
+    expect(() => applySceneJson(JSON.stringify(broken), new Scene(), new OrbitCamera())).toThrow();
+  });
+});
+
 describe('sceneJson format v2 modifiers', () => {
   it('writes the current format version', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(13);
+    expect(parsed.version).toBe(14);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -757,7 +796,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(13);
+    expect(json.version).toBe(14);
   });
 
   it('round-trips a shadeless material', () => {
@@ -848,7 +887,7 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
 
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(13);
+    expect(json.version).toBe(14);
     expect(json.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });

@@ -4,6 +4,7 @@ import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
 import { CAMERA_SPAWN_ROTATION, type LightType } from '../core/scene/objectData';
 import { pickImagePlane, type ImagePlaneMode } from '../tools/imagePlane';
+import { regenerateTextMesh } from '../tools/textObject';
 import { WebAddDialog } from './webAddDialog';
 import { OpPanel } from './opPanel';
 
@@ -82,6 +83,14 @@ export class AddMenu {
     // Empty (UR5-7): a null object for rigging/targeting (DoF focus, look-at).
     this.directItem('Empty', () =>
       this.commitAdd('Empty', this.opts.scene.addEmpty('Empty')));
+    // Text (UR8-2): a text object spawning "Text" (face style, thickness 0.05).
+    // Generate its mesh right away so it appears immediately (canvas is live in
+    // the UI; the frame-loop driver keeps it in sync on later edits).
+    this.directItem('Text', () => {
+      const obj = this.opts.scene.addText('Text');
+      regenerateTextMesh(obj);
+      this.commitAdd('Text', obj);
+    });
 
     // Position at the pointer, then clamp so the menu stays inside the host.
     this.root.style.left = `${opts.x}px`;

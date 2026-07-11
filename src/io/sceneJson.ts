@@ -15,6 +15,7 @@ import type {
   LightType,
   Material,
   ObjectKind,
+  TextData,
 } from '../core/scene/objectData';
 import { clampHtmlFps } from '../core/scene/objectData';
 import {
@@ -44,8 +45,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 13;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+const VERSION = 14;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -177,6 +178,22 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
   if (obj.light) out.light = serializeLight(obj.light);
   if (obj.camera) out.camera = serializeCamera(obj.camera, scene);
   if (obj.empty) out.empty = { displaySize: num(obj.empty.displaySize) };
+  // Text payload (v14/UR8-2) — the source of truth for a text object's mesh
+  // (the mesh is serialized too, but regenerated from this on the first frame).
+  if (obj.text) {
+    out.text = {
+      content: obj.text.content,
+      font: obj.text.font,
+      size: num(obj.text.size),
+      wrap: obj.text.wrap,
+      wrapWidth: num(obj.text.wrapWidth),
+      align: obj.text.align,
+      style: obj.text.style,
+      faceColor: rgb(obj.text.faceColor),
+      outlineColor: rgb(obj.text.outlineColor),
+      thickness: num(obj.text.thickness),
+    };
+  }
   // HTML-plane payload (v13/UR7-1). kind 'file' serializes the full source text.
   if (obj.html) {
     out.html = {
@@ -386,6 +403,7 @@ interface ObjectData {
   camera?: CameraData;
   empty?: EmptyData;
   html?: HtmlPlaneData;
+  text?: TextData;
 }
 interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
@@ -728,6 +746,32 @@ function parseHtml(v: unknown, i: number): HtmlPlaneData {
   };
 }
 
+/** Parse an object's TextData payload (kind 'text' only, v14/UR8-2). */
+function parseText(v: unknown, i: number): TextData {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(`objects[${i}].text must be an object`);
+  const t = v as Record<string, unknown>;
+  if (typeof t.content !== 'string') fail(`objects[${i}].text.content must be a string`);
+  if (typeof t.font !== 'string') fail(`objects[${i}].text.font must be a string`);
+  if (t.align !== 'left' && t.align !== 'center' && t.align !== 'right' && t.align !== 'justify') {
+    fail(`objects[${i}].text.align must be left|center|right|justify`);
+  }
+  if (t.style !== 'face' && t.style !== 'outline' && t.style !== 'both') {
+    fail(`objects[${i}].text.style must be face|outline|both`);
+  }
+  return {
+    content: t.content,
+    font: t.font,
+    size: numField(t.size, `objects[${i}].text.size`),
+    wrap: t.wrap === true,
+    wrapWidth: numField(t.wrapWidth, `objects[${i}].text.wrapWidth`),
+    align: t.align,
+    style: t.style,
+    faceColor: numArray(t.faceColor, 3, `objects[${i}].text.faceColor`) as [number, number, number],
+    outlineColor: numArray(t.outlineColor, 3, `objects[${i}].text.outlineColor`) as [number, number, number],
+    thickness: Math.max(0, numField(t.thickness, `objects[${i}].text.thickness`)),
+  };
+}
+
 /** Parse an object's EmptyData payload (kind 'empty' only). */
 function parseEmpty(v: unknown, i: number): EmptyData {
   if (typeof v !== 'object' || v === null) fail(`objects[${i}].empty is missing`);
@@ -745,8 +789,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   // kind: absent (v1/v2) → 'mesh'; otherwise validated.
   let kind: ObjectKind = 'mesh';
   if (obj.kind !== undefined) {
-    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty') {
-      fail(`objects[${i}].kind must be one of mesh, light, camera, empty`);
+    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty' && obj.kind !== 'text') {
+      fail(`objects[${i}].kind must be one of mesh, light, camera, empty, text`);
     }
     kind = obj.kind;
   }
@@ -868,6 +912,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   if (kind === 'light') data.light = parseLight(obj.light, i);
   if (kind === 'camera') data.camera = parseCamera(obj.camera, i);
   if (kind === 'empty') data.empty = obj.empty === undefined ? { displaySize: 1 } : parseEmpty(obj.empty, i);
+  // Text payload (v14/UR8-2) — required for kind 'text'.
+  if (kind === 'text') data.text = parseText(obj.text, i);
   // HTML plane (v13/UR7-1) — a mesh object with an html payload; absent in older
   // files, so pre-UR7 image planes stay plain static image planes.
   if (obj.html !== undefined) data.html = parseHtml(obj.html, i);
@@ -1080,9 +1126,9 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   // before the first scene mutation, so a bad file can never half-load.
   const built = data.objects.map((od) => ({
     od,
-    // Only mesh-kind objects carry geometry; lights/cameras get an empty mesh
-    // from scene.addLight/addCamera.
-    mesh: od.kind === 'mesh' ? buildMesh(od.mesh) : null,
+    // Mesh-kind AND text objects carry geometry; lights/cameras/empties get an
+    // empty mesh from the scene.addX helper.
+    mesh: od.kind === 'mesh' || od.kind === 'text' ? buildMesh(od.mesh) : null,
     modifiers: od.modifiers.map(buildModifier),
   }));
 
@@ -1151,6 +1197,13 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       obj = scene.addCamera(od.name, { ...od.camera! });
     } else if (od.kind === 'empty') {
       obj = scene.addEmpty(od.name, { ...od.empty! });
+    } else if (od.kind === 'text') {
+      // Restore the payload AND the last-generated mesh verbatim (byte-identical
+      // round trips). The text driver re-derives the mesh from the payload on the
+      // first frame; for a headless/Node load there is no driver, so the stored
+      // mesh stands in.
+      obj = scene.addText(od.name, { ...od.text!, faceColor: [...od.text!.faceColor], outlineColor: [...od.text!.outlineColor] });
+      obj.mesh = mesh!;
     } else {
       obj = scene.add(od.name, mesh!);
     }

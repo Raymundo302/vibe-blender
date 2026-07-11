@@ -53,3 +53,30 @@
 }
 .shading-menu-select:hover { background: var(--vb-hover, #4a4a4a); }
 .shading-menu-select:disabled { cursor: default; }
+
+/* Collapsible disclosure sections (AO / Wireframe / Intersections). */
+.shading-section-header { cursor: pointer; user-select: none; }
+.shading-disc {
+  display: inline-block;
+  width: 12px; flex: none;
+  text-align: center;
+  color: var(--vb-text-dim, #8a8a8a);
+  font-size: 9px;
+}
+.shading-section-body { display: block; }
+
+/* Sub-checkbox (e.g. Thick to Thin) indented under a section, like the sliders. */
+.shading-menu-subcheck { padding-left: 26px; font-size: 11px; }
+
+/* Color-input rows — match the slider rows (label left, swatch right). */
+.shading-menu-color-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 10px 2px 26px; /* indented under the section header */
+  font-size: 11px; color: var(--vb-text, #d0d0d0);
+  cursor: pointer;
+}
+.shading-menu-color {
+  flex: none; width: 40px; height: 18px;
+  padding: 0; border: 1px solid var(--vb-border, #2a2a2a);
+  border-radius: 3px; background: none; cursor: pointer;
+}

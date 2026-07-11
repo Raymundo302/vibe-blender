@@ -18,6 +18,9 @@ import './ui/materialTab'; // side-effect: registers the Material properties tab
 import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
 import './ui/cameraTab'; // side-effect: registers the Camera data tab (P8-2)
 import './ui/worldTab'; // side-effect: registers the World tab (P10-4)
+import './ui/textTab'; // side-effect: registers the Text data tab (UR8-2)
+import { TextDriver, regenerateTextMesh } from './tools/textObject'; // UR8-2 text mesh regen
+import { applyAnimation } from './core/anim/sampler';
 import { initRenderEngine } from './renderEngine/init'; // F12 render engine (P8-4)
 import { AnimRender } from './renderEngine/animRender'; // 🎞 Render Animation (P16-1)
 import { HtmlPlaneDriver } from './tools/htmlPlaneDriver'; // UR7-1 HTML-plane playback
@@ -228,6 +231,10 @@ const renderEngine = initRenderEngine({ scene, camera, setStatus: opCtx.setStatu
 // await the GL texture upload too.
 const htmlDriver = new HtmlPlaneDriver(scene, renderer);
 
+// UR8-2: text-object mesh regeneration — rebuilds each text object's mesh from
+// its payload whenever the payload changes (incl. a sampled text.thickness).
+const textDriver = new TextDriver(scene);
+
 // 🎞 Render Animation (P16-1): frame loop → WebM / PNG-zip, modal + Ctrl+F12.
 const animRender = new AnimRender({
   scene, camera, renderer, gl: ctx.gl, canvas,
@@ -336,7 +343,7 @@ const editorFactories: EditorFactory[] = [
     type: 'properties',
     title: 'Properties',
     create: () => {
-      const editor = new PropertiesEditor({ scene, undo });
+      const editor = new PropertiesEditor({ scene, undo, setStatus: opCtx.setStatus });
       return wrapPanel('Properties', editor);
     },
   },
@@ -420,6 +427,14 @@ topbar.mountTabs(workspaces.createTabs());
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
   input: inputManager,
   htmlDriver,
+  // UR8-2 text handle for e2e: force a synchronous mesh rebuild (no RAF wait)
+  // and apply-a-frame-then-sync (for keyed text.thickness scrub checks).
+  text: {
+    driver: textDriver,
+    sync: () => textDriver.syncAll(),
+    regenerate: (id: number) => { const o = scene.get(id); if (o) regenerateTextMesh(o); },
+    setFrame: (f: number) => { scene.frameCurrent = f; applyAnimation(scene, f); textDriver.syncAll(); },
+  },
   nodes: createNodesApi({ scene, undo }),
   animRender: {
     render: (opts: Parameters<typeof animRender.render>[0]) => animRender.render(opts),
@@ -442,6 +457,7 @@ topbar.mountTabs(workspaces.createTabs());
 
 function frame(): void {
   htmlDriver.tick();
+  textDriver.tick();
   renderer.render(scene, camera);
   workspaces.update();
   topbar.update();

@@ -39,10 +39,12 @@ function hexToRgb(hex: string): [number, number, number] {
  * registry holds only tab *descriptors*, never live elements).
  */
 
-/** Context handed to every tab's build(): the shared scene + undo stack. */
+/** Context handed to every tab's build(): the shared scene + undo stack, plus an
+ *  optional status setter (UR8-2 Convert to Mesh reports through it). */
 export interface PropertiesTabContext {
   scene: Scene;
   undo: UndoStack;
+  setStatus?: (text: string) => void;
 }
 
 /** A registered properties tab. build() constructs its content into `container`. */

@@ -8,7 +8,7 @@ import type { Transform } from '../math/transform';
  * and the path tracer (P8-4) can consume these without touching the renderer.
  */
 
-export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty';
+export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty' | 'text';
 
 export type LightType = 'point' | 'sun' | 'spot';
 
@@ -101,6 +101,57 @@ export interface EmptyData {
 
 export function defaultEmpty(): EmptyData {
   return { displaySize: 1 };
+}
+
+/**
+ * Text-object payload (UR8-2): what makes a SceneObject a text object. The
+ * object's mesh is REGENERATED from these fields by buildTextMesh (UR8-1) on any
+ * payload change — the payload is the source of truth, the mesh is derived. Plain
+ * data only (serialized into the scene, sampled by the animation channel
+ * `text.thickness`). Precedent: light/camera/empty payloads. Set iff the object
+ * is kind 'text'; absent on every other kind and in scenes saved before UR8-2.
+ */
+export interface TextData {
+  /** The string; `\n` starts a new line. */
+  content: string;
+  /** Font family name (probed for availability; canvas falls back when absent). */
+  font: string;
+  /** World units per em (glyph size). */
+  size: number;
+  /** Word-wrap toggle (off by default). */
+  wrap: boolean;
+  /** Wrap column in em units — used only when `wrap` is on. */
+  wrapWidth: number;
+  align: 'left' | 'center' | 'right' | 'justify';
+  /** face = filled caps + walls; outline = hollow band; both = face + band. */
+  style: 'face' | 'outline' | 'both';
+  /** Linear RGB 0..1 of the filled faces. */
+  faceColor: [number, number, number];
+  /** Linear RGB 0..1 of the outline band. */
+  outlineColor: [number, number, number];
+  /** Extrude depth in world units — the KEYABLE `text.thickness` channel. */
+  thickness: number;
+}
+
+/** Fresh payload for a newly-added text object (Shift+A default). */
+export function defaultTextData(): TextData {
+  return {
+    content: 'Text',
+    font: 'monospace',
+    size: 0.5,
+    wrap: false,
+    wrapWidth: 12,
+    align: 'left',
+    style: 'face',
+    faceColor: [1, 1, 1],
+    outlineColor: [0, 0, 0],
+    thickness: 0.05,
+  };
+}
+
+/** Deep copy of a TextData (its non-primitives are the two color triples). */
+export function cloneTextData(t: TextData): TextData {
+  return { ...t, faceColor: [...t.faceColor], outlineColor: [...t.outlineColor] };
 }
 
 /**

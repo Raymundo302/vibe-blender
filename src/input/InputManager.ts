@@ -56,6 +56,8 @@ import { TransformCommand } from '../core/undo/commands';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
 import { pageModeState } from '../tools/pageMode';
+import { textEditState, TextEditSession } from '../tools/textEdit';
+import { TextCommand } from '../core/undo/textCommands';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
 import { SeparateCommand } from '../core/undo/separateCommand';
 
@@ -1030,7 +1032,30 @@ export class InputManager {
     this.ctx.camera.zoom(e.deltaY);
   }
 
+  /** Finish a Text Edit session (Tab/Esc): clear the mode, and push ONE undo
+   *  entry for the whole session iff the content actually changed. */
+  private exitTextEdit(): void {
+    const s = textEditState.session;
+    textEditState.session = null;
+    this.ctx.setStatus('');
+    if (s && s.changed() && s.object.text) {
+      this.ctx.undo.push(TextCommand.fromSnapshots('Edit Text', s.object, s.payloadAtEntry, s.object.text));
+    }
+  }
+
   private onKeyDown(e: KeyboardEvent): void {
+    // Text Edit mode (UR8-2) owns the keyboard: every key is swallowed so no
+    // viewport shortcut fires (F1 must not open help), Tab/Esc finish the
+    // session, and printable/Backspace/Enter/arrows edit the content at the
+    // caret. Sits FIRST — before the help overlay — so nothing leaks while typing.
+    if (textEditState.session) {
+      e.preventDefault();
+      if (e.key === 'Tab' || e.key === 'Escape') this.exitTextEdit();
+      // Chorded keys (Ctrl+S/Ctrl+Z…) are swallowed but must not INSERT the
+      // literal letter into the text.
+      else if (!e.ctrlKey && !e.metaKey && !e.altKey) textEditState.session.handleKey(e.key);
+      return;
+    }
     // Help overlay owns the keyboard while open: swallow EVERY key so nothing
     // leaks to the viewport (a modal G must not start a move). F1 or Escape
     // closes it. This sits before the activeOp branch so Escape closes the
@@ -1125,6 +1150,13 @@ export class InputManager {
       if (!scene.editMode && active?.html) {
         pageModeState.object = active;
         this.ctx.setStatus('Page Mode — scroll to browse, Tab/Esc to exit');
+        return;
+      }
+      // Text object active → Text Edit mode (type into content), NOT mesh edit
+      // (a text object has no editable base mesh; its mesh is generated).
+      if (!scene.editMode && active?.kind === 'text' && active.text) {
+        textEditState.session = new TextEditSession(active);
+        this.ctx.setStatus('Editing text — Tab/Esc to finish');
         return;
       }
       if (scene.editMode) {

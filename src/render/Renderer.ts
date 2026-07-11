@@ -694,6 +694,11 @@ export class Renderer {
     // fill) so it occludes other objects normally. -1 = nothing being edited.
     const editSkipId = scene.editObject?.id ?? -1;
     const hiddenLine = shadePrefs.hiddenLine[this.shadingMode];
+    // Wire look from prefs (UR9-1): color + ribbon clamp bounds. Proximity off
+    // → both bounds = wireMaxPx so every edge draws at a constant width.
+    const wireColor = new Vec3(shadePrefs.wireColor[0], shadePrefs.wireColor[1], shadePrefs.wireColor[2]);
+    const wireMinPx = shadePrefs.wireProximity ? shadePrefs.wireMinPx : shadePrefs.wireMaxPx;
+    const wireMaxPx = shadePrefs.wireMaxPx;
 
     // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
     // no fill; matcap/studio fill triangles with their respective shaders.
@@ -713,7 +718,7 @@ export class Renderer {
       }
       // Anti-aliased ribbons (UR6-1), blended for the soft AA rim.
       this.wirePass.begin(view, proj, hiddenLine ? 0.002 : 0, hiddenLine,
-        canvas.width, canvas.height, camera.distance);
+        canvas.width, canvas.height, camera.distance, wireColor, wireMinPx, wireMaxPx);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       for (const obj of visible) {
@@ -793,11 +798,11 @@ export class Renderer {
     if (shadePrefs.wireOverlay && this.shadingMode !== 'wireframe') {
       if (hiddenLine) {
         this.wirePass.begin(view, proj, 0.002, true,
-          canvas.width, canvas.height, camera.distance);
+          canvas.width, canvas.height, camera.distance, wireColor, wireMinPx, wireMaxPx);
       } else {
         gl.disable(gl.DEPTH_TEST);
         this.wirePass.begin(view, proj, 0, false,
-          canvas.width, canvas.height, camera.distance);
+          canvas.width, canvas.height, camera.distance, wireColor, wireMinPx, wireMaxPx);
       }
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -820,7 +825,8 @@ export class Renderer {
       if (this.intersectionLines) {
         // Blended for the ribbon's anti-aliased edges (grid-pass pattern);
         // depth writes off so the soft rim can't shadow later overlays.
-        this.intersectPass.begin(view, proj, 0.004, canvas.width, canvas.height);
+        this.intersectPass.begin(view, proj, 0.004, canvas.width, canvas.height,
+          new Vec3(shadePrefs.intersectColor[0], shadePrefs.intersectColor[1], shadePrefs.intersectColor[2]));
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         gl.depthMask(false);
