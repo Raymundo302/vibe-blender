@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 9,
+  "version": 12,
   "camera": {
     "target": [
       -0.092805,
@@ -41,6 +41,10 @@
   "frameStart": 1,
   "frameEnd": 120,
   "frameCurrent": 1,
+  "renderSettings": {
+    "width": 960,
+    "height": 540
+  },
   "collections": [],
   "materials": [
     {
