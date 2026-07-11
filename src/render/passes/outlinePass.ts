@@ -34,27 +34,36 @@ uniform sampler2D u_mask;
 uniform vec2 u_texelSize;
 uniform vec3 u_selectionColor;
 out vec4 outColor;
+// --- Outline width/smoothness constants (UR6-1; expect eyes-on tuning). ------
+// OUTER_R is the outer sampling radius in texels ≈ px at DPR 1 → the outline
+// reads ~3px (was 1.5, i.e. ~1.5–2× thicker). A double ring (8 taps at OUTER_R,
+// 8 at INNER_FRAC·OUTER_R, angularly offset by 22.5°) samples coverage at two
+// distances so the averaged falloff is smoother than the old single 8-tap ring.
+const float OUTER_R = 3.0;
+const float INNER_FRAC = 0.6;
+const float COVERAGE_GAIN = 2.2; // averaged-coverage → alpha (kept from before)
 void main() {
   vec2 uv = gl_FragCoord.xy * u_texelSize;
   float center = texture(u_mask, uv).r;
   if (center > 0.5) discard; // interior stays clear — outline sits just outside
-  // Averaged 8-tap circular kernel instead of a binary max: coverage falls off
-  // with distance from the silhouette, giving the outline a soft (anti-aliased)
-  // edge instead of a hard 1-bit staircase.
-  float w = 1.5;
-  float d = w * 0.7071; // diagonal taps at the same radius → circular kernel
+  // 16-tap double-ring circular kernel: coverage (fraction of taps inside the
+  // silhouette) falls off with distance, giving a soft, thicker anti-aliased
+  // outline instead of a hard 1-bit staircase.
+  const float C = 0.92388, S = 0.38268; // cos/sin 22.5° for the offset ring
+  vec2 outer[8] = vec2[8](
+    vec2( 1.0, 0.0), vec2( 0.70711, 0.70711), vec2(0.0,  1.0), vec2(-0.70711, 0.70711),
+    vec2(-1.0, 0.0), vec2(-0.70711,-0.70711), vec2(0.0, -1.0), vec2( 0.70711,-0.70711));
+  vec2 inner[8] = vec2[8](
+    vec2( C, S), vec2( S, C), vec2(-S, C), vec2(-C, S),
+    vec2(-C,-S), vec2(-S,-C), vec2( S,-C), vec2( C,-S));
   float n = 0.0;
-  n += texture(u_mask, uv + vec2( w, 0.0) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2(-w, 0.0) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2(0.0,  w) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2(0.0, -w) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2( d,  d) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2(-d,  d) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2( d, -d) * u_texelSize).r;
-  n += texture(u_mask, uv + vec2(-d, -d) * u_texelSize).r;
-  float edge = n / 8.0; // fraction of the kernel inside the silhouette
+  for (int i = 0; i < 8; i++) {
+    n += texture(u_mask, uv + outer[i] * OUTER_R * u_texelSize).r;
+    n += texture(u_mask, uv + inner[i] * (INNER_FRAC * OUTER_R) * u_texelSize).r;
+  }
+  float edge = n / 16.0; // fraction of the kernel inside the silhouette
   if (edge <= 0.001) discard;
-  outColor = vec4(u_selectionColor, clamp(edge * 2.2, 0.0, 1.0));
+  outColor = vec4(u_selectionColor, clamp(edge * COVERAGE_GAIN, 0.0, 1.0));
 }`;
 
 export class OutlinePass {

@@ -4,6 +4,7 @@ import { MeshPass } from './passes/meshPass';
 import { StudioPass } from './passes/studioPass';
 import { WirePass } from './passes/wirePass';
 import { IntersectPass, segmentsToRibbon } from './passes/intersectPass';
+import { buildWireRibbon } from './passes/ribbon';
 import { GridPass } from './passes/gridPass';
 import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
@@ -42,8 +43,12 @@ import { Vec3 } from '../core/math/vec3';
 
 interface GpuMesh {
   triangles: VertexArray;
-  /** Unique-edge line segments (position-only), for wireframe shading. */
+  /** Unique-edge line segments (pos + adjacent face normals), gl.LINES. Kept
+   *  for the wire-proximity object pick (rendered into the pick buffer). */
   edges: VertexArray;
+  /** The same edges expanded into anti-aliased proximity-thickened ribbons
+   *  (UR6-1) — what the wireframe / overlay / hidden-line passes DISPLAY. */
+  wireRibbon: VertexArray;
   /** Composite cache key: which mesh (base vs evaluated) + its versions. */
   version: string;
   /** Local-space AABB of the triangles (null for empty meshes) — frames the
@@ -222,6 +227,7 @@ export class Renderer {
     if (cached && cached.version === version) return cached;
     cached?.triangles.dispose();
     cached?.edges.dispose();
+    cached?.wireRibbon.dispose();
 
     const data = meshToRenderData(mesh, obj.shadeSmooth);
     let bounds: GpuMesh['bounds'] = null;
@@ -249,6 +255,20 @@ export class Renderer {
         { location: 1, size: 3, data: data.edgeFaceNormals1 },
         { location: 2, size: 3, data: data.edgeFaceNormals2 },
       ]),
+      wireRibbon: (() => {
+        const r = buildWireRibbon(data.edgePositions, {
+          faceN1: data.edgeFaceNormals1,
+          faceN2: data.edgeFaceNormals2,
+        });
+        return new VertexArray(this.ctx.gl, [
+          { location: 0, size: 3, data: r.positions },
+          { location: 1, size: 3, data: r.others },
+          { location: 2, size: 2, data: r.params },
+          { location: 3, size: 3, data: r.faceN1 },
+          { location: 4, size: 3, data: r.faceN2 },
+          { location: 5, size: 3, data: r.colors },
+        ]);
+      })(),
       version,
       bounds,
     };
@@ -646,20 +666,26 @@ export class Renderer {
       // (color untouched) so backfacing wires and wires behind other geometry
       // fail the depth test; the biased lines then only survive where visible.
       if (hiddenLine) {
-        this.wirePass.begin(view, proj);
+        const viewProj = proj.mul(view);
+        this.wirePass.beginPrime();
         gl.colorMask(false, false, false, false);
         for (const obj of visible) {
-          this.wirePass.setObject(scene.worldMatrix(obj), view);
+          this.wirePass.primeObject(viewProj.mul(scene.worldMatrix(obj)));
           this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
         }
         gl.colorMask(true, true, true, true);
       }
-      this.wirePass.begin(view, proj, hiddenLine ? 0.002 : 0, hiddenLine);
+      // Anti-aliased ribbons (UR6-1), blended for the soft AA rim.
+      this.wirePass.begin(view, proj, hiddenLine ? 0.002 : 0, hiddenLine,
+        canvas.width, canvas.height, camera.distance);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       for (const obj of visible) {
         if (obj.id === editSkipId) continue; // cage draws its wireframe
         this.wirePass.setObject(scene.worldMatrix(obj), view);
-        this.gpuMesh(obj, scene).edges.draw(gl.LINES);
+        this.gpuMesh(obj, scene).wireRibbon.draw(gl.TRIANGLES);
       }
+      gl.disable(gl.BLEND);
     } else if (this.shadingMode === 'studio') {
       this.studioPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
@@ -730,16 +756,21 @@ export class Renderer {
     // The edit object's edges are skipped either way (its cage is its wire).
     if (shadePrefs.wireOverlay && this.shadingMode !== 'wireframe') {
       if (hiddenLine) {
-        this.wirePass.begin(view, proj, 0.002, true);
+        this.wirePass.begin(view, proj, 0.002, true,
+          canvas.width, canvas.height, camera.distance);
       } else {
         gl.disable(gl.DEPTH_TEST);
-        this.wirePass.begin(view, proj, 0, false);
+        this.wirePass.begin(view, proj, 0, false,
+          canvas.width, canvas.height, camera.distance);
       }
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       for (const obj of visible) {
         if (obj.id === editSkipId) continue;
         this.wirePass.setObject(scene.worldMatrix(obj), view);
-        this.gpuMesh(obj, scene).edges.draw(gl.LINES);
+        this.gpuMesh(obj, scene).wireRibbon.draw(gl.TRIANGLES);
       }
+      gl.disable(gl.BLEND);
       if (!hiddenLine) gl.enable(gl.DEPTH_TEST);
     }
 
@@ -829,7 +860,8 @@ export class Renderer {
     if (editObj && scene.effectiveVisible(editObj) && scene.editMode) {
       const modelView = view.mul(scene.worldMatrix(editObj));
       if (!hiddenLine) gl.disable(gl.DEPTH_TEST);
-      this.editOverlayPass.render(modelView, proj, editObj.mesh, scene.editMode);
+      this.editOverlayPass.render(modelView, proj, editObj.mesh, scene.editMode,
+        canvas.width, canvas.height, camera.distance);
       if (this.editPreviewLines) this.editOverlayPass.renderPreview(modelView, proj, this.editPreviewLines);
       if (!hiddenLine) gl.enable(gl.DEPTH_TEST);
     }

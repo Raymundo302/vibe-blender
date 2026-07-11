@@ -207,8 +207,12 @@ runE2e(async (t) => {
   const hiddenWires = await countWirePixels();
   await setPref('hiddenLine.wireframe', false);
   t.check('classic wireframe draws a full wire set', classicWires > 200, `pixels=${classicWires}`);
+  // Absolute-drop threshold, not a ratio: UR6-1's proximity-thickened AA ribbons
+  // make each edge many px wide, so the 3 occluded edges are a smaller FRACTION
+  // of the (now much fatter) total than they were for 1px lines — but they are
+  // still measurably removed. Require a clear pixel drop and most wires kept.
   t.check('hidden-line removes the occluded edges',
-    hiddenWires < classicWires * 0.92,
+    hiddenWires < classicWires - 20,
     `classic=${classicWires} hidden=${hiddenWires}`);
   t.check('hidden-line keeps the visible edges',
     hiddenWires > classicWires * 0.5,
@@ -1023,5 +1027,147 @@ runE2e(async (t) => {
     p.wireOverlay = false;
     window.__app.renderer.shadingMode = 'matcap';
     window.__app.scene.deselectAll();
+  })()`);
+
+  // ===================================================================
+  // UR6-1: proximity-scaled wire thickness + anti-aliased wire ribbons
+  // (the mesh wireframe is now screen-space ribbons, not 1px gl.LINES),
+  // and a thicker/smoother selection outline.
+  // ===================================================================
+
+  // Single cube filling the frame, close camera so near/far vertical edges sit
+  // at clearly different depths. Wireframe mode, classic (no hidden line) so the
+  // BACK (far) vertical edge draws too.
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) S.remove(o.id);
+    const prim = await import('/src/core/mesh/primitives.ts');
+    S.add('WCube', prim.makeCube(1));
+    S.deselectAll();
+    const cam = window.__app.camera;
+    cam.yaw = 0.5; cam.pitch = 0.4; cam.distance = 3;
+    window.__app.renderer.shadingMode = 'wireframe';
+    window.__app.shadePrefs.wireOverlay = false;
+    window.__app.shadePrefs.hiddenLine = { matcap:true, studio:true, rendered:true, wireframe:false };
+    window.__wcube = true;
+  })()`);
+  t.check('UR6 wire scene ready',
+    await t.until(`window.__wcube && window.__app.scene.objects.length === 1`));
+  await t.sleep(120);
+
+  // Probe the 4 vertical (z-varying) cube edges; measure the longest horizontal
+  // DARK run (ribbon width in px) through the nearest and farthest ones, plus
+  // the per-pixel luminance strip across the near edge (for the AA check).
+  const wireProbe = await t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas, S = app.scene;
+    app.renderer.render(S, app.camera);
+    const obj = S.objects[0];
+    const wm = S.worldMatrix(obj).m, m = app.renderer.currentViewProj(S, app.camera).m;
+    const corners = [[1,1],[1,-1],[-1,1],[-1,-1]]; // (x,y) of the 4 z-edges; z=0 mid
+    const edges = corners.map(([x,y]) => {
+      const wx=wm[0]*x+wm[4]*y+wm[12], wy=wm[1]*x+wm[5]*y+wm[13], wz=wm[2]*x+wm[6]*y+wm[14];
+      const cx=m[0]*wx+m[4]*wy+m[8]*wz+m[12];
+      const cy=m[1]*wx+m[5]*wy+m[9]*wz+m[13];
+      const cw=m[3]*wx+m[7]*wy+m[11]*wz+m[15];
+      return { px:(cx/cw*0.5+0.5)*c.width, py:(cy/cw*0.5+0.5)*c.height, depth:cw };
+    }).sort((a,b)=>a.depth-b.depth);
+    const runAt = (e) => {
+      const py = Math.round(e.py);
+      const x0 = Math.max(0, Math.round(e.px)-16);
+      const W = Math.min(c.width-x0, 33);
+      const buf = new Uint8Array(W*4);
+      gl.readPixels(x0, py, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let best=0, run=0; const levels=[];
+      for (let i=0;i<W;i++){
+        const l=0.2126*buf[i*4]+0.7152*buf[i*4+1]+0.0722*buf[i*4+2];
+        levels.push(Math.round(l));
+        if (l<40){run++; if(run>best)best=run;} else run=0;
+      }
+      return { width: best, levels };
+    };
+    const near = edges[0], far = edges[edges.length-1];
+    return { near: runAt(near), far: runAt(far), nearDepth: near.depth, farDepth: far.depth };
+  })()`);
+  await t.screenshot('research/ur6-wire-proximity.png');
+  console.log(`      [UR6] nearW=${wireProbe.near.width}@d${wireProbe.nearDepth.toFixed(2)} farW=${wireProbe.far.width}@d${wireProbe.farDepth.toFixed(2)}`);
+  console.log(`      [UR6] near strip levels=[${wireProbe.near.levels.join(',')}]`);
+
+  // (1) Proximity: the nearer vertical edge's wire is measurably wider.
+  t.check('UR6 (1) proximity: near vertical edge wire wider than far edge',
+    wireProbe.near.width > wireProbe.far.width + 1,
+    `nearW=${wireProbe.near.width} farW=${wireProbe.far.width}`);
+
+  // (2) AA: the near wire's luminance strip has >=2 intermediate levels between
+  // the dark core and the background (a soft ramp, not a binary edge).
+  {
+    const lv = wireProbe.near.levels;
+    const core = Math.min(...lv), bg = Math.max(...lv);
+    const inter = new Set(lv.filter((l) => l > core + 4 && l < bg - 4));
+    t.check('UR6 (2) AA: near wire has >=2 intermediate luminance levels',
+      inter.size >= 2, `core=${core} bg=${bg} intermediates=[${[...inter].sort((a,b)=>a-b)}]`);
+  }
+
+  // (4) Selection outline: thicker + smoother. Select the cube (matcap), hide
+  // the gizmo so the center column reads only the outline, and probe a vertical
+  // column at the cube's screen center through the TOP silhouette: the orange
+  // outline band is >=3px and its blended-orange R values span >=2 levels (AA).
+  await t.evaluate(`(() => {
+    const app = window.__app, S = app.scene;
+    app.renderer.shadingMode = 'matcap';
+    app.renderer.gizmoVisible = false;
+    app.camera.distance = 5; // whole cube + its outline on-screen with margin
+    S.selectOnly(S.objects[0].id);
+  })()`);
+  await t.sleep(80);
+  const outline = await t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas, S = app.scene;
+    app.renderer.render(S, app.camera);
+    const obj = S.objects[0];
+    const wm = S.worldMatrix(obj).m, m = app.renderer.currentViewProj(S, app.camera).m;
+    // Screen bbox of the cube; scan a horizontal row at mid-height across the
+    // full width + margin — it crosses the LEFT and RIGHT silhouette outlines
+    // (vertical orange bands), so the longest orange run is the outline width.
+    let minX=1e9,maxX=-1e9,minY=1e9,maxY=-1e9;
+    for (let i=0;i<8;i++){
+      const lx=i&1?1:-1, ly=i&2?1:-1, lz=i&4?1:-1;
+      const wx=wm[0]*lx+wm[4]*ly+wm[8]*lz+wm[12];
+      const wy=wm[1]*lx+wm[5]*ly+wm[9]*lz+wm[13];
+      const wz=wm[2]*lx+wm[6]*ly+wm[10]*lz+wm[15];
+      const cx=m[0]*wx+m[4]*wy+m[8]*wz+m[12];
+      const cy=m[1]*wx+m[5]*wy+m[9]*wz+m[13];
+      const cw=m[3]*wx+m[7]*wy+m[11]*wz+m[15];
+      const px=(cx/cw*0.5+0.5)*c.width, py=(cy/cw*0.5+0.5)*c.height;
+      minX=Math.min(minX,px); maxX=Math.max(maxX,px);
+      minY=Math.min(minY,py); maxY=Math.max(maxY,py);
+    }
+    const rowY = Math.max(0, Math.min(Math.round((minY+maxY)/2), c.height-1));
+    const x0 = Math.max(0, Math.round(minX)-8);
+    const W = Math.min(c.width-x0, Math.round(maxX-minX)+16);
+    const buf = new Uint8Array(W*4);
+    gl.readPixels(x0, rowY, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    // Orange TINT test (catches faint low-alpha AA pixels too): blended
+    // selection orange keeps R > G > B with a clear red-over-blue bias even at
+    // low coverage, while the grey background/matcap has R ≈ G ≈ B.
+    let run=0, best=0; const rVals=[];
+    for (let i=0;i<W;i++){
+      const R=buf[i*4],G=buf[i*4+1],B=buf[i*4+2];
+      const tinted = (R-B) > 15 && R >= G && G >= B;
+      if (tinted){run++; if(run>best)best=run; rVals.push(R);} else run=0;
+    }
+    return { width: best, rLevels: new Set(rVals).size, rVals };
+  })()`);
+  await t.screenshot('research/ur6-outline.png');
+  console.log(`      [UR6] outline width=${outline.width}px rLevels=${outline.rLevels} rVals=[${outline.rVals.join(',')}]`);
+  t.check('UR6 (4) outline: selected object outline band is >=3px thick',
+    outline.width >= 3, `width=${outline.width}`);
+  t.check('UR6 (4) outline: outline has intermediate alpha levels (smooth AA)',
+    outline.rLevels >= 2, `distinctR=${outline.rLevels}`);
+
+  // Cleanup: restore defaults for any later suite reuse.
+  await t.evaluate(`(() => {
+    const app = window.__app;
+    app.renderer.gizmoVisible = true;
+    app.renderer.shadingMode = 'matcap';
+    app.scene.deselectAll();
   })()`);
 });

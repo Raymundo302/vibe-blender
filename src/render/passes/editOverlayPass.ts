@@ -1,6 +1,8 @@
 import { Shader } from '../gl/Shader';
 import { VertexArray } from '../gl/VertexArray';
+import { Vec3 } from '../../core/math/vec3';
 import { editOverlayData } from '../../core/mesh/editOverlayData';
+import { buildWireRibbon, RIBBON_EXPAND_GLSL, RIBBON_FRAG } from './ribbon';
 import type { EditableMesh } from '../../core/mesh/EditableMesh';
 import type { EditModeState } from '../../core/scene/EditMode';
 import type { Mat4 } from '../../core/math/mat4';
@@ -33,6 +35,47 @@ in vec3 v_color;
 out vec4 outColor;
 void main() { outColor = vec4(v_color, 1.0); }`;
 
+// Cage EDGE ribbon shader (UR6-1): the cage's edge lines become anti-aliased,
+// proximity-thickened screen-space ribbons (was 1px gl.LINES). The per-endpoint
+// color rides the ribbon so the orange selection tint is preserved. Verts /
+// dots / seams / loop-cut preview stay on the WIRE_VERT points/lines shader.
+//   location 0 a_position   location 1 a_color (per-endpoint)
+//   location 2 a_other      location 3 a_param [extrusion sign, side]
+const RIBBON_VERT = /* glsl */ `#version 300 es
+layout(location = 0) in vec3 a_position;
+layout(location = 1) in vec3 a_color;
+layout(location = 2) in vec3 a_other;
+layout(location = 3) in vec2 a_param;
+uniform mat4 u_modelView;
+uniform mat4 u_proj;
+uniform float u_depthBias;  // FRACTIONAL view-space pull toward the eye (as WIRE_VERT)
+uniform vec2 u_viewport;    // canvas px
+uniform float u_refDist;    // camera orbit distance (proximity width)
+out float v_side;
+out float v_halfPx;
+out vec3 v_color;
+${RIBBON_EXPAND_GLSL}
+vec4 clipOf(vec3 p, out float viewDist) {
+  vec4 viewPos = u_modelView * vec4(p, 1.0);
+  viewDist = length(viewPos.xyz);
+  viewPos.xyz *= (1.0 - u_depthBias);
+  vec4 c = u_proj * viewPos;
+  c.z -= 2e-5 * c.w;
+  return c;
+}
+void main() {
+  float dThis, dOther;
+  vec4 c0 = clipOf(a_position, dThis);
+  vec4 c1 = clipOf(a_other, dOther);
+  float hp;
+  gl_Position = wireExpand(c0, c1, dThis, u_refDist, u_viewport, a_param.x, hp);
+  v_side = a_param.y;
+  v_halfPx = hp;
+  v_color = a_color;
+}`;
+
+const WHITE = new Vec3(1, 1, 1); // u_color tint: let the per-endpoint color show
+
 const FILL_VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 uniform mat4 u_modelView;
@@ -57,8 +100,10 @@ void main() { outColor = vec4(0.996, 0.451, 0.062, 0.22); }`;
 export class EditOverlayPass {
   private readonly wireShader: Shader;
   private readonly fillShader: Shader;
+  private readonly ribbonShader: Shader;
   private cacheKey = '';
-  private edgeVa: VertexArray | null = null;
+  // Cage edges as anti-aliased ribbons (replaces the old gl.LINES edgeVa).
+  private edgeRibbonVa: VertexArray | null = null;
   private vertVa: VertexArray | null = null;
   private fillVa: VertexArray | null = null;
   // Face-center dots (face element mode only); null in vert/edge modes.
@@ -71,22 +116,28 @@ export class EditOverlayPass {
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.wireShader = new Shader(gl, WIRE_VERT, WIRE_FRAG, 'edit-wire');
     this.fillShader = new Shader(gl, FILL_VERT, FILL_FRAG, 'edit-fill');
+    this.ribbonShader = new Shader(gl, RIBBON_VERT, RIBBON_FRAG, 'edit-wire-ribbon');
   }
 
   private rebuild(mesh: EditableMesh, sel: EditModeState): void {
     const key = `${mesh.version}:${sel.version}`;
     if (key === this.cacheKey) return;
     this.cacheKey = key;
-    this.edgeVa?.dispose();
+    this.edgeRibbonVa?.dispose();
     this.vertVa?.dispose();
     this.fillVa?.dispose();
     this.dotVa?.dispose();
     this.seamVa?.dispose();
 
     const data = editOverlayData(mesh, sel);
-    this.edgeVa = new VertexArray(this.gl, [
-      { location: 0, size: 3, data: data.edgePositions },
-      { location: 1, size: 3, data: data.edgeColors },
+    // Cage edges → anti-aliased ribbon; per-endpoint colors ride so the orange
+    // selection tint survives (UR6-1). Verts/dots/seams keep the points shader.
+    const ribbon = buildWireRibbon(data.edgePositions, { colors: data.edgeColors });
+    this.edgeRibbonVa = new VertexArray(this.gl, [
+      { location: 0, size: 3, data: ribbon.positions },
+      { location: 1, size: 3, data: ribbon.colors },
+      { location: 2, size: 3, data: ribbon.others },
+      { location: 3, size: 2, data: ribbon.params },
     ]);
     this.vertVa = new VertexArray(this.gl, [
       { location: 0, size: 3, data: data.vertPositions },
@@ -156,7 +207,10 @@ export class EditOverlayPass {
   private previewVa: VertexArray | null = null;
   private previewSource: Float32Array | null = null;
 
-  render(modelView: Mat4, proj: Mat4, mesh: EditableMesh, sel: EditModeState): void {
+  render(
+    modelView: Mat4, proj: Mat4, mesh: EditableMesh, sel: EditModeState,
+    width = 1, height = 1, refDist = 8,
+  ): void {
     const gl = this.gl;
     this.rebuild(mesh, sel);
 
@@ -175,18 +229,31 @@ export class EditOverlayPass {
       gl.disable(gl.BLEND);
     }
 
+    // Cage edges: anti-aliased proximity-thickened ribbon (UR6-1), blended.
+    // The caller has already set the depth test per Hidden Line; depth writes
+    // stay on so the ribbon self-occludes cleanly. Per-endpoint color rides
+    // (u_color white), so selected edges draw orange.
+    this.ribbonShader.use();
+    this.ribbonShader.setMat4('u_modelView', modelView);
+    this.ribbonShader.setMat4('u_proj', proj);
+    this.ribbonShader.setFloat('u_depthBias', 0.001);
+    this.ribbonShader.setVec2('u_viewport', width, height);
+    this.ribbonShader.setFloat('u_refDist', refDist);
+    this.ribbonShader.setVec3('u_color', WHITE);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.edgeRibbonVa!.draw(gl.TRIANGLES);
+    gl.disable(gl.BLEND);
+
     this.wireShader.use();
     this.wireShader.setMat4('u_modelView', modelView);
     this.wireShader.setMat4('u_proj', proj);
 
-    this.wireShader.setFloat('u_depthBias', 0.001);
-    this.wireShader.setFloat('u_pointSize', 1.0);
-    this.edgeVa!.draw(gl.LINES);
-
     // Seam edges drawn red on top of the cage (slightly larger bias so they win
-    // over the default edges they overlap).
+    // over the default edges they overlap). Kept as gl.LINES — thin red hint.
     if (this.seamVa) {
       this.wireShader.setFloat('u_depthBias', 0.0013);
+      this.wireShader.setFloat('u_pointSize', 1.0);
       this.seamVa.draw(gl.LINES);
     }
 

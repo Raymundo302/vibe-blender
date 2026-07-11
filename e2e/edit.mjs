@@ -1235,4 +1235,75 @@ runE2e(async (t) => {
   // Miss (click far from any dot) deselects all in proximity mode.
   await t.click(emptyX, emptyY);
   t.check('UR5-2: proximity miss deselects all', (await selFaces()).length === 0);
+
+  // ===================================================================
+  // UR6-1: the edit-cage EDGE lines are now anti-aliased screen-space RIBBONS.
+  // Criterion (3): a SELECTED cage edge draws ORANGE in the ribbon path (the
+  // per-endpoint selection color rides the ribbon — UR5-1 regression pinned).
+  // ===================================================================
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    if (S.editMode) S.exitEditMode();
+    for (const o of [...S.objects]) S.remove(o.id);
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const cube = S.add('UR6Cube', prim.makeCube(1));
+    S.enterEditMode(cube.id);
+    const e = S.editMode;
+    e.elementMode = 'edge';
+    e.edges.clear();
+    e.touch();
+    // Fresh, well-framed view so the cage fills the frame for the pixel read.
+    const cam = window.__app.camera; cam.yaw = 0.6; cam.pitch = 0.5; cam.distance = 4;
+    window.__ur6edit = true;
+  })()`);
+  t.check('UR6 edit: edge mode with nothing selected',
+    await t.until(`window.__ur6edit && window.__app.scene.editMode &&
+      window.__app.scene.editMode.elementMode === 'edge' &&
+      window.__app.scene.editMode.edges.size === 0`));
+  await t.sleep(80);
+
+  // Count orange pixels in a small window around the NEAREST-to-camera cage edge
+  // midpoint (guaranteed unoccluded). Same orange test as the shading suite.
+  const orangeOnNearestCageEdge = () => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas, S = app.scene;
+    const obj = S.editObject;
+    app.renderer.render(S, app.camera);
+    const wm = S.worldMatrix(obj).m, m = app.renderer.currentViewProj(S, app.camera).m;
+    let best=null, bestW=1e9;
+    for (const e of obj.mesh.edges().values()) {
+      const a=obj.mesh.verts.get(e.v0).co, b=obj.mesh.verts.get(e.v1).co;
+      const lx=(a.x+b.x)/2, ly=(a.y+b.y)/2, lz=(a.z+b.z)/2;
+      const wx=wm[0]*lx+wm[4]*ly+wm[8]*lz+wm[12];
+      const wy=wm[1]*lx+wm[5]*ly+wm[9]*lz+wm[13];
+      const wz=wm[2]*lx+wm[6]*ly+wm[10]*lz+wm[15];
+      const cx=m[0]*wx+m[4]*wy+m[8]*wz+m[12];
+      const cy=m[1]*wx+m[5]*wy+m[9]*wz+m[13];
+      const cw=m[3]*wx+m[7]*wy+m[11]*wz+m[15];
+      if (cw>0 && cw<bestW){ bestW=cw; best=[(cx/cw*0.5+0.5)*c.width,(cy/cw*0.5+0.5)*c.height]; }
+    }
+    if(!best) return -1;
+    const px=Math.round(best[0]), py=Math.round(best[1]), rr=9, s=2*rr+1;
+    const x0=Math.max(0,Math.min(px-rr,c.width-s)), y0=Math.max(0,Math.min(py-rr,c.height-s));
+    const buf=new Uint8Array(s*s*4);
+    gl.readPixels(x0,y0,s,s,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+    let orange=0;
+    for(let i=0;i<s*s;i++){
+      const R=buf[i*4],G=buf[i*4+1],B=buf[i*4+2];
+      if (R>150 && G>40 && G<190 && B<90 && (R-B)>90) orange++;
+    }
+    return orange;
+  })()`);
+
+  const orangeUnsel = await orangeOnNearestCageEdge();
+  await t.evaluate(`(() => {
+    const S = window.__app.scene, e = S.editMode, obj = S.editObject;
+    for (const k of obj.mesh.edges().keys()) e.edges.add(k);
+    e.touch();
+  })()`);
+  await t.sleep(80);
+  const orangeSel = await orangeOnNearestCageEdge();
+  t.check('UR6 (3): selected cage edge is orange in the ribbon path',
+    orangeSel > 8, `orange=${orangeSel}`);
+  t.check('UR6 (3): unselected cage edge is NOT orange (per-endpoint color rides)',
+    orangeUnsel < 3, `orangeUnsel=${orangeUnsel} orangeSel=${orangeSel}`);
 });
