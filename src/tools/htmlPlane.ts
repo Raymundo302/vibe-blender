@@ -1,7 +1,8 @@
 import { srgbToLinear } from '../core/scene/worldData';
 import type { Scene, SceneObject } from '../core/scene/Scene';
-import type { Material } from '../core/scene/objectData';
-import type { UndoStack } from '../core/undo/UndoStack';
+import { defaultHtmlPlaneData, type Material } from '../core/scene/objectData';
+import type { Command, UndoStack } from '../core/undo/UndoStack';
+import { EditableMesh } from '../core/mesh/EditableMesh';
 import { basename, createImagePlane } from './imagePlane';
 
 /**
@@ -141,7 +142,7 @@ export interface RasterResult {
  * (`toDataURL` then throws SecurityError), whereas the inline data URL stays
  * clean. Self-contained content only, so encodeURIComponent is safe.
  */
-function svgToPng(svg: string, w: number, h: number): Promise<string> {
+function svgToCanvas(svg: string, w: number, h: number): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     if (typeof document === 'undefined' || typeof Image === 'undefined') {
       reject(new Error('no DOM'));
@@ -159,7 +160,7 @@ function svgToPng(svg: string, w: number, h: number): Promise<string> {
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/png'));
+        resolve(canvas);
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
       }
@@ -169,6 +170,10 @@ function svgToPng(svg: string, w: number, h: number): Promise<string> {
     };
     img.src = url;
   });
+}
+
+function svgToPng(svg: string, w: number, h: number): Promise<string> {
+  return svgToCanvas(svg, w, h).then((canvas) => canvas.toDataURL('image/png'));
 }
 
 /** Last-resort plain-canvas error card if even the error SVG can't rasterize. */
@@ -235,6 +240,127 @@ export async function rasterizeHtml(
   }
 }
 
+// ─── Timed rasterization (UR7-1 page clock) ─────────────────────────────────
+
+/**
+ * The CSS rule that samples the page's animation pose at `tSeconds` (pure,
+ * unit-tested). Every element is force-PAUSED and given a NEGATIVE animation
+ * delay of `-t`s, which advances each running CSS animation to its `t`-second
+ * pose and then holds it — exactly how you snapshot an animation clock.
+ *
+ * ── v1 LIMITATION (documented) ──────────────────────────────────────────────
+ * `animation-delay` here OVERRIDES any author-set per-animation delay: all page
+ * animations are folded into ONE global sample clock (there is no per-animation
+ * offset). Author staggering via delay is lost; keyframe timing/duration is not.
+ */
+export function pausedAnimationRule(tSeconds: number): string {
+  const t = Number.isFinite(tSeconds) ? Math.max(0, tSeconds) : 0;
+  return `*{animation-play-state:paused !important;animation-delay:-${t}s !important}`;
+}
+
+/** The `<style>` block appended to the page head to sample pose at `tSeconds`. */
+export function pausedAnimationStyle(tSeconds: number): string {
+  return `<style>${pausedAnimationRule(tSeconds)}</style>`;
+}
+
+/**
+ * Consume `html.scrollY` (UR7-2 A) by wrapping the sanitized body in a fixed
+ * clipping VIEWPORT: an `overflow:hidden`, full-height outer div holds an inner
+ * div translated UP by `scrollY` CSS px (`transform: translateY(-scrollY)`), so
+ * the raster shows the page scrolled down by that many pixels. The inner div
+ * keeps the body's NATURAL flow height (only the outer div is clamped to the
+ * raster viewport), so content below the fold — e.g. a marker at page-y 900 —
+ * comes into view once you scroll to it.
+ *
+ * At scrollY = 0 the body is returned UNCHANGED so the raster is byte-identical
+ * to the un-scrolled UR7-1 pipeline (keeps the page-clock determinism + existing
+ * screenshots stable). Chosen over `overflow:scroll` positioning because a
+ * transform composes predictably inside foreignObject across backends and needs
+ * no scrollbar suppression.
+ */
+export function scrollWrap(body: string, scrollY: number): string {
+  const y = Number.isFinite(scrollY) ? Math.max(0, scrollY) : 0;
+  if (y === 0) return body;
+  return (
+    '<div style="position:absolute;top:0;left:0;width:100%;height:100%;overflow:hidden;">' +
+    `<div style="position:absolute;top:0;left:0;width:100%;transform:translateY(-${y}px);">` +
+    body +
+    '</div></div>'
+  );
+}
+
+/**
+ * Rasterize `source` at page-clock time `tSeconds` (UR7-1). Same sanitize →
+ * SVG-foreignObject → canvas pipeline as {@link rasterizeHtml}, but a
+ * pose-sampling style ({@link pausedAnimationStyle}) is appended LAST in the head
+ * so it wins the cascade and freezes every CSS animation at its `t`-second pose.
+ * Never throws — an error card is rasterized on parse/draw failure (`ok:false`).
+ * `opts.w/h` default to the documented 1024×768. Browser only.
+ */
+export async function rasterizeHtmlAt(
+  source: string,
+  tSeconds: number,
+  opts?: { w?: number; h?: number; scrollY?: number },
+): Promise<RasterResult> {
+  const w = opts?.w ?? RASTER_W;
+  const h = opts?.h ?? RASTER_H;
+  const scrollY = opts?.scrollY ?? 0;
+  try {
+    const { head, body } = sanitizeToXhtml(source);
+    const dataUrl = await svgToPng(
+      buildSvgFromParts(head + pausedAnimationStyle(tSeconds), scrollWrap(body, scrollY), w, h),
+      w,
+      h,
+    );
+    return { dataUrl, ok: true };
+  } catch {
+    try {
+      const errSvg = buildSvgDocument(errorCardFragment(), w, h);
+      const dataUrl = await svgToPng(errSvg, w, h);
+      return { dataUrl, ok: false };
+    } catch {
+      return { dataUrl: fallbackErrorCanvas(w, h), ok: false };
+    }
+  }
+}
+
+/** Decoded texture cache shape (linear RGB, row 0 = top) — matches the tracer. */
+type TexImage = { width: number; height: number; pixels: Float32Array };
+
+/**
+ * Decode a PNG data URL to linear-light pixels for the F12 path tracer (awaitable
+ * so callers that need determinism — Ctrl+F12 — can wait). Returns null with no
+ * DOM/canvas (unit tests) or on a decode error. Mirrors imagePlane.decodeTexImage.
+ */
+export function decodeTexImageLinear(dataUrl: string): Promise<TexImage | null> {
+  return new Promise((resolve) => {
+    if (typeof document === 'undefined' || typeof Image === 'undefined') { resolve(null); return; }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { resolve(null); return; }
+        ctx.drawImage(img, 0, 0);
+        const rgba = ctx.getImageData(0, 0, w, h).data;
+        const pixels = new Float32Array(w * h * 3);
+        for (let p = 0, q = 0; p < rgba.length; p += 4, q += 3) {
+          pixels[q] = srgbToLinear(rgba[p] / 255);
+          pixels[q + 1] = srgbToLinear(rgba[p + 1] / 255);
+          pixels[q + 2] = srgbToLinear(rgba[p + 2] / 255);
+        }
+        resolve({ width: w, height: h, pixels });
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
 // ─── Plane creation ──────────────────────────────────────────────────────────
 
 /**
@@ -259,6 +385,10 @@ export async function addHtmlPlaneFromText(
     h: RASTER_H,
     mode: 'emit',
   });
+  // UR7-1: stamp the HTML-plane payload so the page can animate on the plane and
+  // Play becomes a keyable channel. kind 'file' serializes the source text into
+  // the scene. Old scenes (no payload) load as plain static image planes.
+  obj.html = defaultHtmlPlaneData('file', text);
   if (!quiet) {
     setStatus?.(
       ok
@@ -267,6 +397,120 @@ export async function addHtmlPlaneFromText(
     );
   }
   return { obj, ok };
+}
+
+// ─── Page extent geometry (UR7-2 B) ─────────────────────────────────────────
+
+/**
+ * Build the HTML-plane quad for a page extent (UR7-2 B). The world WIDTH is kept
+ * as `width` ("stays as-built"); the TOP edge stays at `topY` and the plane
+ * HEIGHT = width·pageH/pageW extends DOWNWARD (the bottom edge drops to
+ * `topY − height`) — Ray's "the plane's bottom edge goes further down to show
+ * more of the page". UVs stay the full 0..1 raster (the whole page still maps
+ * onto the taller plane). Degenerate width / pageW / pageH fall back to a
+ * finite square so a bad edit can't NaN the mesh.
+ *
+ * Consistent with {@link makeImagePlaneMesh}: for the default 1024×768 built
+ * width 2·1024/768, this reproduces the original height-2 plane (top +1,
+ * bottom −1) exactly, so switching the two never jumps the geometry.
+ */
+export function makeHtmlPlaneMesh(width: number, topY: number, pageW: number, pageH: number): EditableMesh {
+  const w = Number.isFinite(width) && width > 0 ? width : 2;
+  const ratio = pageW > 0 && pageH > 0 && Number.isFinite(pageH / pageW) ? pageH / pageW : 1;
+  const height = w * ratio;
+  const halfW = w / 2;
+  const top = Number.isFinite(topY) ? topY : 1;
+  const bottom = top - height;
+  const mesh = EditableMesh.fromData(
+    [
+      [-halfW, top, 0], // 0 TL (-X, top)
+      [-halfW, bottom, 0], // 1 BL (-X, bottom)
+      [halfW, bottom, 0], // 2 BR (+X, bottom)
+      [halfW, top, 0], // 3 TR (+X, top)
+    ],
+    [[0, 1, 2, 3]],
+  );
+  const faceId = [...mesh.faces.keys()][0];
+  mesh.setFaceUVs(faceId, [
+    [0, 0], // TL → raster top-left
+    [0, 1], // BL → raster bottom-left
+    [1, 1], // BR → raster bottom-right
+    [1, 0], // TR → raster top-right
+  ]);
+  return mesh;
+}
+
+/**
+ * Read the current world WIDTH and TOP-edge Y of a plane quad from its verts —
+ * the invariants {@link makeHtmlPlaneMesh} preserves across a page-extent edit
+ * (width never changes, top stays put). Returns null for an empty mesh.
+ */
+export function htmlPlaneExtent(mesh: EditableMesh): { width: number; topY: number } | null {
+  const verts = [...mesh.verts.values()];
+  if (verts.length === 0) return null;
+  let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const v of verts) {
+    if (v.co.x < minX) minX = v.co.x;
+    if (v.co.x > maxX) maxX = v.co.x;
+    if (v.co.y > maxY) maxY = v.co.y;
+  }
+  return { width: maxX - minX, topY: maxY };
+}
+
+/**
+ * Set an HTML plane's page extent (UR7-2 B): store the new pageW/pageH on the
+ * payload AND regenerate the plane mesh so its bottom edge extends downward.
+ * ONE undo entry restores both the geometry AND the payload numbers (grep the
+ * properties-tab numeric commit pattern — apply, then push). No-op for a
+ * non-HTML object.
+ */
+class SetHtmlPageExtentCommand implements Command {
+  readonly name = 'Set Page Extent';
+  private readonly beforeW: number;
+  private readonly beforeH: number;
+  private readonly beforeMesh: EditableMesh;
+  private readonly afterMesh: EditableMesh;
+
+  constructor(
+    private readonly obj: SceneObject,
+    private readonly afterW: number,
+    private readonly afterH: number,
+  ) {
+    const html = obj.html!;
+    this.beforeW = html.pageW;
+    this.beforeH = html.pageH;
+    this.beforeMesh = obj.mesh.clone();
+    // Apply: keep the as-built width + top edge, rebuild for the new extent.
+    const ext = htmlPlaneExtent(obj.mesh) ?? { width: 2, topY: 1 };
+    html.pageW = afterW;
+    html.pageH = afterH;
+    obj.mesh.copyFrom(makeHtmlPlaneMesh(ext.width, ext.topY, afterW, afterH));
+    this.afterMesh = obj.mesh.clone();
+  }
+
+  undo(): void {
+    this.obj.html!.pageW = this.beforeW;
+    this.obj.html!.pageH = this.beforeH;
+    this.obj.mesh.copyFrom(this.beforeMesh);
+  }
+
+  redo(): void {
+    this.obj.html!.pageW = this.afterW;
+    this.obj.html!.pageH = this.afterH;
+    this.obj.mesh.copyFrom(this.afterMesh);
+  }
+}
+
+/**
+ * Commit a page-extent edit on `obj` (an HTML plane): pushes ONE undoable
+ * {@link SetHtmlPageExtentCommand} that regenerates the plane geometry. No-op if
+ * the values are non-finite or unchanged, or the object has no html payload.
+ */
+export function setHtmlPageExtent(obj: SceneObject, undo: UndoStack, pageW: number, pageH: number): void {
+  if (!obj.html) return;
+  if (!Number.isFinite(pageW) || !Number.isFinite(pageH) || pageW <= 0 || pageH <= 0) return;
+  if (obj.html.pageW === pageW && obj.html.pageH === pageH) return;
+  undo.push(new SetHtmlPageExtentCommand(obj, pageW, pageH));
 }
 
 /**

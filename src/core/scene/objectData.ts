@@ -104,6 +104,58 @@ export function defaultEmpty(): EmptyData {
 }
 
 /**
+ * HTML-plane payload (UR7-1): what makes a (mesh) SceneObject an HTML plane —
+ * a web page rasterized onto the plane whose CSS animation is sampled by a
+ * single page clock (see anim/pageTime), and whose **Play** state is a KEYABLE
+ * channel ("html.playing"). Precedent: light/camera/empty payloads. Set iff the
+ * object is an HTML plane; scenes saved before UR7-1 load with `html` absent, so
+ * pre-UR7 image planes are untouched. Plain data only (serialized into the scene
+ * for kind 'file').
+ */
+export interface HtmlPlaneData {
+  /** file = self-contained HTML text serialized into the scene; url = an address
+   *  (URL planes are UR7-3 — the field + serialization exist now). */
+  kind: 'file' | 'url';
+  /** kind 'file': the full HTML source text. kind 'url': the address. */
+  source: string;
+  /** Raster viewport width, CSS px (default 1024). */
+  pageW: number;
+  /** Raster viewport height, CSS px (default 768). */
+  pageH: number;
+  /** Page scroll offset in CSS px (consumed in UR7-2; serialized now). */
+  scrollY: number;
+  /** The keyable play state (the "html.playing" animation channel). */
+  playing: boolean;
+  /** Re-raster cap for live viewport playback, fps (clamped 1..15, default 8). */
+  fps: number;
+}
+
+export const HTML_PLANE_DEFAULT_W = 1024;
+export const HTML_PLANE_DEFAULT_H = 768;
+export const HTML_PLANE_DEFAULT_FPS = 8;
+export const HTML_PLANE_FPS_MIN = 1;
+export const HTML_PLANE_FPS_MAX = 15;
+
+/** Clamp an html re-raster fps into the supported 1..15 range. */
+export function clampHtmlFps(fps: number): number {
+  if (!Number.isFinite(fps)) return HTML_PLANE_DEFAULT_FPS;
+  return Math.max(HTML_PLANE_FPS_MIN, Math.min(HTML_PLANE_FPS_MAX, fps));
+}
+
+/** Fresh payload for a newly-added HTML plane (playing off, at page-clock 0). */
+export function defaultHtmlPlaneData(kind: 'file' | 'url', source: string): HtmlPlaneData {
+  return {
+    kind,
+    source,
+    pageW: HTML_PLANE_DEFAULT_W,
+    pageH: HTML_PLANE_DEFAULT_H,
+    scrollY: 0,
+    playing: false,
+    fps: HTML_PLANE_DEFAULT_FPS,
+  };
+}
+
+/**
  * The single mm↔FOV convention for the whole app: a 36×24mm sensor, so the
  * vertical half-height is 12mm. Both the through-camera projection (via
  * `cameraFovY`) and the viewport-lens field (UR5-6, N-panel View tab) go through

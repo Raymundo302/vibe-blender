@@ -154,8 +154,9 @@ runE2e(async (t) => {
     row.dispatchEvent(new MouseEvent('mouseenter'));
     return [...document.querySelectorAll('.add-menu-flyout .add-menu-item')].map((b) => b.textContent);
   })()`);
-  // UR4-4 added the two HTML… items to the same flyout; pin all four.
-  t.check('Image flyout has Diffuse…, Emit… + the UR4-4 HTML items: ' + JSON.stringify(imageItems),
-    imageItems.includes('Diffuse…') && imageItems.includes('Emit…') && imageItems.length === 4);
+  // UR7-3 replaced the two UR4-4 HTML items with one "HTML / Website…" dialog entry.
+  t.check('Image flyout has Diffuse…, Emit…, HTML / Website…: ' + JSON.stringify(imageItems),
+    imageItems.includes('Diffuse…') && imageItems.includes('Emit…') &&
+    imageItems.includes('HTML / Website…') && imageItems.length === 3);
   await t.key('Escape', 'Escape', 0);
 });

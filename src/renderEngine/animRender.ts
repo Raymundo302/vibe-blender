@@ -244,6 +244,16 @@ export interface AnimRenderContext {
   canvas: HTMLCanvasElement;
   setStatus: (text: string) => void;
   host: HTMLElement;
+  /**
+   * HTML-plane driver (UR7-1). When present, each frame AWAITS an exact page-clock
+   * raster of every HTML plane before capture (deterministic animated pages), and
+   * the live tick is suspended for the run so it can't race the frame loop.
+   */
+  htmlDriver?: {
+    prepareFrame(frame: number): Promise<void>;
+    suspend(): void;
+    resume(): void;
+  };
 }
 
 const raf = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => r()));
@@ -598,6 +608,9 @@ export class AnimRender {
     this.setBusy(true);
     this.setMessage('Rendering…');
 
+    // Suspend the HTML-plane live tick so it can't race the deterministic frames.
+    this.ctx.htmlDriver?.suspend();
+
     scene.playing = false;
     renderer.shadingMode = 'rendered';
     if (scene.activeCameraId !== null) renderer.cameraViewId = scene.activeCameraId;
@@ -613,6 +626,7 @@ export class AnimRender {
       scene.playing = saved.playing;
       scene.frameCurrent = saved.frame;
       applyAnimation(scene, saved.frame);
+      this.ctx.htmlDriver?.resume();
       this.running = false;
       this.setBusy(false);
     }
@@ -626,11 +640,14 @@ export class AnimRender {
     return blob;
   }
 
-  /** Pose + draw one frame in Rendered mode through the active camera. */
-  private drawViewportFrame(frame: number): void {
+  /** Pose + draw one frame in Rendered mode through the active camera. Awaits an
+   *  exact page-clock raster of every HTML plane first (UR7-1) so animated pages
+   *  are deterministic. */
+  private async drawViewportFrame(frame: number): Promise<void> {
     const { scene, renderer, camera } = this.ctx;
     scene.frameCurrent = frame;
     applyAnimation(scene, frame);
+    await this.ctx.htmlDriver?.prepareFrame(frame);
     renderer.render(scene, camera);
   }
 
@@ -651,6 +668,7 @@ export class AnimRender {
     const { scene, camera } = this.ctx;
     scene.frameCurrent = frame;
     applyAnimation(scene, frame);
+    await this.ctx.htmlDriver?.prepareFrame(frame); // UR7-1: exact page-clock raster
     const traceScene = prepareScene(buildSnapshot(scene, camera));
     const accum = new Float32Array(w * h * 3);
     const seed = seedForFrame(frame);
@@ -731,7 +749,7 @@ export class AnimRender {
       if (this.cancelled) break;
       let source: HTMLCanvasElement;
       if (engine === 'viewport') {
-        this.drawViewportFrame(f);
+        await this.drawViewportFrame(f);
         source = this.captureToScratch();
       } else {
         const rgba = await this.tracePathFrame(f, tw, th, samples, (s, n) =>
@@ -790,7 +808,7 @@ export class AnimRender {
       let done = 0;
       for (let f = start; f <= end; f++) {
         if (this.cancelled) break;
-        this.drawViewportFrame(f);
+        await this.drawViewportFrame(f);
         // Copy the viewport canvas into the recording canvas (drawImage keeps
         // the correct top-left orientation — no manual flip needed).
         recCtx.drawImage(this.ctx.canvas, 0, 0);

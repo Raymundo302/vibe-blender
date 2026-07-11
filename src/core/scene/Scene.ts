@@ -56,6 +56,8 @@ export class SceneObject {
   parentId: number | null = null;
   /** Animation curves (P15), or undefined = never keyed. */
   anim?: import('../anim/fcurve').AnimData;
+  /** HTML-plane payload (UR7-1), or undefined = not an HTML plane. */
+  html?: import('./objectData').HtmlPlaneData;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -434,6 +436,8 @@ export class Scene {
     if (src.light) obj.light = { ...src.light, color: [...src.light.color] };
     if (src.camera) obj.camera = { ...src.camera };
     if (src.empty) obj.empty = { ...src.empty };
+    // HTML-plane payload is flat plain data — a shallow spread is a deep copy.
+    if (src.html) obj.html = { ...src.html };
     obj.transform = src.transform; // Transform is immutable — sharing is safe.
     obj.visible = src.visible;
     obj.shadeSmooth = src.shadeSmooth;

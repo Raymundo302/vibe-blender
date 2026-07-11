@@ -1,9 +1,13 @@
-import type { Scene } from '../core/scene/Scene';
+import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
 import { TransformCommand } from '../core/undo/commands';
 import { RenameObjectCommand } from '../core/undo/objectCommands';
+import { InsertKeysCommand } from '../core/anim/animCommands';
+import { setHtmlPageExtent } from '../tools/htmlPlane';
+import { requestHtmlReraster } from '../tools/htmlPlaneDriver';
+import { clampHtmlFps, HTML_PLANE_FPS_MIN, HTML_PLANE_FPS_MAX } from '../core/scene/objectData';
 
 const DEG = 180 / Math.PI;
 const RAD = Math.PI / 180;
@@ -278,6 +282,231 @@ export class TransformFields {
   }
 }
 
+// ---------------------------------------------------------- Web Page section --
+
+/**
+ * "Web Page" section of the Object tab (UR7-2 C) — shown ONLY when the active
+ * object is an HTML plane (`obj.html`). Exposes the page controls:
+ *  - Page Width / Page Height (px) → drive the plane geometry (UR7-2 B), one
+ *    undo per committed edit via {@link setHtmlPageExtent};
+ *  - Scroll Y (readonly readout of the browse-mode scroll);
+ *  - FPS (1–15 re-raster cap, a preview setting — no undo, like the shading knobs);
+ *  - Source (readonly: file → name + first chars; url → the address, editable in UR7-3);
+ *  - a Play/Pause toggle (▶/⏸) driving `html.playing` and a ● key button that
+ *    keys the `html.playing` channel at the current frame (reuses lightTab's
+ *    InsertKeysCommand pattern);
+ *  - a Re-rasterize button that forces a fresh raster (useful after fonts load).
+ */
+class WebPageSection {
+  readonly element: HTMLDivElement;
+  private readonly widthInput: HTMLInputElement;
+  private readonly heightInput: HTMLInputElement;
+  private readonly scrollReadout: HTMLInputElement;
+  private readonly fpsInput: HTMLInputElement;
+  private readonly sourceReadout: HTMLInputElement;
+  private readonly playBtn: HTMLButtonElement;
+  private readonly portalHint: HTMLDivElement;
+  private lastId: number | null = -1 as unknown as number;
+
+  constructor(
+    private readonly scene: Scene,
+    private readonly undo: UndoStack,
+  ) {
+    this.element = document.createElement('div');
+    this.element.className = 'properties-group web-page-section';
+    this.element.dataset.section = 'web-page';
+
+    const heading = document.createElement('div');
+    heading.className = 'properties-group-title';
+    heading.textContent = 'Web Page';
+    this.element.append(heading);
+
+    // Page Width / Height (px) — drive the plane geometry, one undo per commit.
+    this.widthInput = this.numInput('page-width', '1', '1');
+    this.heightInput = this.numInput('page-height', '1', '1');
+    this.widthInput.addEventListener('change', () => this.commitExtent());
+    this.heightInput.addEventListener('change', () => this.commitExtent());
+    this.element.append(this.labelledRow('Page Width', this.widthInput));
+    this.element.append(this.labelledRow('Page Height', this.heightInput));
+
+    // Scroll Y — readonly readout (page mode's wheel drives it; not undoable).
+    this.scrollReadout = this.numInput('scroll-y', '1', '0');
+    this.scrollReadout.readOnly = true;
+    this.element.append(this.labelledRow('Scroll Y', this.scrollReadout));
+
+    // FPS (1–15 re-raster cap) — a preview setting, no undo.
+    this.fpsInput = this.numInput('fps', '1', String(HTML_PLANE_FPS_MIN));
+    this.fpsInput.min = String(HTML_PLANE_FPS_MIN);
+    this.fpsInput.max = String(HTML_PLANE_FPS_MAX);
+    this.fpsInput.addEventListener('change', () => this.commitFps());
+    this.element.append(this.labelledRow('FPS', this.fpsInput));
+
+    // Source (readonly; UR7-3 makes the url editable).
+    this.sourceReadout = document.createElement('input');
+    this.sourceReadout.type = 'text';
+    this.sourceReadout.className = 'properties-input web-page-source';
+    this.sourceReadout.dataset.field = 'source';
+    this.sourceReadout.readOnly = true;
+    this.element.append(this.labelledRow('Source', this.sourceReadout));
+
+    // Play/Pause + ● key + Re-rasterize buttons.
+    const btnRow = document.createElement('div');
+    btnRow.className = 'properties-row web-page-buttons';
+
+    this.playBtn = document.createElement('button');
+    this.playBtn.type = 'button';
+    this.playBtn.className = 'web-page-play';
+    this.playBtn.dataset.action = 'play-toggle';
+    this.playBtn.addEventListener('click', () => {
+      const obj = this.activeHtml();
+      if (obj) obj.html!.playing = !obj.html!.playing;
+      this.writeFields();
+    });
+
+    const keyBtn = document.createElement('button');
+    keyBtn.type = 'button';
+    keyBtn.className = 'web-page-key';
+    keyBtn.dataset.action = 'play-key';
+    keyBtn.textContent = '●';
+    keyBtn.title = 'Insert a key on Play at the current frame';
+    keyBtn.style.color = '#e8a33d';
+    keyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const obj = this.activeHtml();
+      if (!obj) return;
+      const cmd = InsertKeysCommand.perform(
+        'Key Play', this.scene, [obj], ['html.playing'], this.scene.frameCurrent, 'constant');
+      if (cmd) this.undo.push(cmd);
+    });
+
+    const rerasterBtn = document.createElement('button');
+    rerasterBtn.type = 'button';
+    rerasterBtn.className = 'web-page-reraster';
+    rerasterBtn.dataset.action = 'reraster';
+    rerasterBtn.textContent = 'Re-rasterize';
+    rerasterBtn.title = 'Force a fresh raster (e.g. after web fonts load)';
+    rerasterBtn.addEventListener('click', () => {
+      const obj = this.activeHtml();
+      if (obj) requestHtmlReraster(obj);
+    });
+
+    btnRow.append(this.playBtn, keyBtn, rerasterBtn);
+    this.element.append(btnRow);
+
+    // UR7-3: one-line portal-limits hint, shown ONLY for URL (portal) planes.
+    this.portalHint = document.createElement('div');
+    this.portalHint.className = 'web-page-hint';
+    this.portalHint.dataset.field = 'portal-hint';
+    this.portalHint.textContent =
+      'Live portal: an iframe drawn OVER the 3D scene (no occlusion) — invisible ' +
+      'in F12/Ctrl+F12 renders and viewport screenshots. Sites that refuse framing ' +
+      'show blank; press ⏸ to snapshot the page (CORS) or a card onto the plane.';
+    this.portalHint.style.display = 'none';
+    this.element.append(this.portalHint);
+  }
+
+  private numInput(field: string, step: string, min: string): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'properties-input';
+    input.dataset.field = field;
+    input.step = step;
+    input.min = min;
+    return input;
+  }
+
+  private labelledRow(text: string, control: HTMLElement): HTMLElement {
+    const row = document.createElement('label');
+    row.className = 'properties-field web-page-row';
+    const label = document.createElement('span');
+    label.className = 'properties-axis web-page-label';
+    label.textContent = text;
+    row.append(label, control);
+    return row;
+  }
+
+  /** The active object iff it is an HTML plane, else null. */
+  private activeHtml(): SceneObject | null {
+    const obj = this.scene.activeObject;
+    return obj && obj.html ? obj : null;
+  }
+
+  update(): void {
+    const obj = this.activeHtml();
+    if (!obj) {
+      this.element.style.display = 'none';
+      this.lastId = null;
+      return;
+    }
+    this.element.style.display = '';
+    const switched = obj.id !== this.lastId;
+    this.lastId = obj.id;
+    // Don't clobber a field the user is mid-edit in (unless we just switched).
+    if (!switched && this.isFocused()) {
+      this.writePlayButton(obj); // the toggle glyph can still follow state
+      this.writeScroll(obj);
+      return;
+    }
+    this.writeFields();
+  }
+
+  private isFocused(): boolean {
+    const active = document.activeElement;
+    return active instanceof HTMLInputElement && this.element.contains(active);
+  }
+
+  private writeFields(): void {
+    const obj = this.activeHtml();
+    if (!obj || !obj.html) return;
+    const html = obj.html;
+    this.writeNum(this.widthInput, html.pageW);
+    this.writeNum(this.heightInput, html.pageH);
+    this.writeNum(this.fpsInput, clampHtmlFps(html.fps));
+    this.writeScroll(obj);
+    const src = html.kind === 'url'
+      ? html.source
+      : `${obj.name} — ${html.source.replace(/\s+/g, ' ').trim().slice(0, 60)}`;
+    if (this.sourceReadout.value !== src) this.sourceReadout.value = src;
+    this.portalHint.style.display = html.kind === 'url' ? '' : 'none';
+    this.writePlayButton(obj);
+  }
+
+  private writeScroll(obj: SceneObject): void {
+    this.writeNum(this.scrollReadout, Math.round(obj.html!.scrollY));
+  }
+
+  private writePlayButton(obj: SceneObject): void {
+    const playing = obj.html!.playing;
+    this.playBtn.textContent = playing ? '⏸' : '▶';
+    this.playBtn.title = playing ? 'Pause the page' : 'Play the page';
+    this.playBtn.setAttribute('aria-pressed', String(playing));
+  }
+
+  private writeNum(input: HTMLInputElement, value: number): void {
+    const s = String(value);
+    if (input.value !== s && document.activeElement !== input) input.value = s;
+  }
+
+  private commitExtent(): void {
+    const obj = this.activeHtml();
+    if (!obj) return;
+    const w = parseFloat(this.widthInput.value);
+    const h = parseFloat(this.heightInput.value);
+    // Bad input → snap the fields back to the committed values.
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) { this.writeFields(); return; }
+    setHtmlPageExtent(obj, this.undo, w, h);
+    this.writeFields();
+  }
+
+  private commitFps(): void {
+    const obj = this.activeHtml();
+    if (!obj) return;
+    const raw = parseFloat(this.fpsInput.value);
+    if (Number.isFinite(raw)) obj.html!.fps = clampHtmlFps(raw); // preview cap — no undo
+    this.writeFields();
+  }
+}
+
 /**
  * Object tab: name (rename → RenameObjectCommand), visibility checkbox, and the
  * live-editable Location / Rotation / Scale transform fields. Behavior is a
@@ -293,6 +522,7 @@ class ObjectTab {
   private smoothInput!: HTMLInputElement;
   private colorInput!: HTMLInputElement;
   private readonly transformFields: TransformFields;
+  private readonly webPage: WebPageSection;
 
   /** Active object id shown last frame; -1 sentinel means "nothing shown". */
   private lastActiveId: number | null = -1 as unknown as number;
@@ -376,6 +606,10 @@ class ObjectTab {
     this.transformFields = new TransformFields(this.scene, this.undo);
     this.body.appendChild(this.transformFields.element);
 
+    // Web Page section — only shown for HTML planes (self-hiding in update()).
+    this.webPage = new WebPageSection(this.scene, this.undo);
+    this.body.appendChild(this.webPage.element);
+
     container.append(this.empty, this.body);
     this.update();
   }
@@ -394,6 +628,10 @@ class ObjectTab {
 
     const switched = obj.id !== this.lastActiveId;
     this.lastActiveId = obj.id;
+
+    // The Web Page section refreshes every frame (its own focus guard protects
+    // mid-edit fields) so the Scroll Y readout tracks browse-mode scrolling live.
+    this.webPage.update();
 
     // Skip value rewrites while the user is editing a field (unless we just
     // switched objects, in which case the fields must repopulate immediately —

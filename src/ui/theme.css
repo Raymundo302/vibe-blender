@@ -210,6 +210,13 @@
 .properties-visible { flex: none; cursor: pointer; accent-color: var(--vb-accent, #fe730f); }
 .properties-group { margin-bottom: 8px; }
 .properties-group-title { color: var(--vb-text-dim, #8a8a8a); margin-bottom: 3px; }
+/* UR7-3: portal-limits hint under the Web Page section (URL planes only). */
+.web-page-hint {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--vb-text-dim, #8a8a8a);
+}
 .properties-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .properties-field { display: flex; align-items: center; gap: 3px; min-width: 0; }
 .properties-axis { flex: none; color: var(--vb-text-dim, #8a8a8a); width: 10px; }

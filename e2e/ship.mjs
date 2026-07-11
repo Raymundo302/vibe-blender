@@ -5,7 +5,7 @@
 import { runE2e } from './harness.mjs';
 
 // Bumped whenever sceneJson VERSION bumps — single spot for the whole suite.
-const CURRENT_FORMAT_VERSION = 12; // v12: output resolution renderSettings (UR5-5)
+const CURRENT_FORMAT_VERSION = 13; // v13: HTML-plane payload (UR7-1)
 
 runE2e(async (t) => {
   // --- P3-2: scene save / load (JSON) ---

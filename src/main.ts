@@ -20,6 +20,7 @@ import './ui/cameraTab'; // side-effect: registers the Camera data tab (P8-2)
 import './ui/worldTab'; // side-effect: registers the World tab (P10-4)
 import { initRenderEngine } from './renderEngine/init'; // F12 render engine (P8-4)
 import { AnimRender } from './renderEngine/animRender'; // 🎞 Render Animation (P16-1)
+import { HtmlPlaneDriver } from './tools/htmlPlaneDriver'; // UR7-1 HTML-plane playback
 import './core/modifiers/builtins'; // side-effect: registers Mirror + Array modifiers
 import { Topbar } from './ui/topbar';
 import { Toolbar } from './ui/toolbar';
@@ -29,6 +30,7 @@ import { NPanel } from './ui/nPanel';
 import { Passepartout } from './ui/passepartout';
 import { CursorOverlay } from './ui/cursorOverlay';
 import { OriginDots } from './ui/originDots';
+import { HtmlPortals } from './ui/htmlPortals'; // UR7-3 live URL web portals
 import { loadOverlayPrefs, overlays } from './render/overlayPrefs';
 import { loadShadePrefs, shadePrefs } from './render/shadePrefs';
 import { ShadingMenu } from './ui/shadingMenu';
@@ -205,6 +207,10 @@ cursorOverlay.visible = overlays.cursor3d;
 // Origin dots (P12-2): small orange dot at each selected object's world origin.
 const originDots = new OriginDots(viewportWrap, scene, camera, renderer, canvas);
 
+// UR7-3: live URL web portals — one <iframe> per URL plane, overlaid inside
+// #viewport-wrap and transform-matched to its plane every frame. Ticked below.
+const htmlPortals = new HtmlPortals(viewportWrap, scene, camera, renderer, canvas);
+
 const inputManager = new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
 
 // Viewport tool palette (UR3-1): Blender's left-edge T-toolbar. Mode-aware,
@@ -216,10 +222,17 @@ const toolbar = new Toolbar(viewportWrap, scene, undo, inputManager, opCtx.setSt
 // same toggle through the returned controls.
 const renderEngine = initRenderEngine({ scene, camera, setStatus: opCtx.setStatus, host: document.body });
 
+// UR7-1: HTML-plane playback — re-rasterizes animated pages on scrub/playback/
+// free-preview, and drives deterministic per-frame rasters for Ctrl+F12. Ticked
+// in the frame loop below. Passed the renderer so Ctrl+F12's viewport engine can
+// await the GL texture upload too.
+const htmlDriver = new HtmlPlaneDriver(scene, renderer);
+
 // 🎞 Render Animation (P16-1): frame loop → WebM / PNG-zip, modal + Ctrl+F12.
 const animRender = new AnimRender({
   scene, camera, renderer, gl: ctx.gl, canvas,
   setStatus: opCtx.setStatus, host: document.body,
+  htmlDriver,
 });
 
 // First-visit splash inside #viewport-wrap. It auto-dismisses on the first canvas
@@ -406,9 +419,10 @@ topbar.mountTabs(workspaces.createTabs());
 (window as unknown as Record<string, unknown>).__app = {
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
   input: inputManager,
+  htmlDriver,
   nodes: createNodesApi({ scene, undo }),
   animRender: {
-    render: (opts: { mode: 'webm' | 'png'; start?: number; end?: number; fps?: number }) => animRender.render(opts),
+    render: (opts: Parameters<typeof animRender.render>[0]) => animRender.render(opts),
     cancel: () => animRender.cancel(),
     open: () => animRender.openModal(),
     close: () => animRender.closeModal(),
@@ -427,6 +441,7 @@ topbar.mountTabs(workspaces.createTabs());
 };
 
 function frame(): void {
+  htmlDriver.tick();
   renderer.render(scene, camera);
   workspaces.update();
   topbar.update();
@@ -435,6 +450,7 @@ function frame(): void {
   passepartout.update();
   cursorOverlay.update();
   originDots.update();
+  htmlPortals.update();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

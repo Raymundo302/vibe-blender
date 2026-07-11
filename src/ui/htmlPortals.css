@@ -1,0 +1,25 @@
+/* UR7-3 — HTML web-portal overlay. A DOM layer above the WebGL canvas holding
+ * one live <iframe> per URL plane, transform-matched to its plane each frame
+ * (render/cssMatrix.ts). The layer never eats viewport input (pointer-events:
+ * none); an iframe only becomes interactive in Page Mode (set inline by
+ * htmlPortals.ts). z-index sits above the canvas but below the tool panels /
+ * menus so those stay clickable. */
+#html-portal-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  transform-style: preserve-3d;
+  overflow: hidden;
+}
+
+.html-portal {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  margin: 0;
+  transform-origin: 0 0;
+  background: #ffffff;
+  /* pointer-events + transform + size are set inline per frame. */
+}

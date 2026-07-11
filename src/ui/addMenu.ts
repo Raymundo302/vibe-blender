@@ -4,7 +4,7 @@ import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
 import { CAMERA_SPAWN_ROTATION, type LightType } from '../core/scene/objectData';
 import { pickImagePlane, type ImagePlaneMode } from '../tools/imagePlane';
-import { pickHtmlSnapshot, pickHtmlLive } from '../tools/htmlPlane';
+import { WebAddDialog } from './webAddDialog';
 import { OpPanel } from './opPanel';
 
 /**
@@ -70,13 +70,12 @@ export class AddMenu {
       })));
     // Image ▸ (UR4-3): each item opens a file picker; the chosen image becomes a
     // textured plane. Diffuse = lit, Emit = shadeless (renders exactly as the
-    // image looks). UR4-4 adds two HTML items: a rasterized HTML file on an emit
-    // plane — Snapshot reads once, Live re-reads from disk every 2s.
+    // image looks). UR7-3: ONE "HTML / Website…" item opens a dialog — Load an
+    // address (live iframe portal) or Open… a local .html file (UR4-4/UR7-1).
     this.category('Image', () => [
       { label: 'Diffuse…', run: () => this.pickImage('diffuse') },
       { label: 'Emit…', run: () => this.pickImage('emit') },
-      { label: 'HTML Snapshot…', run: () => this.pickHtml('snapshot') },
-      { label: 'HTML Live…', run: () => this.pickHtml('live') },
+      { label: 'HTML / Website…', run: () => this.openWebDialog() },
     ]);
     this.directItem('Camera', () =>
       this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
@@ -230,16 +229,14 @@ export class AddMenu {
   }
 
   /**
-   * Close the menu, then open the HTML picker (UR4-4). Snapshot reads the file
-   * once; Live re-reads it from disk every 2s (Chrome File System Access API,
-   * gracefully degrading to snapshot where unavailable). The add commits inside
-   * htmlPlane.ts only once a file is chosen — cancelling does nothing.
+   * Close the menu, then open the "HTML / Website…" dialog (UR7-3 A): Load a web
+   * address (a live iframe portal plane) or Open… a local .html file (the UR4-4 /
+   * UR7-1 file plane, keeping the on-disk live-reload watcher where supported).
    */
-  private pickHtml(kind: 'snapshot' | 'live'): void {
-    const { scene, undo, setStatus } = this.opts;
+  private openWebDialog(): void {
+    const { parent, scene, undo, setStatus } = this.opts;
     this.close();
-    if (kind === 'live') void pickHtmlLive(scene, undo, setStatus);
-    else pickHtmlSnapshot(scene, undo, setStatus);
+    new WebAddDialog({ parent, scene, undo, setStatus, onClose: () => {} });
   }
 
   private addPrimitive(def: PrimitiveDef): void {

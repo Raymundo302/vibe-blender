@@ -136,7 +136,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(12);
+    expect(parsed.version).toBe(13);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -757,7 +757,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(12);
+    expect(json.version).toBe(13);
   });
 
   it('round-trips a shadeless material', () => {
@@ -838,5 +838,94 @@ describe('sceneJson output resolution (v12 / UR5-5)', () => {
     const dst = new Scene();
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
     expect(dst.renderSettings).toEqual({ width: 1, height: 720 });
+  });
+});
+
+describe('sceneJson HTML plane (v13 / UR7-1)', () => {
+  it('round-trips an HTML-plane payload', () => {
+    const scene = new Scene();
+    const obj = scene.add('page', makeCube());
+    obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
+
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(json.version).toBe(13);
+    expect(json.objects[0].html).toEqual({
+      kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
+    });
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.objects[0].html).toEqual({
+      kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
+    });
+  });
+
+  it('is byte-identical across serialize → apply → serialize', () => {
+    const scene = new Scene();
+    const obj = scene.add('page', makeCube());
+    obj.html = { kind: 'file', source: '<p>x</p>', pageW: 1024, pageH: 768, scrollY: 0, playing: false, fps: 8 };
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+
+  it('round-trips a URL-plane payload but LOADS it PAUSED (UR7-3: no surprise network on open)', () => {
+    const scene = new Scene();
+    const obj = scene.add('site', makeCube());
+    obj.html = { kind: 'url', source: 'https://example.com', pageW: 1024, pageH: 768, scrollY: 0, playing: true, fps: 8 };
+
+    // Serialization preserves the saved play state (round-trip fidelity of the file).
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(json.objects[0].html.kind).toBe('url');
+    expect(json.objects[0].html.source).toBe('https://example.com');
+    expect(json.objects[0].html.playing).toBe(true);
+
+    // …but on LOAD a URL plane comes up PAUSED regardless of the saved flag.
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.objects[0].html!.kind).toBe('url');
+    expect(dst.objects[0].html!.source).toBe('https://example.com');
+    expect(dst.objects[0].html!.playing).toBe(false);
+  });
+
+  it('omits html from the file for a plain object (unchanged for non-HTML planes)', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect('html' in json.objects[0]).toBe(false);
+  });
+
+  it('tolerates a pre-v13 file (no html key) → object loads without a payload', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    json.version = 12; // pre-UR7 file
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.objects[0].html).toBeUndefined();
+  });
+
+  it('clamps a serialized fps out of range and defaults missing numeric fields', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    json.objects[0].html = { kind: 'file', source: '<i/>', fps: 999, playing: true };
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    const h = dst.objects[0].html!;
+    expect(h.fps).toBe(15); // clamped 1..15
+    expect(h.pageW).toBe(1024);
+    expect(h.pageH).toBe(768);
+    expect(h.scrollY).toBe(0);
+    expect(h.playing).toBe(true);
+  });
+
+  it('rejects an html payload with a bad kind', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    json.objects[0].html = { kind: 'nope', source: '<i/>' };
+    expect(() => applySceneJson(JSON.stringify(json), new Scene(), new OrbitCamera())).toThrow(/html\.kind/);
   });
 });

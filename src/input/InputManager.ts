@@ -55,6 +55,7 @@ import { AddObjectsCommand, DeleteObjectsCommand, SetParentCommand } from '../co
 import { TransformCommand } from '../core/undo/commands';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
+import { pageModeState } from '../tools/pageMode';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
 import { SeparateCommand } from '../core/undo/separateCommand';
 
@@ -995,6 +996,16 @@ export class InputManager {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
+    // Browse Page Mode (UR7-2): the wheel SCROLLS the active HTML plane's page
+    // (adjust html.scrollY, clamped ≥ 0) — camera zoom is suppressed, the wheel
+    // belongs to the page. The driver re-rasters on its next tick (throttled to
+    // html.fps, latest-wins, reusing UR7-1's in-flight guard). No content-height
+    // clamp in v1 (documented). Orbit/pan (pointer handlers) stay live.
+    if (pageModeState.object) {
+      const html = pageModeState.object.html;
+      if (html) html.scrollY = Math.max(0, html.scrollY + e.deltaY);
+      return;
+    }
     // Circle select: the wheel grows/shrinks the brush radius (5–200) instead of
     // zooming the camera.
     if (this.circleSelectOp) {
@@ -1052,6 +1063,15 @@ export class InputManager {
       return;
     }
 
+    // Esc exits browse Page Mode (UR7-2). No active op here — the activeOp branch
+    // above already returned when one was running.
+    if (e.key === 'Escape' && pageModeState.object) {
+      e.preventDefault();
+      pageModeState.object = null;
+      this.ctx.setStatus('');
+      return;
+    }
+
     // The Delete key aliases X everywhere X acts (users kept pressing Delete and
     // concluding delete didn't exist): object-mode object delete AND the
     // edit-mode Delete menu. Normalise it to 'x' before any key dispatch.
@@ -1087,11 +1107,26 @@ export class InputManager {
       return;
     }
 
-    // Tab: toggle Edit Mode on the active object. preventDefault keeps the
-    // browser from moving focus out of the canvas.
+    // Tab: toggle Edit Mode on the active object — EXCEPT an HTML plane, where
+    // Tab enters browse "Page Mode" (treat it like a website). Plain meshes keep
+    // Edit Mode exactly as-is. preventDefault keeps the browser from moving focus
+    // out of the canvas.
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       const scene = this.ctx.scene;
+      // Already browsing → Tab exits page mode.
+      if (pageModeState.object) {
+        pageModeState.object = null;
+        this.ctx.setStatus('');
+        return;
+      }
+      // HTML plane active (and not mid mesh-edit) → enter page mode, not edit.
+      const active = scene.activeObject;
+      if (!scene.editMode && active?.html) {
+        pageModeState.object = active;
+        this.ctx.setStatus('Page Mode — scroll to browse, Tab/Esc to exit');
+        return;
+      }
       if (scene.editMode) {
         this.clearSculptTool(); // leaving edit mode ends any sculpt brush
         scene.exitEditMode();

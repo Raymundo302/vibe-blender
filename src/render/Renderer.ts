@@ -428,6 +428,42 @@ export class Renderer {
   }
 
   /**
+   * Await the base-color texture upload for an image material (UR7-1). Unlike the
+   * lazy {@link materialTexture} (which returns null during the async decode and
+   * pops the texture in on a later frame), this resolves only once the GL texture
+   * matching the CURRENT texDataUrl is uploaded — so a synchronous render right
+   * after shows the right pixels. Used by the animation renderer to make the
+   * VIEWPORT engine deterministic for animated HTML planes. No-op (resolves) for
+   * non-image materials or with no DOM.
+   */
+  async ensureMaterialTexture(mat: Material): Promise<void> {
+    if (mat.texKind !== 'image' || !mat.texDataUrl) return;
+    if (typeof Image === 'undefined') return;
+    const url = mat.texDataUrl;
+    const cached = this.matTextures.get(mat.id);
+    if (cached && cached.url === url && cached.tex) return; // already up to date
+    const gl = this.ctx.gl;
+    const img = new Image();
+    const ok = await new Promise<boolean>((resolve) => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+    if (!ok || mat.texDataUrl !== url) return; // decode failed or superseded
+    const prev = this.matTextures.get(mat.id);
+    if (prev?.tex && prev.url !== url) gl.deleteTexture(prev.tex);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    this.matTextures.set(mat.id, { url, tex });
+  }
+
+  /**
    * P13 map-slot upload: data URL → GL texture, cached by URL. Returns null
    * while the async decode is in flight (caller binds a neutral fallback).
    * `srgb` = false uploads LINEAR (normal/rough/metal maps are data, not
@@ -911,6 +947,14 @@ export class Renderer {
   currentViewProj(scene: Scene, camera: OrbitCamera): Mat4 {
     const { view, proj } = this.resolveView(scene, camera);
     return proj.mul(view);
+  }
+
+  /** The SEPARATE view + projection matrices on screen right now (orbit camera
+   *  or a looked-through camera) — for the UR7-3 HTML-portal CSS3D sync, which
+   *  needs them apart to build the iframe's screen matrix3d. */
+  viewProjForOverlay(scene: Scene, camera: OrbitCamera): { view: Mat4; proj: Mat4 } {
+    const { view, proj } = this.resolveView(scene, camera);
+    return { view, proj };
   }
 
   /**

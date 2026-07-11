@@ -10,11 +10,13 @@ import type { OrbitCamera } from '../camera/OrbitCamera';
 import type {
   CameraData,
   EmptyData,
+  HtmlPlaneData,
   LightData,
   LightType,
   Material,
   ObjectKind,
 } from '../core/scene/objectData';
+import { clampHtmlFps } from '../core/scene/objectData';
 import {
   createModifier,
   modifierTypes,
@@ -42,8 +44,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 12;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const VERSION = 13;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -175,6 +177,18 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
   if (obj.light) out.light = serializeLight(obj.light);
   if (obj.camera) out.camera = serializeCamera(obj.camera, scene);
   if (obj.empty) out.empty = { displaySize: num(obj.empty.displaySize) };
+  // HTML-plane payload (v13/UR7-1). kind 'file' serializes the full source text.
+  if (obj.html) {
+    out.html = {
+      kind: obj.html.kind,
+      source: obj.html.source,
+      pageW: num(obj.html.pageW),
+      pageH: num(obj.html.pageH),
+      scrollY: num(obj.html.scrollY),
+      playing: obj.html.playing,
+      fps: num(clampHtmlFps(obj.html.fps)),
+    };
+  }
   // Animation (v7; v9 adds an optional per-key extras object: easing direction
   // + free bezier handles) — key omitted entirely for never-keyed objects.
   if (obj.anim && obj.anim.fcurves.length > 0) {
@@ -371,6 +385,7 @@ interface ObjectData {
   light?: LightData;
   camera?: CameraData;
   empty?: EmptyData;
+  html?: HtmlPlaneData;
 }
 interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
@@ -690,6 +705,29 @@ function parseCamera(v: unknown, i: number): CameraData {
   };
 }
 
+/**
+ * Parse an object's HtmlPlaneData payload (v13/UR7-1). Tolerant of older/partial
+ * data: missing numeric fields fall back to the documented defaults, fps is
+ * clamped to 1..15. `kind`/`source` are required and validated.
+ */
+function parseHtml(v: unknown, i: number): HtmlPlaneData {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(`objects[${i}].html must be an object`);
+  const h = v as Record<string, unknown>;
+  if (h.kind !== 'file' && h.kind !== 'url') fail(`objects[${i}].html.kind must be file or url`);
+  if (typeof h.source !== 'string') fail(`objects[${i}].html.source must be a string`);
+  const numOr = (raw: unknown, def: number, where: string): number =>
+    raw === undefined ? def : numField(raw, where);
+  return {
+    kind: h.kind,
+    source: h.source,
+    pageW: numOr(h.pageW, 1024, `objects[${i}].html.pageW`),
+    pageH: numOr(h.pageH, 768, `objects[${i}].html.pageH`),
+    scrollY: numOr(h.scrollY, 0, `objects[${i}].html.scrollY`),
+    playing: h.playing === true,
+    fps: clampHtmlFps(numOr(h.fps, 8, `objects[${i}].html.fps`)),
+  };
+}
+
 /** Parse an object's EmptyData payload (kind 'empty' only). */
 function parseEmpty(v: unknown, i: number): EmptyData {
   if (typeof v !== 'object' || v === null) fail(`objects[${i}].empty is missing`);
@@ -830,6 +868,9 @@ function parseObject(o: unknown, i: number): ObjectData {
   if (kind === 'light') data.light = parseLight(obj.light, i);
   if (kind === 'camera') data.camera = parseCamera(obj.camera, i);
   if (kind === 'empty') data.empty = obj.empty === undefined ? { displaySize: 1 } : parseEmpty(obj.empty, i);
+  // HTML plane (v13/UR7-1) — a mesh object with an html payload; absent in older
+  // files, so pre-UR7 image planes stay plain static image planes.
+  if (obj.html !== undefined) data.html = parseHtml(obj.html, i);
   return data;
 }
 
@@ -1123,6 +1164,15 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       new Quat(od.rotation[0], od.rotation[1], od.rotation[2], od.rotation[3]),
       Vec3.fromArray(od.scale),
     );
+    // HTML-plane payload (v13/UR7-1) — set BEFORE applyAnimation so a keyed
+    // html.playing samples onto a live payload (byte-identical round trips).
+    // UR7-3: a URL plane always LOADS PAUSED so opening a file never silently
+    // hits the network or pops a live portal — the plane shows its card/raster
+    // until the user presses ▶. (kind 'file' planes keep their saved play state.)
+    if (od.html) {
+      obj.html = { ...od.html };
+      if (obj.html.kind === 'url') obj.html.playing = false;
+    }
     obj.modifiers.push(...modifiers);
     if (modifiers.length > 0) obj.modifiersVersion++;
     rebuilt.push(obj);

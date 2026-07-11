@@ -46,6 +46,11 @@ export function readChannel(scene: Scene, obj: SceneObject, path: string): numbe
     if (sub === 'emissiveStrength') return mat.emissiveStrength;
     return null;
   }
+  // HTML plane keyable Play state (UR7-1): boolean mapped to 0/1.
+  if (head === 'html' && obj.html) {
+    if (sub === 'playing') return obj.html.playing ? 1 : 0;
+    return null;
+  }
   return null;
 }
 
@@ -83,6 +88,12 @@ export function writeChannel(scene: Scene, obj: SceneObject, path: string, value
     if (sub === 'roughness') { mat.roughness = value; return true; }
     if (sub === 'metallic') { mat.metallic = value; return true; }
     if (sub === 'emissiveStrength') { mat.emissiveStrength = value; return true; }
+    return false;
+  }
+  // HTML plane keyable Play state (UR7-1): a keyed 0/1 (constant interp) toggles
+  // the boolean. >0.5 = playing so any positive keyed value reads as "on".
+  if (head === 'html' && obj.html) {
+    if (sub === 'playing') { obj.html.playing = value > 0.5; return true; }
     return false;
   }
   return false;
