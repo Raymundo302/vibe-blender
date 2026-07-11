@@ -56,6 +56,8 @@ import { TransformCommand } from '../core/undo/commands';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
 import { pageModeState } from '../tools/pageMode';
+import { extractState } from '../tools/extractElement';
+import { ExtractElementController } from '../ui/extractOverlay';
 import { textEditState, TextEditSession } from '../tools/textEdit';
 import { TextCommand } from '../core/undo/textCommands';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
@@ -709,6 +711,31 @@ export class InputManager {
     this.startOperator(new EdgeSlideOperator());
   }
 
+  /**
+   * UR8-4 — Extract Element (Page Mode only). Spins up the DOM-mirror + hover
+   * overlay controller on the active HTML plane. No-op unless we're browsing an
+   * HTML plane (the toolbar only shows the button then). Any existing controller
+   * is cancelled first (idempotent).
+   */
+  startExtractElement(): void {
+    const source = pageModeState.object;
+    if (!source || !source.html) {
+      this.ctx.setStatus('Extract Element needs Page Mode on an HTML plane');
+      return;
+    }
+    extractState.controller?.cancel();
+    new ExtractElementController(
+      this.ctx.scene,
+      source,
+      this.ctx.camera,
+      this.renderer,
+      this.ctx.undo,
+      this.canvas,
+      this.canvas.parentElement as HTMLElement,
+      this.ctx.setStatus,
+    );
+  }
+
   /** Edit-mode Normal Move (third op in the G cycle). */
   startNormalMove(): void {
     this.startOperator(new NormalMoveOperator());
@@ -753,6 +780,19 @@ export class InputManager {
 
   private onPointerDown(e: PointerEvent): void {
     this.pointer = this.toLocal(e);
+
+    // UR8-4 Extract Element: LMB extracts the hovered element (Shift accumulates);
+    // RMB cancels. Camera/selection are suppressed while the tool is active.
+    if (extractState.controller) {
+      if (e.button === 0) {
+        extractState.controller.moveTo(this.pointer.x, this.pointer.y);
+        extractState.controller.click(e.shiftKey);
+      } else if (e.button === 2) {
+        extractState.controller.cancel();
+      }
+      e.preventDefault();
+      return;
+    }
 
     if (this.activeOp) {
       // Knife: LMB adds a polyline point; a rapid second click on the same spot
@@ -903,6 +943,12 @@ export class InputManager {
 
     const prev = this.pointer;
     this.pointer = this.toLocal(e);
+
+    // UR8-4 Extract Element: hover drives the element highlight (no camera move).
+    if (extractState.controller) {
+      extractState.controller.moveTo(this.pointer.x, this.pointer.y);
+      return;
+    }
 
     if (this.activeOp) {
       this.activeOp.onPointerMove(this.ctx, this.pointer);
@@ -1073,6 +1119,13 @@ export class InputManager {
       return;
     }
 
+    // UR8-4 Extract Element owns Enter (finish multi-extract) / Esc (cancel)
+    // while picking. Sits before the activeOp branch (there is no activeOp here).
+    if (extractState.controller) {
+      if (e.key === 'Enter') { e.preventDefault(); extractState.controller.finish(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); extractState.controller.cancel(); return; }
+    }
+
     if (this.activeOp) {
       if (e.key === 'Escape') this.endOperator(false);
       else if (e.key === 'Enter') this.endOperator(true);
@@ -1139,8 +1192,9 @@ export class InputManager {
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       const scene = this.ctx.scene;
-      // Already browsing → Tab exits page mode.
+      // Already browsing → Tab exits page mode (cancel any Extract tool first).
       if (pageModeState.object) {
+        extractState.controller?.cancel();
         pageModeState.object = null;
         this.ctx.setStatus('');
         return;

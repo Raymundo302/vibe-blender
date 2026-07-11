@@ -6,6 +6,7 @@ import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { runIntersectTool } from '../tools/intersectTool';
 import { selectModeState, selectModeLabel } from '../tools/circleSelect';
+import { inPageMode } from '../tools/pageMode';
 
 /** Icon per select mode for the dynamic Select button. */
 const SELECT_ICONS: Record<'box' | 'circle' | 'lasso', string> = {
@@ -23,12 +24,14 @@ const SELECT_OP_NAMES = new Set(['Box Select', 'Circle Select', 'Lasso Select'])
  * `opName`, when set, is the `Operator.name` that marks this button "active"
  * while that operator is the running modal op (polled in `update()`).
  */
+export type ToolbarMode = 'object' | 'edit' | 'page';
+
 export interface ToolDef {
   id: string;
   label: string;
   icon: string;
   shortcut: string;
-  modes: ('object' | 'edit')[];
+  modes: ToolbarMode[];
   run(): void;
   opName?: string;
 }
@@ -50,7 +53,7 @@ export class Toolbar {
   /** Currently-mounted buttons, paired with their tool for the active-poll. */
   private buttons: { el: HTMLButtonElement; tool: ToolDef }[] = [];
   /** The mode the button list was last built for; null = never built. */
-  private builtMode: 'object' | 'edit' | null = null;
+  private builtMode: ToolbarMode | null = null;
 
   constructor(
     private readonly parent: HTMLElement,
@@ -109,11 +112,14 @@ export class Toolbar {
         run: () => im.startKnife() },
       { id: 'edgeslide', label: 'Edge Slide', icon: '↔', shortcut: 'GG', modes: ['edit'], opName: 'Edge Slide',
         run: () => im.startEdgeSlide() },
+      // --- Page mode (UR8-4) -------------------------------------------------
+      { id: 'extract', label: 'Extract Element', icon: '◨', shortcut: '', modes: ['page'],
+        run: () => im.startExtractElement() },
     ];
   }
 
   /** Rebuild the button list for `mode` (cheap; only called on a mode change). */
-  private rebuild(mode: 'object' | 'edit'): void {
+  private rebuild(mode: ToolbarMode): void {
     this.element.textContent = '';
     this.buttons = [];
     for (const tool of this.tools) {
@@ -134,7 +140,9 @@ export class Toolbar {
    * when unchanged), then paint the active-operator highlight.
    */
   update(): void {
-    const mode = this.scene.mode; // 'object' | 'edit'
+    // Page Mode (browsing an HTML plane) shows the Extract Element tool; the
+    // toolbar is otherwise object/edit mode-aware.
+    const mode: ToolbarMode = inPageMode() ? 'page' : this.scene.mode;
     if (mode !== this.builtMode) {
       this.rebuild(mode);
       this.builtMode = mode;
