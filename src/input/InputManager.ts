@@ -400,6 +400,7 @@ export class InputManager {
    *  axis keeps its gizmo arrow while the rest of the gizmo is hidden. */
   private syncAxisIndicator(): void {
     this.renderer.axisIndicator = this.activeOp?.axisIndicator?.() ?? null;
+    this.renderer.guideSegments = this.activeOp?.guideSegments?.() ?? null;
   }
 
   startOperator(op: Operator): void {
@@ -411,6 +412,96 @@ export class InputManager {
     }
   }
 
+  /**
+   * The name of the currently-active modal operator (its `Operator.name`), or
+   * null when nothing is modal. Read-only accessor so UI (the tool palette,
+   * UR3-1) can poll which tool is running to paint an "active" highlight.
+   */
+  get activeOperatorName(): string | null {
+    return this.activeOp?.name ?? null;
+  }
+
+  // --- Public tool starters ----------------------------------------------------
+  // The SAME code paths the keyboard shortcuts run, exposed so the viewport tool
+  // palette (UR3-1) can trigger a tool exactly like pressing its key. The
+  // keyboard handlers below delegate here rather than duplicating any setup.
+
+  /** Object-mode Shift+D: duplicate the selection, then ride a Move. */
+  duplicateSelected(): void {
+    const scene = this.ctx.scene;
+    const selected = scene.selectedObjects;
+    if (selected.length === 0) return;
+    const dups = selected.map((obj) => scene.duplicate(obj, nextDupName(scene, obj.name)));
+    scene.selection.clear();
+    for (const d of dups) scene.selection.add(d.id);
+    scene.activeId = dups.at(-1)?.id ?? null;
+    this.ctx.undo.push(new AddObjectsCommand('Duplicate', scene, dups));
+    this.ctx.setStatus(`Duplicated ${dups.length} object(s)`);
+    this.startOperator(new TranslateOperator());
+  }
+
+  /** Edit-mode G: modal move of the selected element verts. */
+  startEditMove(): void {
+    this.startOperator(new EditTranslateOperator(this.renderer));
+  }
+
+  /** Edit-mode R: modal rotate of the selected element verts. */
+  startEditRotate(): void {
+    this.startOperator(new EditRotateOperator(this.renderer));
+  }
+
+  /** Edit-mode S: modal scale of the selected element verts. */
+  startEditScale(): void {
+    this.startOperator(new EditScaleOperator(this.renderer));
+  }
+
+  /** Edit-mode E: extrude (face mode only, mirrors the keyboard guard). */
+  startExtrude(): void {
+    const edit = this.ctx.scene.editMode;
+    if (!edit) return;
+    if (edit.elementMode !== 'face') {
+      this.ctx.setStatus('Extrude: face mode only (v1)');
+      return;
+    }
+    this.startOperator(new ExtrudeOperator());
+  }
+
+  /** Edit-mode I: inset (face mode only, mirrors the keyboard guard). */
+  startInset(): void {
+    const edit = this.ctx.scene.editMode;
+    if (!edit) return;
+    if (edit.elementMode !== 'face') {
+      this.ctx.setStatus('Inset: face mode only');
+      return;
+    }
+    this.startOperator(new InsetOperator());
+  }
+
+  /** Edit-mode Ctrl+B: bevel the selection. */
+  startBevel(): void {
+    this.startOperator(new BevelOperator());
+  }
+
+  /** Edit-mode Ctrl+R: loop cut. */
+  startLoopCut(): void {
+    this.startOperator(new LoopCutOperator(this.renderer));
+  }
+
+  /** Edit-mode K: knife (with the same double-click-tracking setup the key does). */
+  startKnife(): void {
+    const op = new KnifeOperator(this.canvas.parentElement as HTMLElement);
+    this.startOperator(op);
+    if (this.activeOp === op) {
+      this.knifeOp = op;
+      this.lastKnifeClick = 0;
+    }
+  }
+
+  /** Edit-mode GG / Edge Slide. */
+  startEdgeSlide(): void {
+    this.startOperator(new EdgeSlideOperator());
+  }
+
   private endOperator(confirm: boolean): void {
     if (!this.activeOp) return;
     if (confirm) this.activeOp.confirm(this.ctx);
@@ -420,6 +511,7 @@ export class InputManager {
     this.knifeOp = null;
     this.renderer.gizmoVisible = true;
     this.renderer.axisIndicator = null;
+    this.renderer.guideSegments = null;
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -687,7 +779,7 @@ export class InputManager {
         if (this.activeOp instanceof EditTranslateOperator && this.activeOp.slideRequested) {
           this.activeOp.cancel(this.ctx);
           this.activeOp = null;
-          this.startOperator(new EdgeSlideOperator());
+          this.startEdgeSlide();
         }
       }
       return;
@@ -909,16 +1001,7 @@ export class InputManager {
     // Shift+D: duplicate the selection, then ride the pointer with a Move.
     if (key === 'd' && e.shiftKey && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
-      const scene = this.ctx.scene;
-      const selected = scene.selectedObjects;
-      if (selected.length === 0) return;
-      const dups = selected.map((obj) => scene.duplicate(obj, nextDupName(scene, obj.name)));
-      scene.selection.clear();
-      for (const d of dups) scene.selection.add(d.id);
-      scene.activeId = dups.at(-1)?.id ?? null;
-      this.ctx.undo.push(new AddObjectsCommand('Duplicate', scene, dups));
-      this.ctx.setStatus(`Duplicated ${dups.length} object(s)`);
-      this.startOperator(new TranslateOperator());
+      this.duplicateSelected();
       return;
     }
     // Ctrl+J: join every selected mesh into the active object (Blender semantics).
@@ -1254,7 +1337,7 @@ export class InputManager {
     // select (which guards !e.ctrlKey) and preventDefault the browser bookmark.
     if (key === 'b' && e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
-      this.startOperator(new BevelOperator());
+      this.startBevel();
       return;
     }
     // B: box select. Starts a modal operator whose next LMB drag draws the rect;
@@ -1277,32 +1360,27 @@ export class InputManager {
     // preventDefault so the browser doesn't reload the page.
     if (key === 'r' && e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
-      this.startOperator(new LoopCutOperator(this.renderer));
+      this.startLoopCut();
       return;
     }
     // K: knife. Click to lay a screen-space polyline over the mesh, Enter or
     // double-click cuts, Esc/RMB cancels. The operator owns its own SVG overlay.
     if (key === 'k' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
-      const op = new KnifeOperator(this.canvas.parentElement as HTMLElement);
-      this.startOperator(op);
-      if (this.activeOp === op) {
-        this.knifeOp = op;
-        this.lastKnifeClick = 0;
-      }
+      this.startKnife();
       return;
     }
     // G/R/S: modal move/rotate/scale of the selected elements' verts.
     if (key === 'g' && !e.ctrlKey && !e.altKey) {
-      this.startOperator(new EditTranslateOperator(this.renderer));
+      this.startEditMove();
       return;
     }
     if (key === 'r' && !e.ctrlKey && !e.altKey) {
-      this.startOperator(new EditRotateOperator(this.renderer));
+      this.startEditRotate();
       return;
     }
     if (key === 's' && !e.ctrlKey && !e.altKey) {
-      this.startOperator(new EditScaleOperator(this.renderer));
+      this.startEditScale();
       return;
     }
     // Shift+N: recalculate normals — make winding consistent + orient outward.
@@ -1386,20 +1464,12 @@ export class InputManager {
     // E: extrude. Face mode rides the region along its average normal; vert/edge
     // mode is not supported in v1 (just tell the user).
     if (key === 'e' && !e.ctrlKey && !e.altKey) {
-      if (edit.elementMode !== 'face') {
-        this.ctx.setStatus('Extrude: face mode only (v1)');
-        return;
-      }
-      this.startOperator(new ExtrudeOperator());
+      this.startExtrude();
       return;
     }
     // I: inset each selected face individually. Face mode only.
     if (key === 'i' && !e.ctrlKey && !e.altKey) {
-      if (edit.elementMode !== 'face') {
-        this.ctx.setStatus('Inset: face mode only');
-        return;
-      }
-      this.startOperator(new InsetOperator());
+      this.startInset();
       return;
     }
     // X: open the Delete menu at the pointer (Verts/Edges/Faces/Merge). An empty

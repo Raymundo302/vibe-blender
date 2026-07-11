@@ -68,6 +68,26 @@ export function pickRails(mesh: EditableMesh, vertId: number, selected: Set<numb
 }
 
 /**
+ * Guide-line segments for one vert (LOCAL space) — the tangent lines drawn
+ * during an edge slide, extended along each rail so the slide direction is
+ * visible before the vert moves. For each non-null rail, a segment from
+ * `base - dir·0.5·length` to `base + dir·1.5·length` (through and half a rail
+ * length PAST the far vert). A single-rail vert yields one segment; a zero-rail
+ * vert yields none. Pure so it can be unit-tested without a world matrix.
+ */
+export function railGuideSegments(base: Vec3, rails: VertRails): { a: Vec3; b: Vec3 }[] {
+  const segs: { a: Vec3; b: Vec3 }[] = [];
+  for (const rail of [rails.a, rails.b]) {
+    if (!rail) continue;
+    segs.push({
+      a: base.sub(rail.dir.scale(0.5 * rail.length)),
+      b: base.add(rail.dir.scale(1.5 * rail.length)),
+    });
+  }
+  return segs;
+}
+
+/**
  * Slide a vert from its start position `base` by factor t ∈ [-1, 1]. t > 0
  * moves toward rail A's far vert by t × railLength; t < 0 toward rail B's by
  * |t| × railLength. A missing rail for the requested sign → the vert stays.
@@ -94,6 +114,8 @@ export class EdgeSlideOperator implements Operator {
   private readonly before = new Map<number, Vec3>();
   /** Per-vert precomputed rails. */
   private readonly rails = new Map<number, VertRails>();
+  /** WORLD-space guide segments, cached at start() (rails are fixed). */
+  private guideCache: { a: Vec3; b: Vec3 }[] | null = null;
   private readonly numeric = new NumericInput();
   private startX = 0;
   /** Horizontal pixels that map to |t| = 1. */
@@ -114,11 +136,26 @@ export class EdgeSlideOperator implements Operator {
       this.rails.set(id, pickRails(obj.mesh, id, selected));
     }
 
+    // Cache the guide lines in WORLD space — rails/positions are LOCAL, so lift
+    // each segment through the edit object's world matrix (parent aware).
+    const world = ctx.scene.worldMatrix(obj);
+    const guides: { a: Vec3; b: Vec3 }[] = [];
+    for (const [id, rails] of this.rails) {
+      for (const seg of railGuideSegments(this.before.get(id)!, rails)) {
+        guides.push({ a: world.transformPoint(seg.a), b: world.transformPoint(seg.b) });
+      }
+    }
+    this.guideCache = guides.length > 0 ? guides : null;
+
     this.startX = pointer.x;
     this.range = Math.max(40, ctx.viewportSize().width * 0.25);
     this.pointerT = 0;
     this.apply(ctx);
     return true;
+  }
+
+  guideSegments(): { a: Vec3; b: Vec3 }[] | null {
+    return this.guideCache;
   }
 
   onPointerMove(ctx: OperatorContext, pointer: PointerState): void {

@@ -128,7 +128,11 @@ runE2e(async (t) => {
   await t.sleep(40);
   await t.key('a', 'KeyA', 8); // Shift+A
   t.check('S1: Add menu appears on Shift+A', await t.until(`!!document.querySelector('.add-menu')`));
-  await t.evaluate(`[...document.querySelectorAll('.add-menu-item')].find((b) => b.textContent.trim() === 'Torus').click()`);
+  // UR3-4: the root now shows CATEGORY rows — open the Mesh flyout first, then
+  // click Torus inside it.
+  await t.evaluate(`document.querySelector('.add-menu-category[data-category="Mesh"]').click()`);
+  await t.until(`[...document.querySelectorAll('.add-menu-flyout .add-menu-item')].some((b) => b.textContent.trim() === 'Torus')`);
+  await t.evaluate(`[...document.querySelectorAll('.add-menu-flyout .add-menu-item')].find((b) => b.textContent.trim() === 'Torus').click()`);
   await t.sleep(140);
   t.check('S1: a Torus object was added',
     (await t.evaluate('window.__app.scene.activeObject && window.__app.scene.activeObject.name')) === 'Torus');

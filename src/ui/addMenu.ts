@@ -17,6 +17,9 @@ const LIGHTS: { name: string; type: LightType }[] = [
   { name: 'Spot', type: 'spot' },
 ];
 
+/** How long the flyout lingers after the pointer leaves it (gap-forgiveness). */
+const FLYOUT_CLOSE_DELAY_MS = 150;
+
 /** Everything the popup needs; kept free of InputManager internals. */
 export interface AddMenuOptions {
   /** Positioned host — the pointer coords are relative to this element. */
@@ -32,31 +35,38 @@ export interface AddMenuOptions {
 }
 
 /**
- * Blender's Shift-A "Add Mesh" popup. A self-contained DOM widget: it owns its
+ * Blender's Shift-A "Add" popup. A self-contained DOM widget: it owns its
  * element and all listeners, and removes every one of them on close so the
  * InputManager never has to. All styling lives in the shared theme.css (P1-7).
+ *
+ * UR3-4: the root shows CATEGORY rows — **Mesh ▸**, **Light ▸**, **Camera** —
+ * and hovering a category pops its items out in a submenu to the RIGHT of the
+ * row (Blender-style). Camera is a direct item (single entry). The flyout is a
+ * child of `root`, so `onOutsidePointer` still treats it as "inside".
  */
 export class AddMenu {
   private readonly root: HTMLDivElement;
   private closed = false;
 
+  /** The one flyout currently on screen (only ever one), and which category. */
+  private flyout: HTMLDivElement | null = null;
+  private flyoutCategory: string | null = null;
+  /** Pending delayed-close so a pointer can cross the row→flyout gap.  */
+  private closeTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(private readonly opts: AddMenuOptions) {
     this.root = document.createElement('div');
     this.root.className = 'add-menu';
 
-    this.heading('Add Mesh');
-    for (const def of PRIMITIVES) {
-      this.item(def.name, () => this.addPrimitive(def));
-    }
-
-    this.heading('Add Light');
-    for (const { name, type } of LIGHTS) {
-      this.item(name, () =>
-        this.commitAdd(name, this.opts.scene.addLight(name, type)));
-    }
-
-    this.heading('Add Camera');
-    this.item('Camera', () =>
+    // Root rows: two category flyouts + one direct item.
+    this.category('Mesh', () =>
+      PRIMITIVES.map((def) => ({ label: def.name, run: () => this.addPrimitive(def) })));
+    this.category('Light', () =>
+      LIGHTS.map(({ name, type }) => ({
+        label: name,
+        run: () => this.commitAdd(name, this.opts.scene.addLight(name, type)),
+      })));
+    this.directItem('Camera', () =>
       this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
 
     // Position at the pointer, then clamp so the menu stays inside the host.
@@ -72,20 +82,125 @@ export class AddMenu {
     window.addEventListener('pointerdown', this.onOutsidePointer, true);
   }
 
-  private heading(text: string): void {
-    const heading = document.createElement('div');
-    heading.className = 'add-menu-heading';
-    heading.textContent = text;
-    this.root.appendChild(heading);
+  /**
+   * A category row (`Mesh ▸`, `Light ▸`). Hovering or clicking it opens a
+   * flyout listing `items()` to the row's right. The row itself carries the
+   * `.add-menu-item` class so a plain `click()` on the leaf still works once
+   * the flyout is open (e2e compatibility).
+   */
+  private category(
+    name: string,
+    items: () => { label: string; run: () => void }[],
+  ): void {
+    const row = document.createElement('button');
+    row.className = 'add-menu-item add-menu-category';
+    row.type = 'button';
+    row.dataset.category = name;
+    const label = document.createElement('span');
+    label.className = 'add-menu-label';
+    label.textContent = name;
+    const arrow = document.createElement('span');
+    arrow.className = 'add-menu-arrow';
+    arrow.textContent = '▸'; // ▸
+    row.append(label, arrow);
+
+    const open = (): void => {
+      this.cancelClose();
+      this.openFlyout(name, row, items());
+    };
+    row.addEventListener('mouseenter', open);
+    row.addEventListener('click', open);
+    row.addEventListener('mouseleave', this.scheduleClose);
+    this.root.appendChild(row);
   }
 
-  private item(label: string, onClick: () => void): void {
+  /** A direct root item (Camera). Hovering it dismisses any open flyout. */
+  private directItem(label: string, run: () => void): void {
     const item = document.createElement('button');
     item.className = 'add-menu-item';
     item.type = 'button';
     item.textContent = label;
-    item.addEventListener('click', onClick);
+    item.addEventListener('mouseenter', this.scheduleClose);
+    item.addEventListener('click', run);
     this.root.appendChild(item);
+  }
+
+  /**
+   * Open (or switch to) the flyout for `category`, anchored to `row`. Positioned
+   * at the root's right edge with its top aligned to the row; flips to the LEFT
+   * if it would overflow the host's right edge, and is clamped vertically inside
+   * the host — the same clamping idea the root already uses.
+   */
+  private openFlyout(
+    category: string,
+    row: HTMLElement,
+    items: { label: string; run: () => void }[],
+  ): void {
+    if (this.flyoutCategory === category && this.flyout) return;
+    this.closeFlyout();
+
+    const fly = document.createElement('div');
+    fly.className = 'add-menu add-menu-flyout';
+    for (const { label, run } of items) {
+      const btn = document.createElement('button');
+      btn.className = 'add-menu-item';
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.addEventListener('click', run);
+      fly.appendChild(btn);
+    }
+    fly.addEventListener('mouseenter', this.cancelCloseHandler);
+    fly.addEventListener('mouseleave', this.scheduleClose);
+
+    // Child of root, so onOutsidePointer's root.contains() treats it as inside.
+    this.root.appendChild(fly);
+    this.flyout = fly;
+    this.flyoutCategory = category;
+
+    // Measure, then position (all math in host-local coords, applied relative
+    // to root since the flyout is absolutely positioned within root).
+    const host = this.opts.parent;
+    const rootLeft = this.root.offsetLeft;
+    const rootTop = this.root.offsetTop;
+    const rootW = this.root.offsetWidth;
+    const flyW = fly.offsetWidth;
+    const flyH = fly.offsetHeight;
+
+    // Horizontal: right of root, else flip to the left if it overflows the host.
+    let hostX = rootLeft + rootW;
+    if (hostX + flyW > host.clientWidth) hostX = rootLeft - flyW;
+    if (hostX < 0) hostX = 0;
+
+    // Vertical: top aligned to the row, clamped to stay inside the host.
+    const desiredTop = rootTop + row.offsetTop;
+    const maxTop = Math.max(0, host.clientHeight - flyH);
+    const hostY = Math.min(Math.max(desiredTop, 0), maxTop);
+
+    fly.style.left = `${hostX - rootLeft}px`;
+    fly.style.top = `${hostY - rootTop}px`;
+  }
+
+  private closeFlyout(): void {
+    this.cancelClose();
+    if (this.flyout) {
+      this.flyout.remove();
+      this.flyout = null;
+      this.flyoutCategory = null;
+    }
+  }
+
+  private readonly scheduleClose = (): void => {
+    this.cancelClose();
+    this.closeTimer = setTimeout(() => this.closeFlyout(), FLYOUT_CLOSE_DELAY_MS);
+  };
+
+  private readonly cancelCloseHandler = (): void => this.cancelClose();
+
+  private cancelClose(): void {
+    if (this.closeTimer !== null) {
+      clearTimeout(this.closeTimer);
+      this.closeTimer = null;
+    }
   }
 
   private addPrimitive(def: PrimitiveDef): void {
@@ -130,6 +245,8 @@ export class AddMenu {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.cancelClose();
+    this.closeFlyout();
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('pointerdown', this.onOutsidePointer, true);
     this.root.remove();

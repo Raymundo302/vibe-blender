@@ -59,6 +59,33 @@ export function gizmoModelMatrix(origin: Vec3, scale: number, axis: GizmoAxis): 
     .mul(AXIS_ROT[axis]);
 }
 
+/**
+ * Clamp a world-space segment A→B so both endpoints stay a margin `near` in
+ * front of the eye plane (dot(P − eye, forward) ≥ near). Returns the trimmed
+ * segment, or null if the whole segment is behind the eye. Rasterizers
+ * (SwiftShader) DROP LINES with an endpoint behind the eye instead of clipping,
+ * so guide lines must be clamped on the CPU — same lesson as the axis guide.
+ */
+export function clampSegmentNear(
+  a: Vec3, b: Vec3, eye: Vec3, forward: Vec3, near: number,
+): { a: Vec3; b: Vec3 } | null {
+  const da = a.sub(eye).dot(forward);
+  const db = b.sub(eye).dot(forward);
+  const delta = db - da;
+  let t0 = 0;
+  let t1 = 1;
+  if (Math.abs(delta) < 1e-9) {
+    if (da < near) return null; // whole segment behind the eye plane
+  } else {
+    const tCut = (near - da) / delta;
+    if (delta > 0) t0 = Math.max(t0, tCut);
+    else t1 = Math.min(t1, tCut);
+  }
+  if (t1 <= t0) return null;
+  const dir = b.sub(a);
+  return { a: a.add(dir.scale(t0)), b: a.add(dir.scale(t1)) };
+}
+
 function coneTris(x0: number, x1: number, r: number, segs: number): Float32Array {
   const out: number[] = [];
   for (let i = 0; i < segs; i++) {
@@ -184,6 +211,35 @@ export class GizmoPass {
     }
     this.shaft.draw(gl.LINES);
     this.cone.draw(gl.TRIANGLES);
+    gl.enable(gl.CULL_FACE);
+  }
+
+  /**
+   * Draw a set of WORLD-space guide lines (edge-slide tangent rails, etc.) in a
+   * light neutral grey — same pass/style as the axis guide, but a color distinct
+   * from the X/Y/Z axis colors. Each segment is CPU-clamped against the near
+   * plane (see {@link clampSegmentNear}). Caller clears the depth buffer first,
+   * same as {@link render}. `eye`/`forward` are the current viewpoint.
+   */
+  renderGuides(
+    viewProj: Mat4, segments: readonly { a: Vec3; b: Vec3 }[],
+    eye: Vec3, forward: Vec3,
+  ): void {
+    if (segments.length === 0) return;
+    const gl = this.gl;
+    this.shader.use();
+    gl.disable(gl.CULL_FACE);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true);
+    this.shader.setMat4('u_mvp', viewProj);
+    this.shader.setVec4('u_color', 0.8, 0.8, 0.8, 1); // theme highlight grey
+    const NEAR = 0.3;
+    for (const seg of segments) {
+      const c = clampSegmentNear(seg.a, seg.b, eye, forward, NEAR);
+      if (!c) continue;
+      this.guide.update(0, new Float32Array([c.a.x, c.a.y, c.a.z, c.b.x, c.b.y, c.b.z]));
+      this.guide.draw(gl.LINES);
+    }
     gl.enable(gl.CULL_FACE);
   }
 

@@ -22,6 +22,8 @@ import { initRenderEngine } from './renderEngine/init'; // F12 render engine (P8
 import { AnimRender } from './renderEngine/animRender'; // 🎞 Render Animation (P16-1)
 import './core/modifiers/builtins'; // side-effect: registers Mirror + Array modifiers
 import { Topbar } from './ui/topbar';
+import { Toolbar } from './ui/toolbar';
+import './ui/toolbar.css';
 import { HelpOverlay } from './ui/helpOverlay';
 import { NPanel } from './ui/nPanel';
 import { Passepartout } from './ui/passepartout';
@@ -203,7 +205,11 @@ cursorOverlay.visible = overlays.cursor3d;
 // Origin dots (P12-2): small orange dot at each selected object's world origin.
 const originDots = new OriginDots(viewportWrap, scene, camera, renderer, canvas);
 
-new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
+const inputManager = new InputManager(canvas, opCtx, renderer, { save: saveScene, open: openScene }, helpOverlay, nPanel);
+
+// Viewport tool palette (UR3-1): Blender's left-edge T-toolbar. Mode-aware,
+// lives inside #viewport-wrap; updated in the frame loop below.
+const toolbar = new Toolbar(viewportWrap, scene, undo, inputManager, opCtx.setStatus);
 
 // F12 render engine (P8-4): owns its own keydown listener + result window.
 // Browsers reserve F12 for devtools, so the topbar Render button drives the
@@ -399,6 +405,7 @@ topbar.mountTabs(workspaces.createTabs());
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
+  input: inputManager,
   nodes: createNodesApi({ scene, undo }),
   animRender: {
     render: (opts: { mode: 'webm' | 'png'; start?: number; end?: number; fps?: number }) => animRender.render(opts),
@@ -423,6 +430,7 @@ function frame(): void {
   renderer.render(scene, camera);
   workspaces.update();
   topbar.update();
+  toolbar.update();
   nPanel.update();
   passepartout.update();
   cursorOverlay.update();

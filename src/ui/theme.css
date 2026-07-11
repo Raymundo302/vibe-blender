@@ -278,6 +278,15 @@
 }
 .add-menu-item:hover { background: var(--vb-accent, #fe730f); color: var(--vb-accent-contrast, #fff); }
 
+/* UR3-4: category rows (Mesh ▸ / Light ▸) open a flyout submenu to the right. */
+.add-menu-category {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.add-menu-category .add-menu-arrow { color: var(--vb-text-dim, #8a8a8a); font-size: 10px; }
+.add-menu-category:hover .add-menu-arrow { color: inherit; }
+/* The flyout is a child of the root menu, positioned in JS. */
+.add-menu-flyout { z-index: 101; }
+
 /* ------------------------------------------------------------- box select */
 /* Screen-space rectangle drawn while B box-select drags (P2-8). Positioned in
  * CSS pixels within #viewport-wrap; non-interactive so it never eats events. */

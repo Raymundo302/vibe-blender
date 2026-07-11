@@ -59,6 +59,15 @@ export interface Operator {
    */
   axisIndicator?(): { axis: 'x' | 'y' | 'z'; pivot: Vec3 } | null;
 
+  /**
+   * Optional: WORLD-space guide line segments to draw while the modal runs —
+   * Blender's slide/tangent visualization (e.g. edge-slide rails). Generic hook;
+   * only the ops that need it implement it. InputManager polls it and mirrors the
+   * result onto the renderer, clearing it when the operator ends. Return null for
+   * no guides.
+   */
+  guideSegments?(): { a: Vec3; b: Vec3 }[] | null;
+
   /** LMB or Enter: apply final state and push the undo command. */
   confirm(ctx: OperatorContext): void;
 

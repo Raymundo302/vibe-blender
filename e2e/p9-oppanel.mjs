@@ -34,9 +34,11 @@ runE2e(async (t) => {
   await t.key('a', 'KeyA', 8); // shift+A
   t.check('Add menu appears on Shift+A', await t.until(`!!document.querySelector('.add-menu')`));
 
-  // Click the Torus item.
+  // UR3-4: open the Mesh category flyout, then click the Torus item inside it.
+  await t.evaluate(`document.querySelector('.add-menu-category[data-category="Mesh"]').click()`);
+  await t.until(`[...document.querySelectorAll('.add-menu-flyout .add-menu-item')].some((b) => b.textContent.trim() === 'Torus')`);
   await t.evaluate(`(() => {
-    const items = [...document.querySelectorAll('.add-menu-item')];
+    const items = [...document.querySelectorAll('.add-menu-flyout .add-menu-item')];
     items.find((b) => b.textContent.trim() === 'Torus').click();
   })()`);
   await t.sleep(120);
@@ -97,4 +99,80 @@ runE2e(async (t) => {
   t.check('Ctrl+Z removes the torus (single undo step)', (await objCount()) === before);
 
   await t.screenshot('/tmp/p9-3-oppanel.png');
+
+  // =====================================================================
+  // UR3-4 — categorized flyout submenus (Mesh ▸ / Light ▸ / Camera).
+  // =====================================================================
+  await t.mouse('mouseMoved', cx, cy);
+  await t.sleep(40);
+  await t.key('a', 'KeyA', 8); // Shift+A
+  t.check('UR3-4: Add menu reopens on Shift+A',
+    await t.until(`!!document.querySelector('.add-menu')`));
+
+  // Root shows exactly 3 rows: Mesh ▸, Light ▸, Camera.
+  const rootRows = await t.evaluate(
+    `[...document.querySelector('.add-menu').querySelectorAll(':scope > .add-menu-item')].map((b) => b.dataset.category || b.textContent.trim())`);
+  t.check('UR3-4: root shows 3 category/direct rows (Mesh, Light, Camera)',
+    JSON.stringify(rootRows) === JSON.stringify(['Mesh', 'Light', 'Camera']),
+    JSON.stringify(rootRows));
+
+  // Hover Mesh → flyout with ALL primitives, positioned at the row's right.
+  await t.evaluate(`document.querySelector('.add-menu-category[data-category="Mesh"]').dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))`);
+  await t.until(`!!document.querySelector('.add-menu-flyout')`);
+  const meshFlyout = await t.evaluate(`(() => {
+    const fly = document.querySelector('.add-menu-flyout');
+    const labels = [...fly.querySelectorAll('.add-menu-item')].map((b) => b.textContent.trim());
+    const root = document.querySelector('.add-menu');
+    const fr = fly.getBoundingClientRect(), rr = root.getBoundingClientRect();
+    return { labels, rightOfRoot: fr.left >= rr.right - 1, count: labels.length };
+  })()`);
+  t.check('UR3-4: hover Mesh opens a flyout listing primitives',
+    meshFlyout.labels.includes('Cube') && meshFlyout.labels.includes('Torus'),
+    JSON.stringify(meshFlyout.labels));
+  t.check('UR3-4: Mesh flyout sits at the row\'s right edge', meshFlyout.rightOfRoot);
+
+  // Hover Light → Mesh flyout closes, Light flyout opens (one flyout at a time).
+  await t.evaluate(`document.querySelector('.add-menu-category[data-category="Light"]').dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))`);
+  await t.sleep(30);
+  const lightState = await t.evaluate(`(() => {
+    const flys = [...document.querySelectorAll('.add-menu-flyout')];
+    const labels = flys.length ? [...flys[0].querySelectorAll('.add-menu-item')].map((b) => b.textContent.trim()) : [];
+    return { flyoutCount: flys.length, labels };
+  })()`);
+  t.check('UR3-4: hovering Light leaves exactly one flyout open', lightState.flyoutCount === 1);
+  t.check('UR3-4: the open flyout is now the Light list',
+    lightState.labels.includes('Point') && lightState.labels.includes('Sun') && lightState.labels.includes('Spot'),
+    JSON.stringify(lightState.labels));
+
+  // Add a Cube through the Mesh submenu → +1 object, exactly ONE undo push.
+  const beforeCube = await objCount();
+  const pushesBefore = await t.evaluate(`window.__app.undo.pushCount`);
+  await t.evaluate(`document.querySelector('.add-menu-category[data-category="Mesh"]').click()`);
+  await t.until(`[...document.querySelectorAll('.add-menu-flyout .add-menu-item')].some((b) => b.textContent.trim() === 'Cube')`);
+  await t.evaluate(`[...document.querySelectorAll('.add-menu-flyout .add-menu-item')].find((b) => b.textContent.trim() === 'Cube').click()`);
+  await t.sleep(120);
+  t.check('UR3-4: Cube added via the submenu', (await objCount()) === beforeCube + 1);
+  t.check('UR3-4: active object is the Cube',
+    (await t.evaluate('window.__app.scene.activeObject.name')) === 'Cube');
+  t.check('UR3-4: the add is exactly ONE undo entry',
+    (await t.evaluate(`window.__app.undo.pushCount`)) === pushesBefore + 1);
+  t.check('UR3-4: menu closed after the add',
+    await t.evaluate(`!document.querySelector('.add-menu')`));
+  // Single Ctrl+Z removes the cube (unchanged add semantics).
+  await t.key('z', 'KeyZ', 2);
+  await t.sleep(120);
+  t.check('UR3-4: Ctrl+Z removes the cube (single undo step)',
+    (await objCount()) === beforeCube);
+
+  // Escape closes everything (root + any open flyout).
+  await t.mouse('mouseMoved', cx, cy);
+  await t.sleep(40);
+  await t.key('a', 'KeyA', 8); // Shift+A
+  await t.until(`!!document.querySelector('.add-menu')`);
+  await t.evaluate(`document.querySelector('.add-menu-category[data-category="Mesh"]').dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }))`);
+  await t.until(`!!document.querySelector('.add-menu-flyout')`);
+  await t.key('Escape', 'Escape', 0);
+  await t.sleep(80);
+  t.check('UR3-4: Escape closes root and flyout',
+    await t.evaluate(`!document.querySelector('.add-menu') && !document.querySelector('.add-menu-flyout')`));
 });

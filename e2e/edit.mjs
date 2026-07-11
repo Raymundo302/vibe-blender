@@ -847,6 +847,78 @@ runE2e(async (t) => {
   t.check('P7-3: Ctrl+Z restores the slid verts',
     sd(u0, b0) < 1e-6 && sd(u1, b1) < 1e-6);
 
+  // --- UR3-3: edge-slide guide (tangent rail) lines ---
+  // Re-enter the slide (the vertical edge is still selected). While modal, each
+  // sliding vert's rails are drawn as world-space guide lines. Verify (1) the
+  // state hook syncs, (2) guide-grey pixels appear along the projected rails,
+  // and (3) Escape cancels the slide AND clears the guides.
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('g', 'KeyG');
+  await t.key('g', 'KeyG');
+  await t.sleep(60);
+  t.check('UR3-3: guideSegments synced to renderer during slide',
+    (await t.evaluate('Array.isArray(window.__app.renderer.guideSegments) ? window.__app.renderer.guideSegments.length : 0')) > 0);
+
+  // Project each guide segment to screen and collect device-pixel samples along
+  // it (a strip, not a single pixel). Count "guide grey" = neutral & bright.
+  const guideProbe = await t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const vp = app.renderer.currentViewProj(app.scene, app.camera).m;
+    const proj = (p) => {
+      const w = vp[3]*p.x + vp[7]*p.y + vp[11]*p.z + vp[15];
+      const x = vp[0]*p.x + vp[4]*p.y + vp[8]*p.z + vp[12];
+      const y = vp[1]*p.x + vp[5]*p.y + vp[9]*p.z + vp[13];
+      return { x: (x/w*0.5+0.5)*c.width, y: (y/w*0.5+0.5)*c.height };
+    };
+    const segs = app.renderer.guideSegments || [];
+    const pts = [];
+    for (const s of segs) {
+      const a = proj(s.a), b = proj(s.b);
+      for (let i = 0; i <= 40; i++) {
+        const x = Math.round(a.x + (b.x - a.x) * i / 40);
+        const y = Math.round(a.y + (b.y - a.y) * i / 40);
+        if (x < 1 || y < 1 || x >= c.width - 1 || y >= c.height - 1) continue;
+        pts.push([x, y]);
+      }
+    }
+    const px = new Uint8Array(4);
+    let hit = 0;
+    for (const [x, y] of pts) {
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const l = 0.2126*px[0] + 0.7152*px[1] + 0.0722*px[2];
+      const neutral = Math.abs(px[0]-px[1]) < 26 && Math.abs(px[1]-px[2]) < 26;
+      if (neutral && l >= 150 && l <= 236) hit++;
+    }
+    return { pts, hit };
+  })()`);
+  t.check('UR3-3: guide-grey pixels appear along the projected rails',
+    guideProbe.hit > 12, `on-count=${guideProbe.hit}`);
+
+  // Escape cancels the slide; guides must clear. Re-read the SAME pixel samples.
+  await t.key('Escape', 'Escape');
+  await t.sleep(60);
+  t.check('UR3-3: Escape clears renderer.guideSegments',
+    (await t.evaluate('window.__app.renderer.guideSegments')) === null);
+  const offHit = await t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl;
+    app.renderer.render(app.scene, app.camera);
+    const pts = ${JSON.stringify(guideProbe.pts)};
+    const px = new Uint8Array(4);
+    let hit = 0;
+    for (const [x, y] of pts) {
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const l = 0.2126*px[0] + 0.7152*px[1] + 0.0722*px[2];
+      const neutral = Math.abs(px[0]-px[1]) < 26 && Math.abs(px[1]-px[2]) < 26;
+      if (neutral && l >= 150 && l <= 236) hit++;
+    }
+    return hit;
+  })()`);
+  t.check('UR3-3: guide pixels vanish after Escape (fewer along the same strip)',
+    offHit < guideProbe.hit * 0.6, `on=${guideProbe.hit} off=${offHit}`);
+  t.check('UR3-3: Escape restored the pre-slide vert positions',
+    sd(await vc(vedge.v0), b0) < 1e-6 && sd(await vc(vedge.v1), b1) < 1e-6);
+
   // --- P7-5: duplicate in edit mode (Shift+D) ---
   // Pristine single-cube scene.
   await t.reload();

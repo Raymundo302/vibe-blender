@@ -5,7 +5,7 @@ import { UndoStack } from '../core/undo/UndoStack';
 import type { OperatorContext } from '../core/operator/Operator';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import { Vec3 } from '../core/math/vec3';
-import { pickRails, slidePosition, EdgeSlideOperator } from './edgeSlide';
+import { pickRails, slidePosition, railGuideSegments, EdgeSlideOperator } from './edgeSlide';
 
 /** Fake context: real Scene/OrbitCamera/UndoStack, stubbed viewport + status. */
 function makeCtx(): { ctx: OperatorContext; scene: Scene; undo: UndoStack } {
@@ -93,6 +93,34 @@ describe('slidePosition', () => {
   });
 });
 
+describe('railGuideSegments', () => {
+  const mesh = quadStrip();
+  const rails = pickRails(mesh, 2, new Set([2, 3]));
+  const base = mesh.verts.get(2)!.co; // (1, 0, 0)
+
+  it('spans a rail from base-0.5·dir·len to base+1.5·dir·len (both rails)', () => {
+    const segs = railGuideSegments(base, rails);
+    expect(segs).toHaveLength(2);
+    // Rail A (+X, len 1): (0.5,0,0) → (2.5,0,0) — through and half a rail past.
+    expect(segs[0].a.equalsApprox(new Vec3(0.5, 0, 0))).toBe(true);
+    expect(segs[0].b.equalsApprox(new Vec3(2.5, 0, 0))).toBe(true);
+    // Rail B (-X, len 1): (1.5,0,0) → (-0.5,0,0).
+    expect(segs[1].a.equalsApprox(new Vec3(1.5, 0, 0))).toBe(true);
+    expect(segs[1].b.equalsApprox(new Vec3(-0.5, 0, 0))).toBe(true);
+  });
+
+  it('a single-rail vert yields exactly one segment', () => {
+    const segs = railGuideSegments(base, { a: rails.a, b: null });
+    expect(segs).toHaveLength(1);
+    expect(segs[0].a.equalsApprox(new Vec3(0.5, 0, 0))).toBe(true);
+    expect(segs[0].b.equalsApprox(new Vec3(2.5, 0, 0))).toBe(true);
+  });
+
+  it('a zero-rail vert yields no segments', () => {
+    expect(railGuideSegments(base, { a: null, b: null })).toHaveLength(0);
+  });
+});
+
 describe('EdgeSlideOperator', () => {
   function stripInEditMode(scene: Scene) {
     const obj = scene.add('Strip', quadStrip());
@@ -136,6 +164,25 @@ describe('EdgeSlideOperator', () => {
     expect(obj.mesh.verts.get(2)!.co.equalsApprox(new Vec3(0.5, 0, 0))).toBe(true);
     op.cancel(ctx);
     expect(obj.mesh.verts.get(2)!.co.equalsApprox(new Vec3(1, 0, 0))).toBe(true);
+  });
+
+  it('guideSegments() is null before start and holds one segment per rail after', () => {
+    const { ctx, scene } = makeCtx();
+    stripInEditMode(scene);
+
+    const op = new EdgeSlideOperator();
+    expect(op.guideSegments()).toBe(null);
+    op.start(ctx, { x: 400, y: 300 });
+    // Verts 2 and 3 each have two rails (±X) → 4 world-space segments. The strip
+    // object sits at the origin (identity world matrix), so world == local.
+    const segs = op.guideSegments();
+    expect(segs).not.toBe(null);
+    expect(segs!).toHaveLength(4);
+    // Vert 2 base (1,0,0), +X rail → (0.5,0,0) → (2.5,0,0).
+    const hasV2PlusX = segs!.some(
+      (s) => s.a.equalsApprox(new Vec3(0.5, 0, 0)) && s.b.equalsApprox(new Vec3(2.5, 0, 0)),
+    );
+    expect(hasV2PlusX).toBe(true);
   });
 
   it('start() returns false when nothing is selected', () => {

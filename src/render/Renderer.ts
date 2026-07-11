@@ -151,6 +151,14 @@ export class Renderer {
   axisIndicator: { axis: GizmoAxis; pivot: Vec3 } | null = null;
 
   /**
+   * WORLD-space guide line segments to draw while a modal runs — the edge-slide
+   * tangent rails. InputManager mirrors the active operator's guideSegments()
+   * here (see {@link axisIndicator}); render() draws them in a neutral grey with
+   * the same near-plane-clamp technique as the axis guide. Null when none.
+   */
+  guideSegments: { a: Vec3; b: Vec3 }[] | null = null;
+
+  /**
    * Current viewport solid-shading mode. Z (or the topbar chip) cycles it via
    * {@link cycleShadingMode}. The solid pass in render() branches on this;
    * outlines / edit-cage / gizmo overlays are unaffected.
@@ -799,6 +807,15 @@ export class Renderer {
       this.gizmoPass.renderAxis(
         proj.mul(view), pivot, gizmoScreenScale(eye, pivot, fovY), axis, eye, forward,
       );
+    }
+
+    // Edge-slide (GG) tangent guide lines — WORLD-space rails through each
+    // sliding vert, extended past the far vert. Same near-plane-clamp technique
+    // as the axis guide; neutral grey, distinct from the X/Y/Z axis colors.
+    if (this.guideSegments && this.guideSegments.length > 0) {
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      const forward = new Vec3(-view.m[2], -view.m[6], -view.m[10]);
+      this.gizmoPass.renderGuides(proj.mul(view), this.guideSegments, eye, forward);
     }
   }
 

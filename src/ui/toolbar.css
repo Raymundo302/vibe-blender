@@ -1,0 +1,54 @@
+/*
+ * Viewport tool palette (UR3-1) — Blender's left-edge T-toolbar. A slim vertical
+ * strip of one-shot tool buttons docked on the LEFT of the 3D Viewport, themed
+ * like the other dark panels (theme.css tokens).
+ *
+ * The container is pointer-events:none so it never steals viewport drags in the
+ * gaps between buttons; only the buttons themselves are interactive ("pointer-
+ * events only on the strip itself").
+ */
+.viewport-toolbar {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none; /* gaps pass drags through to the canvas */
+}
+
+.viewport-tool-btn {
+  pointer-events: auto; /* buttons ARE the only interactive surface */
+  width: 34px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--vb-text, #d0d0d0);
+  background: var(--vb-panel2, #343434);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  padding: 0;
+}
+
+.viewport-tool-btn:hover {
+  background: var(--vb-hover, #4a4a4a);
+  color: var(--vb-text, #d0d0d0);
+}
+
+.viewport-tool-btn.active {
+  background: var(--vb-accent, #fe730f);
+  color: var(--vb-accent-contrast, #ffffff);
+  border-color: var(--vb-accent, #fe730f);
+}
