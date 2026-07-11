@@ -14,6 +14,7 @@ type AxisLock = 'x' | 'y' | 'z' | null;
  */
 export class TranslateOperator implements Operator {
   readonly name = 'Move';
+  readonly continuousGrab = true;
 
   private targets: WorldTarget[] = [];
   private pivot = Vec3.ZERO;

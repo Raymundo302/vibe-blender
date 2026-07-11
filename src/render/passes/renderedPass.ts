@@ -164,6 +164,7 @@ uniform vec3 u_baseColor;
 uniform float u_metallic;
 uniform float u_roughness;
 uniform vec3 u_emissive;
+uniform int u_shadeless;   // 1 = output base/texture color directly (no BRDF)
 uniform vec3 u_ambient; // flat world-derived ambient (avg world color × strength × 0.3)
 uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
 uniform vec2 u_aoTexel;
@@ -266,6 +267,17 @@ void main() {
     baseColor *= mix(vec3(0.2), vec3(1.0), parity);
   } else if (u_texKind == 2 && u_hasTex == 1) {
     baseColor *= texture(u_tex, v_uv).rgb;
+  }
+  // Shadeless (UR4-3): the base/texture color IS the output — no lights, no
+  // shadows, no BRDF. Screen-space AO still multiplies (documented). baseColor
+  // is linear (image sampled from an sRGB texture); gamma-encode for display so
+  // the plane reads back exactly as the source image (blueprints/refs).
+  if (u_shadeless == 1) {
+    vec3 c = baseColor;
+    c *= texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
+    c = pow(c, vec3(1.0 / 2.2));
+    outColor = vec4(c, 1.0);
+    return;
   }
   vec3 F0 = mix(vec3(0.04), baseColor, metallic);
 
@@ -417,6 +429,7 @@ export class RenderedPass {
       ),
     );
     s.setInt('u_texKind', mat.texKind === 'checker' ? 1 : mat.texKind === 'image' ? 2 : 0);
+    s.setInt('u_shadeless', mat.shadeless ? 1 : 0);
     s.setFloat('u_normStrength', mat.normalStrength);
   }
 

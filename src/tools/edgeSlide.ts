@@ -3,6 +3,7 @@ import type { EditableMesh } from '../core/mesh/EditableMesh';
 import type { EditModeState } from '../core/scene/EditMode';
 import { Vec3 } from '../core/math/vec3';
 import { MeshEditCommand } from '../core/undo/meshCommands';
+import { projectToScreen } from './boxSelect';
 import { NumericInput } from './numericInput';
 
 /**
@@ -70,27 +71,30 @@ export function pickRails(mesh: EditableMesh, vertId: number, selected: Set<numb
 /**
  * Guide-line segments for one vert (LOCAL space) — the tangent lines drawn
  * during an edge slide, extended along each rail so the slide direction is
- * visible before the vert moves. For each non-null rail, a segment from
- * `base - dir·0.5·length` to `base + dir·1.5·length` (through and half a rail
- * length PAST the far vert). A single-rail vert yields one segment; a zero-rail
- * vert yields none. Pure so it can be unit-tested without a world matrix.
+ * visible before the vert moves. Because t is now UNCLAMPED (the vert can slide
+ * far past the far vert into the rail's extension, UR4-2), each rail's guide
+ * spans `base - dir·2·length` to `base + dir·2·length` (±2L) so the reachable
+ * extension is visible. A single-rail vert yields one segment; a zero-rail vert
+ * yields none. Pure so it can be unit-tested without a world matrix.
  */
 export function railGuideSegments(base: Vec3, rails: VertRails): { a: Vec3; b: Vec3 }[] {
   const segs: { a: Vec3; b: Vec3 }[] = [];
   for (const rail of [rails.a, rails.b]) {
     if (!rail) continue;
     segs.push({
-      a: base.sub(rail.dir.scale(0.5 * rail.length)),
-      b: base.add(rail.dir.scale(1.5 * rail.length)),
+      a: base.sub(rail.dir.scale(2 * rail.length)),
+      b: base.add(rail.dir.scale(2 * rail.length)),
     });
   }
   return segs;
 }
 
 /**
- * Slide a vert from its start position `base` by factor t ∈ [-1, 1]. t > 0
- * moves toward rail A's far vert by t × railLength; t < 0 toward rail B's by
- * |t| × railLength. A missing rail for the requested sign → the vert stays.
+ * Slide a vert from its start position `base` by factor t. t > 0 moves toward
+ * rail A's far vert by t × railLength; t < 0 toward rail B's by |t| × railLength.
+ * t is NOT clamped to [-1, 1] (UR4-2): |t| > 1 extrapolates LINEARLY along the
+ * rail's extension, past the far vert, collinearly. A missing rail for the
+ * requested sign → the vert stays.
  */
 export function slidePosition(base: Vec3, rails: VertRails, t: number): Vec3 {
   if (t >= 0) return rails.a ? base.add(rails.a.dir.scale(t * rails.a.length)) : base;
@@ -98,15 +102,82 @@ export function slidePosition(base: Vec3, rails: VertRails, t: number): Vec3 {
 }
 
 /**
+ * A control-vert rail projected to SCREEN space (UR4-2). `o` is the base vert's
+ * screen position, `dir` the unit screen direction toward the far vert, `len`
+ * the base→far screen distance. Used to (a) proximity-pick the rail the pointer
+ * is nearest and (b) convert the pointer's projection onto it into a slide t.
+ */
+export interface ScreenRail {
+  readonly ox: number;
+  readonly oy: number;
+  readonly dx: number;
+  readonly dy: number;
+  readonly len: number;
+}
+
+/** A screen projector: local point → screen pixel, or null if unprojectable. */
+export type ScreenProjector = (p: Vec3) => { x: number; y: number } | null;
+
+/**
+ * Project one rail (its base → base+dir·length) to a screen line, or null if it
+ * degenerates to a point (screen length < 2px, e.g. an edge-on view) or an
+ * endpoint fails to project. Pure — a synthetic projector makes it unit-testable.
+ */
+export function projectScreenRail(base: Vec3, rail: Rail | null, project: ScreenProjector): ScreenRail | null {
+  if (!rail) return null;
+  const s0 = project(base);
+  const s1 = project(base.add(rail.dir.scale(rail.length)));
+  if (!s0 || !s1) return null;
+  const len = Math.hypot(s1.x - s0.x, s1.y - s0.y);
+  if (len < 2) return null; // edge-on: exclude from picking
+  return { ox: s0.x, oy: s0.y, dx: (s1.x - s0.x) / len, dy: (s1.y - s0.y) / len, len };
+}
+
+/**
+ * Proximity-pick the slide t from a pointer (UR4-2): project the pointer onto
+ * each screen rail, take the NEAREST by perpendicular distance, and return the
+ * signed parameter (projection scalar / rail screen length) — positive along
+ * rail A, negative along rail B. null when no rail is available (t stays put).
+ * On a perpendicular-distance tie (collinear rails, the common edge-slide case)
+ * rail A wins and its signed projection alone chooses the side.
+ */
+export function pickSlideT(a: ScreenRail | null, b: ScreenRail | null, px: number, py: number): number | null {
+  let bestPerp = Infinity;
+  let bestT: number | null = null;
+  for (const [rail, sign] of [[a, 1], [b, -1]] as [ScreenRail | null, number][]) {
+    if (!rail) continue;
+    const ex = px - rail.ox;
+    const ey = py - rail.oy;
+    const s = ex * rail.dx + ey * rail.dy; // projection scalar (screen px)
+    const perp = Math.abs(ex * rail.dy - ey * rail.dx); // perpendicular distance
+    if (perp < bestPerp) {
+      bestPerp = perp;
+      bestT = sign * (s / rail.len);
+    }
+  }
+  return bestT;
+}
+
+/**
  * GG (edit mode) — edge slide. Each selected vert slides along its rail (an
  * adjacent unselected edge) toward the neighbouring vert on either side; a
- * single factor t ∈ [-1, 1] is driven by horizontal pointer motion, or typed.
- * LMB/Enter confirm, RMB/Esc cancel. Follows the "modal GEOMETRY tools" undo
- * pattern: preview by writing vert positions, restore + push a capture on
- * confirm. v1: no clamping beyond |t| ≤ 1, no even-mode.
+ * single factor t drives every vert. t is picked by PROXIMITY (UR4-2): the
+ * control vert (the selected vert whose projected position is nearest the
+ * pointer at start) has two rails projected to screen lines; on every move the
+ * (virtual) pointer is projected onto each rail line and the NEAREST line
+ * (perpendicular screen distance) wins — t = signed projection scalar / rail
+ * screen length, positive along rail A, negative along rail B. t is UNCLAMPED
+ * (only ±100 for sanity) so verts slide past the far vert into the rail's
+ * extension. Typing a number overrides the pointer. LMB/Enter confirm, RMB/Esc
+ * cancel. Follows the "modal GEOMETRY tools" undo pattern: preview by writing
+ * vert positions, restore + push a capture on confirm. No even-mode (v1).
  */
 export class EdgeSlideOperator implements Operator {
   readonly name = 'Edge Slide';
+  readonly continuousGrab = true;
+  /** Set true when 'g' is pressed mid-slide: a sentinel the InputManager reads
+   *  to cycle this op to the next in Move → Edge Slide → Normal Move (UR4-2). */
+  cycleRequested = false;
 
   private mesh!: EditableMesh;
   private sel!: EditModeState;
@@ -116,10 +187,11 @@ export class EdgeSlideOperator implements Operator {
   private readonly rails = new Map<number, VertRails>();
   /** WORLD-space guide segments, cached at start() (rails are fixed). */
   private guideCache: { a: Vec3; b: Vec3 }[] | null = null;
+  /** The control vert's two rails projected to screen (null when they degenerate
+   *  to a point / project off-screen — such a rail is excluded from picking). */
+  private screenA: ScreenRail | null = null;
+  private screenB: ScreenRail | null = null;
   private readonly numeric = new NumericInput();
-  private startX = 0;
-  /** Horizontal pixels that map to |t| = 1. */
-  private range = 200;
   private pointerT = 0;
 
   start(ctx: OperatorContext, pointer: PointerState): boolean {
@@ -147,8 +219,27 @@ export class EdgeSlideOperator implements Operator {
     }
     this.guideCache = guides.length > 0 ? guides : null;
 
-    this.startX = pointer.x;
-    this.range = Math.max(40, ctx.viewportSize().width * 0.25);
+    // Build the SCREEN rails for the CONTROL vert = the selected vert whose
+    // projected screen position is nearest the pointer. Same camera/world→screen
+    // path the other tools use (mvp = proj·view·world, then projectToScreen).
+    const { width, height } = ctx.viewportSize();
+    const mvp = ctx.camera.projMatrix(width / height).mul(ctx.camera.viewMatrix()).mul(world);
+    const project: ScreenProjector = (p) => projectToScreen(p, mvp, width, height);
+    let controlId = -1;
+    let bestD = Infinity;
+    for (const id of this.before.keys()) {
+      const s = project(this.before.get(id)!);
+      if (!s) continue;
+      const d = (s.x - pointer.x) ** 2 + (s.y - pointer.y) ** 2;
+      if (d < bestD) { bestD = d; controlId = id; }
+    }
+    if (controlId >= 0) {
+      const rails = this.rails.get(controlId)!;
+      const base = this.before.get(controlId)!;
+      this.screenA = projectScreenRail(base, rails.a, project);
+      this.screenB = projectScreenRail(base, rails.b, project);
+    }
+
     this.pointerT = 0;
     this.apply(ctx);
     return true;
@@ -159,11 +250,16 @@ export class EdgeSlideOperator implements Operator {
   }
 
   onPointerMove(ctx: OperatorContext, pointer: PointerState): void {
-    this.pointerT = (pointer.x - this.startX) / this.range;
+    const t = pickSlideT(this.screenA, this.screenB, pointer.x, pointer.y);
+    if (t !== null) this.pointerT = t;
     this.apply(ctx);
   }
 
   onKey(ctx: OperatorContext, key: string): boolean {
+    if (key.toLowerCase() === 'g') {
+      this.cycleRequested = true; // consumed by the InputManager cycle (UR4-2)
+      return true;
+    }
     if (this.numeric.handleKey(key)) {
       this.apply(ctx);
       return true;
@@ -171,11 +267,12 @@ export class EdgeSlideOperator implements Operator {
     return false;
   }
 
-  /** Current factor: typed value overrides the pointer; clamped to [-1, 1]. */
+  /** Current factor: typed value overrides the pointer; clamped to ±100 (sanity
+   *  only — |t| may exceed 1 to slide past the far vert into the extension). */
   private currentT(): number {
     const n = this.numeric.value;
     const raw = n !== null ? n : this.pointerT;
-    return Math.max(-1, Math.min(1, raw));
+    return Math.max(-100, Math.min(100, raw));
   }
 
   private apply(ctx: OperatorContext): void {

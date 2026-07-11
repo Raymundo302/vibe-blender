@@ -95,6 +95,13 @@ export interface Material {
   subsurfaceWeight: number;
   /** Mean scatter distance in world units (Blender's Scale, roughly). */
   subsurfaceRadius: number;
+  /** Shadeless (UR4-3): output the base/texture color DIRECTLY — no lighting,
+   *  no shadows (Blender's "Emit"/image-plane look for blueprints & refs). The
+   *  Rendered viewport bypasses the BRDF sum; the tracer treats the hit as
+   *  emission of the base×texture color and gathers no further bounces. Screen-
+   *  space AO still multiplies in Rendered mode. Optional; absent → false, so
+   *  pre-v10 scenes/materials are byte-identically unaffected. */
+  shadeless?: boolean;
   /** Base-color texture (P11): none, procedural checker, or a packed image. */
   texKind: 'none' | 'checker' | 'image';
   /** Packed image as a data URL when texKind === 'image' (worldData-style). */
@@ -152,6 +159,7 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   emissiveStrength: 0,
   subsurfaceWeight: 0,
   subsurfaceRadius: 0.05,
+  shadeless: false,
   texKind: 'none' as const,
   texDataUrl: null,
   normalDataUrl: null,
@@ -175,6 +183,7 @@ export function makeMaterial(id: number, name: string): Material {
     emissiveStrength: 0,
     subsurfaceWeight: 0,
     subsurfaceRadius: 0.05,
+    shadeless: false,
     texKind: 'none',
     texDataUrl: null,
     normalDataUrl: null,

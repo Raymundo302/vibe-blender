@@ -793,6 +793,14 @@ export function traceRay(
       sampleMaterialTexture(mat, uu, vv, texC);
       alb[0] *= texC[0]; alb[1] *= texC[1]; alb[2] *= texC[2];
     }
+    // Shadeless (UR4-3): the base×texture color is emitted directly and the ray
+    // terminates — no lights, no shadows, no further bounces gathered (Blender's
+    // "Emit"/image-plane look). Non-shadeless materials skip this entirely, so
+    // the pre-UR4-3 bounce is byte-identical.
+    if (mat.shadeless) {
+      rr += tr * alb[0]; rg += tg * alb[1]; rb += tb * alb[2];
+      break;
+    }
     // Roughness / metallic maps MULTIPLY the scalar params (red channel), matching
     // the GLSL: rough = clamp(rough * r, 0.04, 1); metal *= r. Only when present,
     // so the no-map bounce below is byte-identical.

@@ -15,6 +15,7 @@ type AxisLock = 'x' | 'y' | 'z' | null;
  */
 export class ScaleOperator implements Operator {
   readonly name = 'Scale';
+  readonly continuousGrab = true;
 
   private targets: WorldTarget[] = [];
   private pivot = Vec3.ZERO;

@@ -3,6 +3,8 @@ import type { UndoStack } from '../core/undo/UndoStack';
 import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
 import type { LightType } from '../core/scene/objectData';
+import { pickImagePlane, type ImagePlaneMode } from '../tools/imagePlane';
+import { pickHtmlSnapshot, pickHtmlLive } from '../tools/htmlPlane';
 import { OpPanel } from './opPanel';
 
 /**
@@ -66,6 +68,16 @@ export class AddMenu {
         label: name,
         run: () => this.commitAdd(name, this.opts.scene.addLight(name, type)),
       })));
+    // Image ▸ (UR4-3): each item opens a file picker; the chosen image becomes a
+    // textured plane. Diffuse = lit, Emit = shadeless (renders exactly as the
+    // image looks). UR4-4 adds two HTML items: a rasterized HTML file on an emit
+    // plane — Snapshot reads once, Live re-reads from disk every 2s.
+    this.category('Image', () => [
+      { label: 'Diffuse…', run: () => this.pickImage('diffuse') },
+      { label: 'Emit…', run: () => this.pickImage('emit') },
+      { label: 'HTML Snapshot…', run: () => this.pickHtml('snapshot') },
+      { label: 'HTML Live…', run: () => this.pickHtml('live') },
+    ]);
     this.directItem('Camera', () =>
       this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
 
@@ -201,6 +213,30 @@ export class AddMenu {
       clearTimeout(this.closeTimer);
       this.closeTimer = null;
     }
+  }
+
+  /**
+   * Close the menu, then open the image file picker (UR4-3). The add commits
+   * only when a file is chosen (inside imagePlane.ts) — cancelling does nothing.
+   * Closing here keeps the AddMenu teardown contract (one menu on screen).
+   */
+  private pickImage(mode: ImagePlaneMode): void {
+    const { scene, undo, setStatus } = this.opts;
+    this.close();
+    pickImagePlane(scene, undo, mode, setStatus);
+  }
+
+  /**
+   * Close the menu, then open the HTML picker (UR4-4). Snapshot reads the file
+   * once; Live re-reads it from disk every 2s (Chrome File System Access API,
+   * gracefully degrading to snapshot where unavailable). The add commits inside
+   * htmlPlane.ts only once a file is chosen — cancelling does nothing.
+   */
+  private pickHtml(kind: 'snapshot' | 'live'): void {
+    const { scene, undo, setStatus } = this.opts;
+    this.close();
+    if (kind === 'live') void pickHtmlLive(scene, undo, setStatus);
+    else pickHtmlSnapshot(scene, undo, setStatus);
   }
 
   private addPrimitive(def: PrimitiveDef): void {

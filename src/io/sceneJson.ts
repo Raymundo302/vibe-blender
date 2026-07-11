@@ -41,8 +41,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 9;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+const VERSION = 10;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -256,6 +256,10 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       emissiveStrength: num(m.emissiveStrength),
       subsurfaceWeight: num(m.subsurfaceWeight),
       subsurfaceRadius: num(m.subsurfaceRadius),
+      // Shadeless (v10) — optional: only written when true, so a material that
+      // never set it (every pre-v10 material) serializes byte-identically
+      // (JSON.stringify drops undefined-valued keys).
+      shadeless: m.shadeless ? true : undefined,
       texKind: m.texKind,
       texDataUrl: m.texDataUrl,
       normalDataUrl: m.normalDataUrl,
@@ -305,6 +309,7 @@ interface MaterialData {
   emissiveStrength: number;
   subsurfaceWeight: number;
   subsurfaceRadius: number;
+  shadeless: boolean;
   texKind: 'none' | 'checker' | 'image';
   texDataUrl: string | null;
   normalDataUrl: string | null;
@@ -529,6 +534,8 @@ function parseMaterials(v: unknown): MaterialData[] {
       emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
       subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
       subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
+      // Shadeless (v10) — absent in older files → false.
+      shadeless: mat.shadeless === true,
       texKind: (() => {
         if (mat.texKind === undefined) return 'none' as const;
         if (mat.texKind !== 'none' && mat.texKind !== 'checker' && mat.texKind !== 'image') {
@@ -989,6 +996,7 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       emissiveStrength: md.emissiveStrength,
       subsurfaceWeight: md.subsurfaceWeight,
       subsurfaceRadius: md.subsurfaceRadius,
+      shadeless: md.shadeless,
       texKind: md.texKind,
       texDataUrl: md.texDataUrl,
       normalDataUrl: md.normalDataUrl,

@@ -33,6 +33,16 @@ export interface PointerState {
 export interface Operator {
   readonly name: string;
 
+  /**
+   * Optional: opt this operator into continuous-grab pointer handling (UR4-1).
+   * When true and the operator is started from the keyboard (not a gizmo/box/
+   * sculpt drag), InputManager captures the pointer (Pointer Lock) and feeds the
+   * operator a VIRTUAL, unbounded pointer accumulated from raw movement deltas,
+   * so the transform survives the canvas/window edge and Shift = precision. Ops
+   * that need the real cursor (box select, knife, loop cut, sculpt) leave it off.
+   */
+  readonly continuousGrab?: boolean;
+
   /** Return false to abort immediately (e.g. nothing selected). */
   start(ctx: OperatorContext, pointer: PointerState): boolean;
 

@@ -109,11 +109,11 @@ runE2e(async (t) => {
   t.check('UR3-4: Add menu reopens on Shift+A',
     await t.until(`!!document.querySelector('.add-menu')`));
 
-  // Root shows exactly 3 rows: Mesh ▸, Light ▸, Camera.
+  // Root shows 4 rows: Mesh ▸, Light ▸, Image ▸ (UR4-3), Camera.
   const rootRows = await t.evaluate(
     `[...document.querySelector('.add-menu').querySelectorAll(':scope > .add-menu-item')].map((b) => b.dataset.category || b.textContent.trim())`);
-  t.check('UR3-4: root shows 3 category/direct rows (Mesh, Light, Camera)',
-    JSON.stringify(rootRows) === JSON.stringify(['Mesh', 'Light', 'Camera']),
+  t.check('UR3-4: root shows the category/direct rows (Mesh, Light, Image, Camera)',
+    JSON.stringify(rootRows) === JSON.stringify(['Mesh', 'Light', 'Image', 'Camera']),
     JSON.stringify(rootRows));
 
   // Hover Mesh → flyout with ALL primitives, positioned at the row's right.

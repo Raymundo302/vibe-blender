@@ -1,4 +1,5 @@
 import type { Operator, OperatorContext, PointerState } from '../core/operator/Operator';
+import { ModalPointer } from './modalPointer';
 import type { Renderer } from '../render/Renderer';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import { TranslateOperator } from '../tools/translate';
@@ -6,6 +7,7 @@ import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { EditTranslateOperator, EditRotateOperator, EditScaleOperator, EditTransformBase, proportional } from '../tools/editTransform';
 import { EdgeSlideOperator } from '../tools/edgeSlide';
+import { NormalMoveOperator } from '../tools/normalMove';
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
@@ -364,6 +366,22 @@ export class InputManager {
   private camRigObj: SceneObject | null = null;
   private camRigBefore: Transform | null = null;
 
+  // --- Continuous grab (UR4-1) ------------------------------------------------
+  /** Virtual, unbounded pointer accumulated from raw movement deltas while a
+   *  continuous-grab operator (G/R/S, edge slide, …) is active. */
+  private readonly modalPointer = new ModalPointer();
+  /** True while the active operator is driven by the virtual pointer (it opted
+   *  into continuousGrab AND was started from the keyboard, not a mouse drag). */
+  private continuousActive = false;
+  /** True while the browser actually has the pointer locked to the canvas. In
+   *  headless/e2e (no lock) this stays false and the accumulator is fed from
+   *  real-event position deltas instead of movementX/Y. */
+  private pointerLocked = false;
+  /** Last real-event canvas-local position, for the fallback delta (no lock). */
+  private lastFallbackPos: { x: number; y: number } | null = null;
+  /** Software crosshair shown while pointer-locked (the OS cursor is hidden). */
+  private modalCursorEl: HTMLDivElement | null = null;
+
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly ctx: OperatorContext,
@@ -385,6 +403,36 @@ export class InputManager {
     // Forward key RELEASES to the active op only (narrow hook: MOVE operators
     // need Ctrl-up to un-invert grid snapping). No global keyup behaviour.
     window.addEventListener('keyup', (e) => this.onKeyUp(e));
+
+    // Continuous grab (UR4-1): a WINDOW-level pointermove drives continuous-grab
+    // operators via the virtual pointer, so movement keeps flowing even when the
+    // cursor leaves the canvas (under pointer lock) or is dispatched beyond the
+    // canvas rect (headless fallback). The canvas handler short-circuits for
+    // continuous ops (see onPointerMove) so exactly one path feeds the operator.
+    window.addEventListener('pointermove', (e) => this.onGlobalPointerMove(e));
+
+    // Pointer Lock lifecycle. If lock is LOST while a continuous op is still
+    // active and we did not end it ourselves, the browser swallowed an Escape
+    // keydown to exit lock — treat that as cancel (keeps Esc = cancel).
+    document.addEventListener('pointerlockchange', () => this.onPointerLockChange());
+    // A lock request that fails (headless, no user gesture) simply drops us into
+    // the real-event-delta fallback — nothing to do here but stay unlocked.
+    document.addEventListener('pointerlockerror', () => { this.pointerLocked = false; });
+  }
+
+  /** Pointer Lock state changed. Track it, and cancel a still-running continuous
+   *  op if the lock was lost out from under us (Escape under lock). */
+  private onPointerLockChange(): void {
+    const locked = document.pointerLockElement === this.canvas;
+    this.pointerLocked = locked;
+    if (locked) {
+      this.showModalCursor();
+    } else {
+      this.hideModalCursor();
+      // continuousActive is cleared by endOperator BEFORE it calls
+      // exitPointerLock, so a self-initiated exit never reaches here as true.
+      if (this.continuousActive && this.activeOp) this.endOperator(false);
+    }
   }
 
   private onKeyUp(e: KeyboardEvent): void {
@@ -403,13 +451,127 @@ export class InputManager {
     this.renderer.guideSegments = this.activeOp?.guideSegments?.() ?? null;
   }
 
-  startOperator(op: Operator): void {
+  /**
+   * Start a modal operator. `continuous` (default true) allows the continuous-
+   * grab flow (UR4-1) to engage when the op opts in via `continuousGrab`; the
+   * mouse-drag starters (gizmo handle, box select, sculpt) pass false so they
+   * keep the real, bounded cursor they were dragging with.
+   */
+  startOperator(op: Operator, continuous = true): void {
     if (this.activeOp) return;
     if (op.start(this.ctx, this.pointer)) {
       this.activeOp = op;
       this.renderer.gizmoVisible = false; // hide the gizmo while a tool is modal
       this.syncAxisIndicator(); // gizmo-handle drags start pre-locked
+      if (continuous && op.continuousGrab) this.beginContinuousGrab();
     }
+  }
+
+  /**
+   * Engage continuous-grab pointer handling for the just-started operator: seed
+   * the virtual pointer at the current cursor, arm the fallback delta reference,
+   * and request Pointer Lock (best-effort — a rejection just leaves us in the
+   * real-event-delta fallback, which is all headless e2e ever gets).
+   */
+  private beginContinuousGrab(): void {
+    this.continuousActive = true;
+    this.modalPointer.begin(this.pointer.x, this.pointer.y);
+    this.lastFallbackPos = { x: this.pointer.x, y: this.pointer.y };
+    const req = (this.canvas as HTMLCanvasElement & {
+      requestPointerLock?: (opts?: unknown) => Promise<void> | void;
+    }).requestPointerLock;
+    if (typeof req === 'function') {
+      try {
+        const r = req.call(this.canvas);
+        // Newer browsers return a promise that rejects instead of throwing.
+        if (r && typeof (r as Promise<void>).catch === 'function') {
+          (r as Promise<void>).catch(() => { /* fallback path */ });
+        }
+      } catch { /* unsupported / no gesture — fallback path */ }
+    }
+  }
+
+  /**
+   * Continuous-grab movement (UR4-1). Feeds the active operator the VIRTUAL
+   * pointer accumulated from raw deltas: under pointer lock from movementX/Y,
+   * otherwise from the change in real canvas-local position (so precision + the
+   * unbounded accumulator work headlessly even without lock). Shift = precision.
+   */
+  private onGlobalPointerMove(e: PointerEvent): void {
+    if (!this.activeOp || !this.continuousActive) return;
+    let dx: number;
+    let dy: number;
+    if (this.pointerLocked) {
+      dx = e.movementX;
+      dy = e.movementY;
+    } else {
+      const p = this.toLocal(e);
+      if (this.lastFallbackPos) {
+        dx = p.x - this.lastFallbackPos.x;
+        dy = p.y - this.lastFallbackPos.y;
+      } else {
+        dx = 0;
+        dy = 0;
+      }
+      this.lastFallbackPos = p;
+      // Keep the real cursor tracked (menus / the GG→Edge-Slide handoff read
+      // this.pointer); the operator itself is fed the virtual pointer below.
+      this.pointer = p;
+    }
+    const virt = this.modalPointer.move(dx, dy, e.shiftKey);
+    this.activeOp.onPointerMove(this.ctx, virt);
+    if (this.pointerLocked) this.positionModalCursor(virt);
+  }
+
+  /** Tear down continuous-grab state and exit Pointer Lock (idempotent). Called
+   *  from endOperator BEFORE confirm/cancel so the resulting pointerlockchange
+   *  sees continuousActive already false and does not re-cancel. */
+  private endContinuousGrab(): void {
+    if (!this.continuousActive) return;
+    this.continuousActive = false;
+    this.lastFallbackPos = null;
+    this.hideModalCursor();
+    if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+  }
+
+  // --- Software crosshair (shown only while the OS cursor is locked/hidden) ----
+  private ensureModalCursor(): HTMLDivElement {
+    if (!this.modalCursorEl) {
+      const el = document.createElement('div');
+      el.className = 'modal-cursor';
+      // Self-contained styling so no CSS file dependency: a small crosshair.
+      el.style.cssText =
+        'position:absolute;width:15px;height:15px;margin:-8px 0 0 -8px;pointer-events:none;' +
+        'z-index:40;display:none;background:' +
+        "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15'>" +
+        "<line x1='7.5' y1='0' x2='7.5' y2='15' stroke='white' stroke-width='1'/>" +
+        "<line x1='0' y1='7.5' x2='15' y2='7.5' stroke='white' stroke-width='1'/></svg>\") center/contain no-repeat;" +
+        'mix-blend-mode:difference;';
+      (this.canvas.parentElement as HTMLElement).appendChild(el);
+      this.modalCursorEl = el;
+    }
+    return this.modalCursorEl;
+  }
+
+  private showModalCursor(): void {
+    if (!this.continuousActive) return;
+    this.ensureModalCursor().style.display = 'block';
+    this.positionModalCursor(this.modalPointer.pos);
+  }
+
+  private hideModalCursor(): void {
+    if (this.modalCursorEl) this.modalCursorEl.style.display = 'none';
+  }
+
+  /** Place the crosshair at the virtual position WRAPPED (modulo) into the canvas
+   *  rect — Blender wraps the cursor back to the far edge when it runs off. */
+  private positionModalCursor(virt: { x: number; y: number }): void {
+    if (!this.modalCursorEl) return;
+    const { width, height } = this.ctx.viewportSize();
+    if (width <= 0 || height <= 0) return;
+    const wrap = (v: number, m: number) => ((v % m) + m) % m;
+    this.modalCursorEl.style.left = `${wrap(virt.x, width)}px`;
+    this.modalCursorEl.style.top = `${wrap(virt.y, height)}px`;
   }
 
   /**
@@ -502,8 +664,36 @@ export class InputManager {
     this.startOperator(new EdgeSlideOperator());
   }
 
+  /** Edit-mode Normal Move (third op in the G cycle). */
+  startNormalMove(): void {
+    this.startOperator(new NormalMoveOperator());
+  }
+
+  /**
+   * If the active op set its `cycleRequested` sentinel (a second G), cancel it
+   * (restore, push nothing) and start the NEXT op in the edit-mode G cycle
+   * Move → Edge Slide → Normal Move → Move, with the same selection. The Move
+   * side is guarded to the edit-mode EditTranslateOperator (its
+   * DuplicateFacesOperator subclass swallows G, so never sets the sentinel);
+   * object-mode TranslateOperator has no sentinel and is untouched.
+   */
+  private maybeCycleOperator(): void {
+    const op = this.activeOp;
+    let next: (() => void) | null = null;
+    if (op instanceof EditTranslateOperator && op.cycleRequested) next = () => this.startEdgeSlide();
+    else if (op instanceof EdgeSlideOperator && op.cycleRequested) next = () => this.startNormalMove();
+    else if (op instanceof NormalMoveOperator && op.cycleRequested) next = () => this.startEditMove();
+    if (!next) return;
+    op!.cancel(this.ctx);
+    this.activeOp = null;
+    next();
+  }
+
   private endOperator(confirm: boolean): void {
     if (!this.activeOp) return;
+    // Tear down continuous-grab (and exit Pointer Lock) BEFORE confirm/cancel so
+    // the exitPointerLock-triggered pointerlockchange can't re-enter and cancel.
+    this.endContinuousGrab();
     if (confirm) this.activeOp.confirm(this.ctx);
     else this.activeOp.cancel(this.ctx);
     this.activeOp = null;
@@ -586,7 +776,7 @@ export class InputManager {
         // stroke owns the pointer and confirms on release (sculptStroke).
         if (sculptState.tool !== 'none' && !e.altKey) {
           this.canvas.setPointerCapture(e.pointerId);
-          this.startOperator(new SculptStrokeOperator(this.renderer, sculptState.tool, e.ctrlKey));
+          this.startOperator(new SculptStrokeOperator(this.renderer, sculptState.tool, e.ctrlKey), false);
           if (this.activeOp) this.sculptStroke = true;
           else if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
           return;
@@ -603,7 +793,7 @@ export class InputManager {
         // confirms on release (see gizmoDrag). Capture the pointer so we still
         // get the move/up events if the cursor leaves the canvas.
         this.canvas.setPointerCapture(e.pointerId);
-        this.startOperator(new TranslateOperator(hit.axis));
+        this.startOperator(new TranslateOperator(hit.axis), false);
         if (this.activeOp) this.gizmoDrag = true;
         else if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
       } else if (e.shiftKey) {
@@ -642,6 +832,12 @@ export class InputManager {
   }
 
   private onPointerMove(e: PointerEvent): void {
+    // Continuous-grab operators are driven exclusively by the window-level
+    // handler (onGlobalPointerMove) reading the virtual pointer, so skip here to
+    // avoid double-feeding. This canvas listener fires first (target phase), the
+    // window listener after (bubble) — see the constructor.
+    if (this.activeOp && this.continuousActive) return;
+
     const prev = this.pointer;
     this.pointer = this.toLocal(e);
 
@@ -773,14 +969,11 @@ export class InputManager {
       else if (this.activeOp.onKey(this.ctx, e.key)) {
         e.preventDefault();
         this.syncAxisIndicator(); // X/Y/Z may have toggled an axis lock
-        // GG: a second G during an edit-mode Move swaps it for Edge Slide. The
-        // Move sets a sentinel; we cancel it (restore, push nothing) and hand the
-        // same selection to a fresh Edge Slide operator.
-        if (this.activeOp instanceof EditTranslateOperator && this.activeOp.slideRequested) {
-          this.activeOp.cancel(this.ctx);
-          this.activeOp = null;
-          this.startEdgeSlide();
-        }
+        // G cycle (UR4-2): a second G during an edit-mode Move/Edge Slide/Normal
+        // Move cancels the current op (restore, push nothing) and starts the next
+        // in Move → Edge Slide → Normal Move → Move, handing over the SAME
+        // selection. Object-mode Move (TranslateOperator) has no such sentinel.
+        this.maybeCycleOperator();
       }
       return;
     }
@@ -1345,7 +1538,7 @@ export class InputManager {
     if (key === 'b' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       const op = new BoxSelectOperator(this.canvas.parentElement as HTMLElement);
-      this.startOperator(op);
+      this.startOperator(op, false);
       if (this.activeOp === op) this.boxSelectOp = op;
       return;
     }

@@ -919,6 +919,122 @@ runE2e(async (t) => {
   t.check('UR3-3: Escape restored the pre-slide vert positions',
     sd(await vc(vedge.v0), b0) < 1e-6 && sd(await vc(vedge.v1), b1) < 1e-6);
 
+  // --- UR4-2: edge slide PAST the far vert (unclamped, proximity-picked t) ---
+  // Fresh cube; select a vertical edge; GG; then drive a pointer target that
+  // projects to t ≈ 1.5 along the control vert's rail A — the vert must slide
+  // BEYOND its far vert (t > 1), not clamp at it.
+  await t.reload();
+  await t.sleep(200);
+  await t.key('Tab', 'Tab');
+  await t.key('2', 'Digit2'); // edge mode
+  const vedge2 = await t.evaluate(`(() => {
+    const m = window.__app.scene.editObject.mesh, e = window.__app.scene.editMode;
+    for (const [key, ed] of m.edges()) {
+      const a = m.verts.get(ed.v0).co, b = m.verts.get(ed.v1).co;
+      if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.z - b.z) < 1e-6 && Math.abs(a.y - b.y) > 1e-6) {
+        e.clearSelection(); e.edges.add(key); e.touch();
+        return { key, v0: ed.v0, v1: ed.v1 };
+      }
+    }
+    return null;
+  })()`);
+  t.check('UR4-2: selected a vertical edge', vedge2 !== null);
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('g', 'KeyG');
+  await t.key('g', 'KeyG'); // GG → edge slide
+  t.check('UR4-2: GG entered edge slide',
+    (await t.evaluate("document.getElementById('status').textContent")).includes('Slide'));
+
+  // Compute a screen target that yields t ≈ 1.5 along the control vert's rail A,
+  // reusing the operator's exact camera/world→screen path.
+  const plan = await t.evaluate(`(() => {
+    const app = window.__app, obj = app.scene.editObject, cam = app.camera, e = app.scene.editMode;
+    const rect = document.querySelector('canvas').getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    const mvp = cam.projMatrix(w / h).mul(cam.viewMatrix()).mul(app.scene.worldMatrix(obj));
+    const proj = (co) => { const n = mvp.transformPoint(co); return { x: (n.x + 1) / 2 * w, y: (1 - n.y) / 2 * h }; };
+    const ids = [...e.selectedVertIds(obj.mesh)];
+    const startLocal = { x: ${ccX} - rect.left, y: ${ccY} - rect.top };
+    let control = -1, bd = Infinity;
+    for (const id of ids) { const s = proj(obj.mesh.verts.get(id).co); const d = (s.x - startLocal.x) ** 2 + (s.y - startLocal.y) ** 2; if (d < bd) { bd = d; control = id; } }
+    const selSet = new Set(ids);
+    let farA = -1; // rail A = adjacent unselected edge with the largest far-vert id (pickRails rule)
+    for (const [, ed] of obj.mesh.edges()) { const far = ed.v0 === control ? ed.v1 : ed.v1 === control ? ed.v0 : -1; if (far < 0 || selSet.has(far)) continue; if (far > farA) farA = far; }
+    const base = obj.mesh.verts.get(control).co, fco = obj.mesh.verts.get(farA).co;
+    const bs = proj(base), fs = proj(fco);
+    const T = 1.5;
+    const railLen = Math.hypot(fco.x - base.x, fco.y - base.y, fco.z - base.z);
+    return { control, farA, pageX: Math.round(rect.left + bs.x + T * (fs.x - bs.x)), pageY: Math.round(rect.top + bs.y + T * (fs.y - bs.y)), railLen };
+  })()`);
+  t.check('UR4-2: slide plan computed', plan && plan.control >= 0 && plan.farA >= 0);
+  const beforeCtl = await vc(plan.control);
+  await t.mouse('mouseMoved', plan.pageX, plan.pageY);
+  await t.sleep(80);
+  const afterCtl = await vc(plan.control);
+  const disp = sd(afterCtl, beforeCtl);
+  t.check('UR4-2: control vert slid PAST its far vert (t > 1)',
+    disp > plan.railLen * 1.05, `disp=${disp.toFixed(3)} railLen=${plan.railLen.toFixed(3)}`);
+  t.check('UR4-2: slid ~1.5× the rail length (t ≈ 1.5)',
+    disp > plan.railLen * 1.2 && disp < plan.railLen * 1.85, `t≈${(disp / plan.railLen).toFixed(3)}`);
+  await t.click(plan.pageX, plan.pageY); // confirm
+  await t.key('z', 'KeyZ', 2); // Ctrl+Z restores
+  t.check('UR4-2: Ctrl+Z restores the slid-past vert',
+    sd(await vc(plan.control), beforeCtl) < 1e-6);
+
+  // --- UR4-2: G cycles Move → Edge Slide → Normal Move → Move ---
+  await t.reload();
+  await t.sleep(200);
+  await t.key('Tab', 'Tab');
+  await t.key('1', 'Digit1'); // vert mode
+  // Select one corner vert; capture its start + (unit-face-sum) normal direction.
+  const nmv = await t.evaluate(`(() => {
+    const m = window.__app.scene.editObject.mesh, e = window.__app.scene.editMode;
+    const vid = [...m.verts.keys()][0];
+    e.clearSelection(); e.verts.add(vid); e.touch();
+    const co = m.verts.get(vid).co;
+    let n = { x: 0, y: 0, z: 0 };
+    for (const f of m.faces.values()) if (f.verts.includes(vid)) { const fn = m.faceNormal(f.id); n.x += fn.x; n.y += fn.y; n.z += fn.z; }
+    const L = Math.hypot(n.x, n.y, n.z);
+    return { vid, n: { x: n.x / L, y: n.y / L, z: n.z / L } };
+  })()`);
+  t.check('UR4-2: selected a corner vert for normal move', nmv !== null && nmv.vid !== undefined);
+  const nStart = await vc(nmv.vid);
+
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('g', 'KeyG'); // Move
+  await t.key('g', 'KeyG'); // Edge Slide
+  await t.key('g', 'KeyG'); // Normal Move
+  t.check('UR4-2: GGG reaches Normal Move (status)',
+    (await t.evaluate("document.getElementById('status').textContent")).includes('Normal Move'));
+
+  // Numeric d = 0.5, confirm; the vert must displace ALONG its captured normal.
+  await t.key('0', 'Digit0');
+  await t.key('.', 'Period');
+  await t.key('5', 'Digit5');
+  const nAfter = await vc(nmv.vid);
+  const nDisp = { x: nAfter.x - nStart.x, y: nAfter.y - nStart.y, z: nAfter.z - nStart.z };
+  const nLen = Math.hypot(nDisp.x, nDisp.y, nDisp.z);
+  t.check('UR4-2: normal move displaced the vert by d = 0.5', Math.abs(nLen - 0.5) < 0.05, `|d|=${nLen.toFixed(3)}`);
+  const nDot = (nDisp.x * nmv.n.x + nDisp.y * nmv.n.y + nDisp.z * nmv.n.z) / (nLen || 1);
+  t.check('UR4-2: displacement is along the vertex normal', nDot > 0.999, `dot=${nDot.toFixed(4)}`);
+
+  await t.key('Enter', 'Enter'); // confirm
+  await t.key('z', 'KeyZ', 2);   // Ctrl+Z
+  t.check('UR4-2: Normal Move is one undo entry',
+    (await t.evaluate("document.getElementById('status').textContent")) === 'Undo: Normal Move');
+  t.check('UR4-2: Ctrl+Z restores the normal-moved vert',
+    sd(await vc(nmv.vid), nStart) < 1e-6);
+
+  // Fourth G cycles back to Move (fresh modal, same selection still on the vert).
+  await t.mouse('mouseMoved', ccX, ccY);
+  await t.key('g', 'KeyG'); // Move
+  await t.key('g', 'KeyG'); // Edge Slide
+  await t.key('g', 'KeyG'); // Normal Move
+  await t.key('g', 'KeyG'); // → back to Move
+  t.check('UR4-2: fourth G cycles back to Move (status)',
+    (await t.evaluate("document.getElementById('status').textContent")).startsWith('Move'));
+  await t.key('Escape', 'Escape');
+
   // --- P7-5: duplicate in edit mode (Shift+D) ---
   // Pristine single-cube scene.
   await t.reload();

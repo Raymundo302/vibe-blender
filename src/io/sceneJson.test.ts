@@ -136,7 +136,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(9);
+    expect(parsed.version).toBe(10);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -680,5 +680,44 @@ describe('sceneJson material bakeRes (P16 follow-up)', () => {
     const dst = new Scene();
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
     expect(dst.materials[0].bakeRes).toBeUndefined();
+  });
+});
+
+describe('sceneJson material shadeless (v10 / UR4-3)', () => {
+  it('writes the v10 format version', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(json.version).toBe(10);
+  });
+
+  it('round-trips a shadeless material', () => {
+    const scene = new Scene();
+    const cube = scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Emit');
+    mat.shadeless = true;
+    cube.materialId = mat.id;
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.materials[0].shadeless).toBe(true);
+  });
+
+  it('omits shadeless from the file when false (byte-identical for non-shadeless)', () => {
+    const scene = new Scene();
+    scene.addMaterial('Lit'); // shadeless defaults to false
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect('shadeless' in json.materials[0]).toBe(false);
+  });
+
+  it('tolerates absence (pre-v10 files) → shadeless false', () => {
+    const scene = new Scene();
+    scene.addMaterial('Old');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    delete json.materials[0].shadeless; // pre-v10 file has no such key
+    json.version = 9;
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.materials[0].shadeless).toBe(false);
   });
 });

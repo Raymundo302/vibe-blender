@@ -16,6 +16,7 @@ type AxisLock = 'x' | 'y' | 'z' | null;
  */
 export class RotateOperator implements Operator {
   readonly name = 'Rotate';
+  readonly continuousGrab = true;
 
   private targets: WorldTarget[] = [];
   private pivot = Vec3.ZERO;

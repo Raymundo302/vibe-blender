@@ -108,6 +108,9 @@ export function worldDeltaToLocal(delta: Vec3, invMatrix: Mat4): Vec3 {
  */
 export abstract class EditTransformBase implements Operator {
   abstract readonly name: string;
+  // Edit-mode G/R/S (and Shift+D duplicate, which subclasses EditTranslate) all
+  // opt into continuous-grab pointer handling (UR4-1).
+  readonly continuousGrab = true;
 
   protected mesh!: EditableMesh;
   protected sel!: EditModeState;
@@ -294,8 +297,9 @@ export class EditTranslateOperator extends EditTransformBase {
   /** True while Ctrl is held during the modal — inverts the grid-snap state. */
   private ctrlHeld = false;
   /** Set true when 'g' is pressed mid-Move: a sentinel the InputManager reads to
-   *  swap this Move for an Edge Slide (Blender's GG). */
-  slideRequested = false;
+   *  cycle this op to the next in Move → Edge Slide → Normal Move (UR4-2; a
+   *  second G during a plain edit Move is Blender's GG → Edge Slide). */
+  cycleRequested = false;
 
   protected onStart(ctx: OperatorContext, pointer: PointerState): boolean {
     const hit = this.planeHit(ctx, pointer);
@@ -358,7 +362,7 @@ export class EditTranslateOperator extends EditTransformBase {
     }
     const k = key.toLowerCase();
     if (k === 'g') {
-      this.slideRequested = true; // consumed by the InputManager swap (GG → Edge Slide)
+      this.cycleRequested = true; // consumed by the InputManager cycle (GG → Edge Slide → …)
       return true;
     }
     if (k !== 'x' && k !== 'y' && k !== 'z') return false;

@@ -28,6 +28,9 @@ export interface SnapMaterial {
   subsurfaceWeight?: number;
   /** Mean subsurface scatter distance, world units. Default 0.05. */
   subsurfaceRadius?: number;
+  /** Shadeless (UR4-3): emit base×texture color and gather no further bounces
+   *  (Blender "Emit"/image-plane look). Default false. */
+  shadeless?: boolean;
   /** Base-color texture kind (P11), sampled through per-corner UVs. Default 'none'. */
   texKind?: 'none' | 'checker' | 'image';
   /**
@@ -158,6 +161,7 @@ function toMat(m: {
   emissiveStrength: number;
   subsurfaceWeight?: number;
   subsurfaceRadius?: number;
+  shadeless?: boolean;
   texKind?: 'none' | 'checker' | 'image';
   texImage?: { width: number; height: number; pixels: Float32Array };
   normalImage?: { width: number; height: number; pixels: Float32Array };
@@ -177,6 +181,7 @@ function toMat(m: {
     emissiveStrength: m.emissiveStrength,
     subsurfaceWeight: m.subsurfaceWeight ?? 0,
     subsurfaceRadius: m.subsurfaceRadius ?? 0.05,
+    shadeless: m.shadeless ?? false,
     texKind,
     // Only carry the decoded pixels for image materials; share the Float32Array
     // (it is immutable per data URL) so the snapshot stays cheap.
