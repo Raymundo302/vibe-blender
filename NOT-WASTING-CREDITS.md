@@ -52,6 +52,19 @@ value) / cost. Add new items at the appropriate rank, don't just append.
       have grid snap), with the magnet-chip UI extended to a target picker.
 
 ### Animation
+- [ ] **Audio system (Ray, 2026-07-11).** Drag-and-drop audio files onto the
+      timeline OR into the 3D viewport. Timeline drop → audio strip starting at
+      the CURRENT frame. Viewport drop → behaves like the 3D cursor: places an
+      **audio empty** where the mouse releases (surface-snapped when over
+      geometry, exactly like Shift+RMB cursor placement). Audio source options:
+      attach to an empty OR follow any object's position, with a **distance
+      range** (falloff radius) for spatial volume, plus an **overall volume
+      property that is keyable/animatable**. Playback synced to timeline
+      play/scrub; Ctrl+F12 should mux the audio into WebM/MP4 exports
+      eventually (Web Audio API + MediaRecorder audio track — feasible).
+      Likely 3 specs: audio store/strips + timeline UI, spatial empties +
+      distance falloff (Web Audio PannerNode or manual gain-by-distance),
+      export muxing.
 - [ ] **Shape keys** — basis + named targets, value sliders, keyframeable.
 - [ ] **Follow-path constraint** — object rides a curve (needs Curve objects).
 - [ ] **Playback improvements** — frame-rate-locked playback, loop region, audio
