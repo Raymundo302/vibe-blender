@@ -508,4 +508,284 @@ runE2e(async (t) => {
     return c ? c.keys.length : 0;
   })()`);
   t.check('undo removes the inserted Play key', afterUndoKey === 0);
+
+  // ======================================================================
+  // UR8-3 — transparent auto-cropped fragment planes + alpha materials.
+  // ======================================================================
+
+  // Clean slate + a shared pixel-probe helper. `probe(objId, sx, sy)` renders the
+  // current mode and reads the viewport pixel at object-normalized (sx,sy) within
+  // the plane's half-extents ((0,0)=plane center, (±0.6,±0.6)=a bbox corner).
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) S.remove(o.id);
+    window.__app.undo.clear();
+    window.__app.scene.deselectAll();
+    window.__probe = (objId, sx, sy) => {
+      const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+      app.renderer.render(app.scene, app.camera);
+      const obj = app.scene.get(objId);
+      const xs = [...obj.mesh.verts.values()].map((v) => v.co.x);
+      const ys = [...obj.mesh.verts.values()].map((v) => v.co.y);
+      const halfW = Math.max(...xs), halfH = Math.max(...ys);
+      const world = app.scene.worldMatrix(obj);
+      const L = { x: sx * halfW, y: sy * halfH, z: 0 };
+      const w = world.transformPoint(L);
+      const m = app.renderer.currentViewProj(app.scene, app.camera);
+      const p = m.transformPoint(w);
+      const px = Math.round((p.x * 0.5 + 0.5) * c.width);
+      const py = Math.round((p.y * 0.5 + 0.5) * c.height); // GL bottom-up
+      const out = new Uint8Array(4);
+      gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+      return [out[0], out[1], out[2]];
+    };
+  })()`);
+
+  // The bare fragment: an orange disc + a blurred drop shadow, NO <body>/<html>.
+  const FRAG =
+    "<div style='position:relative;width:240px;height:300px'>" +
+    "<div style='position:absolute;left:60px;top:210px;width:120px;height:40px;" +
+    "background:rgba(0,0,0,0.55);border-radius:50%;filter:blur(10px)'></div>" +
+    "<div style='position:absolute;left:20px;top:20px;width:200px;height:200px;" +
+    "background:rgb(240,130,20);border-radius:50%'></div></div>";
+
+  await t.evaluate(`(() => {
+    window.__frag = null;
+    const S = window.__app.scene, U = window.__app.undo;
+    window.__hp.addHtmlPlaneFromText(S, U, ${JSON.stringify(FRAG)}, 'ball').then((r) => {
+      const mat = S.getMaterial(r.obj.materialId);
+      window.__frag = { id: r.obj.id, matId: mat.id };
+    });
+  })()`);
+  t.check('bare-fragment plane added', await t.until('!!window.__frag'));
+
+  // (A) Heuristic: a bare fragment defaults to transparent + auto-cropped, so the
+  // material alpha-blends and the plane aspect follows the CONTENT bbox (not 4:3).
+  const frag = await t.evaluate(`(() => {
+    const S = window.__app.scene, obj = S.get(window.__frag.id), mat = S.getMaterial(window.__frag.matId);
+    const xs = [...obj.mesh.verts.values()].map((v) => v.co.x);
+    const ys = [...obj.mesh.verts.values()].map((v) => v.co.y);
+    const planeAspect = (Math.max(...xs) - Math.min(...xs)) / (Math.max(...ys) - Math.min(...ys));
+    return {
+      alphaBlend: !!mat.alphaBlend, alwaysTextured: !!mat.alwaysTextured, shadeless: !!mat.shadeless,
+      pageW: obj.html.pageW, pageH: obj.html.pageH, planeAspect,
+    };
+  })()`);
+  t.check('bare fragment → transparent alphaBlend + alwaysTextured emit: ' + JSON.stringify(frag),
+    frag.alphaBlend === true && frag.alwaysTextured === true && frag.shadeless === true);
+  t.check('plane aspect ≈ cropped CONTENT bbox (not the 1024×768 raster), stored crop in pageW/H: ' + JSON.stringify(frag),
+    frag.pageW < 1024 && frag.pageH < 1024 &&
+    Math.abs(frag.planeAspect - frag.pageW / frag.pageH) < 0.02 &&
+    Math.abs(frag.planeAspect - 240 / 300) < 0.2);
+
+  // Wait for the tracer alpha decode (fire-and-forget in createImagePlane).
+  t.check('texture alpha decoded for the tracer',
+    await t.until('(() => { const m = window.__app.scene.getMaterial(window.__frag.matId); return !!(m.texImage && m.texImage.alpha); })()'));
+
+  // Frame the plane face-on in matcap mode, AO off, nothing selected.
+  await t.evaluate(`(() => {
+    const cam = window.__app.camera;
+    cam.yaw = 0; cam.pitch = 1.4; cam.distance = 4;
+    window.__app.renderer.shadingMode = 'matcap';
+    window.__app.shadePrefs.ao = false;
+    window.__app.scene.deselectAll();
+  })()`);
+
+  // (1) matcap: disc center shows orange; a bbox CORNER is transparent — the grid
+  // shows through (corner pixel matches the no-plane baseline at that spot). The
+  // disc sits in the UPPER part of the crop (the shadow extends the bbox down),
+  // so probe the orange up at sy≈+0.15; a lower-LEFT corner is clear of both.
+  const centerPx = await t.evaluate('window.__probe(window.__frag.id, 0.15, 0.15)');
+  t.check('matcap: disc CENTER is orange (Always Textured shows the texture): ' + JSON.stringify(centerPx),
+    centerPx[0] > 150 && centerPx[0] > centerPx[1] + 40 && centerPx[0] > centerPx[2] + 60);
+
+  const cornerWith = await t.evaluate('window.__probe(window.__frag.id, -0.75, -0.75)');
+  const cornerNo = await t.evaluate(`(() => {
+    const obj = window.__app.scene.get(window.__frag.id);
+    obj.visible = false;
+    const p = window.__probe(window.__frag.id, -0.75, -0.75);
+    obj.visible = true;
+    return p;
+  })()`);
+  const cornerMatch = Math.abs(cornerWith[0] - cornerNo[0]) < 12 &&
+    Math.abs(cornerWith[1] - cornerNo[1]) < 12 && Math.abs(cornerWith[2] - cornerNo[2]) < 12;
+  t.check('matcap: plane CORNER is transparent — backdrop shows through (matches no-plane baseline): ' +
+    JSON.stringify([cornerWith, cornerNo]), cornerMatch);
+  t.check('matcap: corner differs from the orange disc center (really transparent, not a flat card): ' +
+    JSON.stringify([cornerWith, centerPx]), Math.abs(cornerWith[0] - centerPx[0]) > 30);
+
+  // Screenshot: the ball+shadow fragment floating over the grid in matcap.
+  await t.screenshot('/home/raymundo/Vibe Coded Blender/research/ur8-3-fragment-matcap.png');
+
+  // Page-mode scrolling is DISABLED for a cropped fragment plane (nothing to
+  // scroll — a content-sized document): Tab does NOT enter page mode.
+  await t.evaluate(`(() => {
+    window.__app.scene.selectOnly(window.__frag.id);
+    const wrap = document.querySelector('#viewport-wrap') || document.querySelector('canvas').parentElement;
+    const r = wrap.getBoundingClientRect();
+    window.__app.input.pointer.x = r.width/2; window.__app.input.pointer.y = r.height/2;
+  })()`);
+  await t.key('Tab', 'Tab', 0);
+  const pmProbe = await t.evaluate(`(() => ({
+    inPage: window.__pm.pageModeState.object !== null,
+    editMode: window.__app.scene.editMode !== null,
+    status: (document.getElementById('status') || {}).textContent || '',
+  }))()`);
+  t.check('cropped fragment: Tab does NOT enter page mode (scrolling disabled): ' + JSON.stringify(pmProbe),
+    pmProbe.inPage === false && pmProbe.editMode === false);
+
+  // (2) alphaBlend plane in front of a cube: cube visible through the transparent
+  // corner (grey), disc occludes at center (orange). Put a big grey cube BEHIND
+  // (plane in XY at z=0; the camera looks down from +Z, so behind = -Z).
+  await t.evaluate(`(async () => {
+    window.__cubeId = null;
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    const S = window.__app.scene;
+    const cube = S.add('BehindCube', prim.makeCube(0.8));
+    cube.transform = cube.transform.withPosition(new V(0, 0, -1.2)).withScale(new V(1.6, 1.6, 0.2));
+    S.deselectAll();
+    window.__cubeId = cube.id;
+  })()`);
+  t.check('behind-cube added', await t.until('window.__cubeId !== null'));
+  const cCenter = await t.evaluate('window.__probe(window.__frag.id, 0.15, 0.15)');
+  const cCorner = await t.evaluate('window.__probe(window.__frag.id, -0.75, -0.75)');
+  t.check('matcap+cube: disc CENTER still orange (occludes the cube): ' + JSON.stringify(cCenter),
+    cCenter[0] > 150 && cCenter[0] > cCenter[2] + 60);
+  // Through the transparent corner we now see the cube — matcap GREY (R≈G≈B), and
+  // bright (the empty-grid baseline there was 58; the cube is much brighter), and
+  // NOT the orange disc (which has R ≫ G,B). Proves the cutout reveals the cube.
+  const isGrey = Math.abs(cCorner[0] - cCorner[1]) < 30 && Math.abs(cCorner[1] - cCorner[2]) < 30;
+  const notOrange = cCorner[0] - cCorner[2] < 40;
+  t.check('matcap: cube VISIBLE through the transparent corner (grey, brighter than empty grid, not orange): ' + JSON.stringify(cCorner),
+    isGrey && notOrange && cCorner[0] > 90);
+  await t.evaluate('window.__app.scene.remove(window.__cubeId)');
+
+  // Screenshot: the fragment over the grid in Rendered mode too.
+  await t.evaluate(`(() => {
+    window.__app.renderer.shadingMode = 'rendered';
+    window.__app.scene.deselectAll();
+  })()`);
+  await t.evaluate('window.__app.renderer.render(window.__app.scene, window.__app.camera)');
+  await t.screenshot('/home/raymundo/Vibe Coded Blender/research/ur8-3-fragment-rendered.png');
+
+  // (4) TRACER cutout: F12 through the transparent corner hits the cube behind.
+  // A GREEN shadeless cube sits behind the transparent orange-disc plane over a
+  // near-black sky. In the traced image the disc reads orange at center; the plane
+  // area AROUND the disc is GREEN (the cube seen through the alpha cutout) — an
+  // opaque plane would show its WHITE ground there instead.
+  await t.evaluate(`(async () => {
+    window.__t4 = null;
+    const S = window.__app.scene, U = window.__app.undo;
+    for (const o of [...S.objects]) S.remove(o.id);
+    U.clear();
+    S.world.mode = 'flat'; S.world.color = [0.02, 0.02, 0.02]; S.world.strength = 1;
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    // Green shadeless cube BEHIND (bright green regardless of lights), LARGER than
+    // the plane so the whole transparent margin around the disc reveals it.
+    const cube = S.add('GreenCube', prim.makeCube(0.8));
+    cube.transform = cube.transform.withPosition(new V(0, 0, -1.0)).withScale(new V(2.2, 2.2, 0.2));
+    const cmat = S.addMaterial('green'); cmat.baseColor = [0.05, 0.85, 0.15]; cmat.shadeless = true;
+    cube.materialId = cmat.id;
+    const r = await window.__hp.addHtmlPlaneFromText(S, U, ${JSON.stringify(FRAG)}, 'ball4');
+    window.__t4 = { planeId: r.obj.id, matId: r.obj.materialId };
+  })()`);
+  t.check('tracer scene built', await t.until('!!window.__t4'));
+  t.check('tracer plane alpha decoded',
+    await t.until('(() => { const m = window.__app.scene.getMaterial(window.__t4.matId); return !!(m.texImage && m.texImage.alpha); })()'));
+  await t.evaluate(`(() => {
+    const cam = window.__app.camera; cam.yaw = 0; cam.pitch = 1.4; cam.distance = 4;
+    window.__app.scene.deselectAll();
+    // Match the render aspect to the viewport so the centered disc traces to the
+    // centre of the render frame.
+    const c = window.__app.renderer.ctx.gl.canvas;
+    window.__app.scene.renderSettings = { width: c.width, height: c.height };
+  })()`);
+  await t.evaluate('window.__renderEngine.start()');
+  t.check('tracer accumulated samples', await t.until('window.__renderEngine.sample() >= 6', 40000));
+  // Scan the centre row: the orange disc must be FLANKED by the green cube
+  // (through the cutout), not by the white ground of an opaque card.
+  const scan4 = await t.evaluate(`(() => {
+    const cv = window.__renderEngine.canvas();
+    const ctx = cv.getContext('2d');
+    const y = cv.height >> 1;
+    const d = ctx.getImageData(0, y, cv.width, 1).data;
+    let orange = 0, greenLeft = 0, greenRight = 0, white = 0;
+    const cx = cv.width >> 1;
+    let discL = cv.width, discR = 0;
+    for (let x = 0; x < cv.width; x++) {
+      const r = d[x*4], g = d[x*4+1], b = d[x*4+2];
+      const isOrange = r > 120 && r > g + 40 && r > b + 60;
+      const isGreen = g > 90 && g > r + 40 && g > b + 40;
+      const isWhite = r > 180 && g > 180 && b > 180;
+      if (isOrange) { orange++; if (x < discL) discL = x; if (x > discR) discR = x; }
+      if (isWhite) white++;
+      if (isGreen && x < cx) greenLeft++;
+      if (isGreen && x > cx) greenRight++;
+    }
+    return { orange, greenLeft, greenRight, white, discL, discR, w: cv.width };
+  })()`);
+  t.check('tracer: the disc renders (orange run at centre): ' + JSON.stringify(scan4),
+    scan4.orange > 10 && scan4.discL < (scan4.w >> 1) && scan4.discR > (scan4.w >> 1));
+  t.check('tracer: cube VISIBLE through the cutout — orange disc flanked by GREEN on both sides (not white card): ' + JSON.stringify(scan4),
+    scan4.greenLeft > 5 && scan4.greenRight > 5 && scan4.white < scan4.orange);
+  await t.evaluate('window.__renderEngine.close()');
+  await t.sleep(150);
+
+  // (5) SHADOW: a sun over a floor + the cutout plane casts NO square shadow blob
+  // (alphaBlend objects are excluded from the shadow-map casters). Probe the floor
+  // luminance directly UNDER the plane vs BESIDE it — equal (no shadow). Then make
+  // the plane a caster (alphaBlend off) to prove the setup CAN show a shadow.
+  await t.evaluate(`(async () => {
+    window.__t5 = null;
+    const S = window.__app.scene, U = window.__app.undo;
+    for (const o of [...S.objects]) S.remove(o.id);
+    U.clear();
+    S.world.mode = 'flat'; S.world.color = [0.15, 0.15, 0.18]; S.world.strength = 1;
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    // Big flat floor at z=0.
+    const floor = S.add('Floor', prim.makeCube(1));
+    floor.transform = floor.transform.withPosition(new V(0, 0, 0)).withScale(new V(4, 4, 0.05));
+    const fmat = S.addMaterial('floor'); fmat.baseColor = [0.8, 0.8, 0.8]; fmat.roughness = 1; floor.materialId = fmat.id;
+    // Sun straight down (-Z): identity rotation aims local -Z at world -Z.
+    const sun = S.addLight('Sun', 'sun'); sun.light.power = 4;
+    sun.transform = sun.transform.withPosition(new V(0, 0, 5));
+    // Cutout plane hovering above the floor.
+    const r = await window.__hp.addHtmlPlaneFromText(S, U, ${JSON.stringify(FRAG)}, 'ball5');
+    r.obj.transform = r.obj.transform.withPosition(new V(0, 0, 1.2));
+    window.__t5 = { planeId: r.obj.id, matId: r.obj.materialId };
+  })()`);
+  t.check('shadow scene built', await t.until('!!window.__t5'));
+  await t.evaluate(`(async () => {
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    const cam = window.__app.camera; cam.target = new V(0, 0, 0);
+    cam.yaw = 0.5; cam.pitch = 0.55; cam.distance = 10;
+    window.__app.renderer.shadingMode = 'rendered';
+    window.__app.shadePrefs.ao = false;
+    window.__app.scene.deselectAll();
+    // Floor luminance probe at a WORLD point (x,y) on the floor top (z≈0.05).
+    window.__floorLum = (wx, wy) => {
+      const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+      app.renderer.render(app.scene, app.camera);
+      const p = app.renderer.currentViewProj(app.scene, app.camera).transformPoint(new V(wx, wy, 0.05));
+      const px = Math.round((p.x*0.5+0.5)*c.width), py = Math.round((p.y*0.5+0.5)*c.height);
+      const out = new Uint8Array(4); gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+      return (out[0] + out[1] + out[2]) / 3;
+    };
+  })()`);
+  const underNoCast = await t.evaluate('window.__floorLum(0, 0)');   // directly under the plane
+  const besideNoCast = await t.evaluate('window.__floorLum(2.5, 0)'); // clear of the plane footprint
+  t.check('shadow: floor UNDER the cutout ≈ BESIDE it — NO square shadow blob (alphaBlend does not cast): ' +
+    JSON.stringify([underNoCast, besideNoCast]),
+    Math.abs(underNoCast - besideNoCast) < 20);
+  // Control: make the plane a caster (alphaBlend off) → a shadow SHOULD appear.
+  const underCast = await t.evaluate(`(() => {
+    window.__app.scene.getMaterial(window.__t5.matId).alphaBlend = false;
+    return window.__floorLum(0, 0);
+  })()`);
+  t.check('shadow control: with alphaBlend OFF the plane DOES cast (floor under darkens) — the probe is meaningful: ' +
+    JSON.stringify([underCast, besideNoCast]),
+    underCast < besideNoCast - 15);
 });

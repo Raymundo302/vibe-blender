@@ -291,6 +291,18 @@ export class MapParamEditCommand implements Command {
   redo(): void { this.write(this.after); }
 }
 
+/** UR8-3 C: toggle a material's `alwaysTextured` flag in one undo step. */
+export class AlwaysTexturedEditCommand implements Command {
+  readonly name = 'Toggle Always Textured';
+  constructor(
+    private readonly material: Material,
+    private readonly before: boolean,
+    private readonly after: boolean,
+  ) {}
+  undo(): void { this.material.alwaysTextured = this.before; }
+  redo(): void { this.material.alwaysTextured = this.after; }
+}
+
 // ------------------------------------------------------------- color helpers --
 
 /** 0..1 RGB floats → lowercase "#rrggbb". */
@@ -329,6 +341,9 @@ class MaterialTab {
   private texImageRow!: HTMLElement;
   private texFileInput!: HTMLInputElement;
   private texThumb!: HTMLImageElement;
+  /** UR8-3 C: "Always Textured" checkbox (image-texture section). */
+  private alwaysTexturedCheck!: HTMLInputElement;
+  private alwaysTexturedRow!: HTMLElement;
 
   // P13 map slots.
   private normalThumb!: HTMLImageElement;
@@ -504,6 +519,15 @@ class MaterialTab {
     this.texImageRow = this.fieldRow('Image', this.texFileInput, this.texThumb);
     this.fields.append(this.texImageRow);
 
+    // Always Textured (UR8-3 C): show the base texture in every shading mode.
+    // On by default for image/HTML planes; toggle off → shades like any mesh.
+    this.alwaysTexturedCheck = document.createElement('input');
+    this.alwaysTexturedCheck.type = 'checkbox';
+    this.alwaysTexturedCheck.className = 'material-tab-always-textured';
+    this.alwaysTexturedCheck.addEventListener('change', () => this.onAlwaysTexturedToggle());
+    this.alwaysTexturedRow = this.fieldRow('Always Textured', this.alwaysTexturedCheck);
+    this.fields.append(this.alwaysTexturedRow);
+
     this.buildMapFields();
 
     // Node-bake resolution (P16 follow-up). The Rendered viewport bakes a
@@ -637,6 +661,17 @@ class MaterialTab {
     if (before === after) return;
     mat.normalIsBump = after;
     this.undo.push(new MapParamEditCommand(mat, 'normalIsBump', before, after));
+    this.lastSig = null;
+  }
+
+  private onAlwaysTexturedToggle(): void {
+    const mat = this.material();
+    if (!mat) return;
+    const before = mat.alwaysTextured === true;
+    const after = this.alwaysTexturedCheck.checked;
+    if (before === after) return;
+    mat.alwaysTextured = after;
+    this.undo.push(new AlwaysTexturedEditCommand(mat, before, after));
     this.lastSig = null;
   }
 
@@ -924,7 +959,7 @@ class MaterialTab {
       obj!.materialId,
       this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
       mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
-      mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}` : '-',
+      mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}:${mat.alwaysTextured === true}:${mat.alphaBlend === true}` : '-',
       mat ? `${mat.normalDataUrl ? mat.normalDataUrl.length : 0}:${mat.normalIsBump}:${mat.normalStrength}:${mat.roughDataUrl ? mat.roughDataUrl.length : 0}:${mat.metalDataUrl ? mat.metalDataUrl.length : 0}` : '-',
       mat ? `${mat.bakeRes ?? 128}` : '-',
     ].join('#');
@@ -975,6 +1010,9 @@ class MaterialTab {
     // Texture: kind select + image row (file + thumbnail) visible only for Image.
     this.texKindSelect.value = mat.texKind;
     this.texImageRow.style.display = mat.texKind === 'image' ? '' : 'none';
+    // Always Textured (UR8-3 C) — part of the image-texture section.
+    this.alwaysTexturedRow.style.display = mat.texKind === 'image' ? '' : 'none';
+    this.alwaysTexturedCheck.checked = mat.alwaysTextured === true;
     if (mat.texKind === 'image' && mat.texDataUrl) {
       this.texThumb.src = mat.texDataUrl;
       this.texThumb.style.display = '';

@@ -175,7 +175,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(14);
+    expect(parsed.version).toBe(15);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -796,7 +796,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(14);
+    expect(json.version).toBe(15);
   });
 
   it('round-trips a shadeless material', () => {
@@ -827,6 +827,43 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const dst = new Scene();
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
     expect(dst.materials[0].shadeless).toBe(false);
+  });
+});
+
+describe('sceneJson alphaBlend + alwaysTextured (v15 / UR8-3)', () => {
+  it('round-trips both flags', () => {
+    const scene = new Scene();
+    const cube = scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Plane');
+    mat.alphaBlend = true;
+    mat.alwaysTextured = true;
+    cube.materialId = mat.id;
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.materials[0].alphaBlend).toBe(true);
+    expect(dst.materials[0].alwaysTextured).toBe(true);
+  });
+
+  it('omits both flags from the file when false (byte-identical for opaque)', () => {
+    const scene = new Scene();
+    scene.addMaterial('Opaque'); // both default false
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect('alphaBlend' in json.materials[0]).toBe(false);
+    expect('alwaysTextured' in json.materials[0]).toBe(false);
+  });
+
+  it('tolerates absence (pre-v15 files) → both false', () => {
+    const scene = new Scene();
+    scene.addMaterial('Old');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    delete json.materials[0].alphaBlend;
+    delete json.materials[0].alwaysTextured;
+    json.version = 14;
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.materials[0].alphaBlend).toBe(false);
+    expect(dst.materials[0].alwaysTextured).toBe(false);
   });
 });
 
@@ -887,7 +924,7 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
 
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(14);
+    expect(json.version).toBe(15);
     expect(json.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });
@@ -897,6 +934,19 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     expect(dst.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });
+  });
+
+  it('round-trips the UR8-3 transparent + autoCrop flags on an html plane', () => {
+    const scene = new Scene();
+    const obj = scene.add('frag', makeCube());
+    obj.html = { kind: 'file', source: '<div>ball</div>', pageW: 204, pageH: 257, scrollY: 0, playing: false, fps: 8, transparent: true, autoCrop: true };
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(json.objects[0].html.transparent).toBe(true);
+    expect(json.objects[0].html.autoCrop).toBe(true);
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.objects[0].html!.transparent).toBe(true);
+    expect(dst.objects[0].html!.autoCrop).toBe(true);
   });
 
   it('is byte-identical across serialize → apply → serialize', () => {

@@ -45,8 +45,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 14;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+const VERSION = 15;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -204,6 +204,10 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
       scrollY: num(obj.html.scrollY),
       playing: obj.html.playing,
       fps: num(clampHtmlFps(obj.html.fps)),
+      // UR8-3 A (v15) — only written when true so pre-v15 html planes stay
+      // byte-identical (JSON.stringify drops undefined keys).
+      transparent: obj.html.transparent ? true : undefined,
+      autoCrop: obj.html.autoCrop ? true : undefined,
     };
   }
   // Animation (v7; v9 adds an optional per-key extras object: easing direction
@@ -316,6 +320,10 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       // never set it (every pre-v10 material) serializes byte-identically
       // (JSON.stringify drops undefined-valued keys).
       shadeless: m.shadeless ? true : undefined,
+      // Alpha blend / Always Textured (v15) — optional, only written when true so
+      // pre-v15 materials serialize byte-identically (JSON drops undefined keys).
+      alphaBlend: m.alphaBlend ? true : undefined,
+      alwaysTextured: m.alwaysTextured ? true : undefined,
       texKind: m.texKind,
       texDataUrl: m.texDataUrl,
       normalDataUrl: m.normalDataUrl,
@@ -366,6 +374,8 @@ interface MaterialData {
   subsurfaceWeight: number;
   subsurfaceRadius: number;
   shadeless: boolean;
+  alphaBlend: boolean;
+  alwaysTextured: boolean;
   texKind: 'none' | 'checker' | 'image';
   texDataUrl: string | null;
   normalDataUrl: string | null;
@@ -627,6 +637,9 @@ function parseMaterials(v: unknown): MaterialData[] {
       subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
       // Shadeless (v10) — absent in older files → false.
       shadeless: mat.shadeless === true,
+      // Alpha blend / Always Textured (v15) — absent in older files → false.
+      alphaBlend: mat.alphaBlend === true,
+      alwaysTextured: mat.alwaysTextured === true,
       texKind: (() => {
         if (mat.texKind === undefined) return 'none' as const;
         if (mat.texKind !== 'none' && mat.texKind !== 'checker' && mat.texKind !== 'image') {
@@ -743,6 +756,10 @@ function parseHtml(v: unknown, i: number): HtmlPlaneData {
     scrollY: numOr(h.scrollY, 0, `objects[${i}].html.scrollY`),
     playing: h.playing === true,
     fps: clampHtmlFps(numOr(h.fps, 8, `objects[${i}].html.fps`)),
+    // UR8-3 A — optional; kept absent (undefined) unless truthy so pre-v15 html
+    // payloads round-trip byte-identically and stay minimal.
+    transparent: h.transparent === true ? true : undefined,
+    autoCrop: h.autoCrop === true ? true : undefined,
   };
 }
 
@@ -1161,6 +1178,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       subsurfaceWeight: md.subsurfaceWeight,
       subsurfaceRadius: md.subsurfaceRadius,
       shadeless: md.shadeless,
+      alphaBlend: md.alphaBlend,
+      alwaysTextured: md.alwaysTextured,
       texKind: md.texKind,
       texDataUrl: md.texDataUrl,
       normalDataUrl: md.normalDataUrl,

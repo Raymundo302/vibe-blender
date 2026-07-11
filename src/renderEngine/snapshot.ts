@@ -31,15 +31,20 @@ export interface SnapMaterial {
   /** Shadeless (UR4-3): emit base×texture color and gather no further bounces
    *  (Blender "Emit"/image-plane look). Default false. */
   shadeless?: boolean;
+  /** Alpha blend (UR8-3): the base-color texture carries transparency. The tracer
+   *  treats a hit whose sampled texture alpha < 0.5 as a cutout (ray passes
+   *  through). Default false. */
+  alphaBlend?: boolean;
   /** Base-color texture kind (P11), sampled through per-corner UVs. Default 'none'. */
   texKind?: 'none' | 'checker' | 'image';
   /**
    * Decoded image pixels when texKind === 'image' (runtime cache, worldData-
    * style): length = width*height*3, linear RGB, row 0 = top. null/absent → the
    * image sample falls back to white (no tint), so a snapshot without decoded
-   * pixels renders like an untextured material.
+   * pixels renders like an untextured material. `alpha` (UR8-3): per-pixel alpha
+   * (0..1, length width*height) for the cutout test; absent → treated opaque.
    */
-  texImage?: { width: number; height: number; pixels: Float32Array } | null;
+  texImage?: { width: number; height: number; pixels: Float32Array; alpha?: Float32Array } | null;
   /** P13 map slots (decoded RAW 0..1 pixels — data, not color; null = off).
    *  The tracer perturbs shading normals / scales rough+metal with these. */
   normalImage?: { width: number; height: number; pixels: Float32Array } | null;
@@ -167,8 +172,9 @@ function toMat(m: {
   subsurfaceWeight?: number;
   subsurfaceRadius?: number;
   shadeless?: boolean;
+  alphaBlend?: boolean;
   texKind?: 'none' | 'checker' | 'image';
-  texImage?: { width: number; height: number; pixels: Float32Array };
+  texImage?: { width: number; height: number; pixels: Float32Array; alpha?: Float32Array };
   normalImage?: { width: number; height: number; pixels: Float32Array };
   normalIsBump?: boolean;
   normalStrength?: number;
@@ -187,6 +193,7 @@ function toMat(m: {
     subsurfaceWeight: m.subsurfaceWeight ?? 0,
     subsurfaceRadius: m.subsurfaceRadius ?? 0.05,
     shadeless: m.shadeless ?? false,
+    alphaBlend: m.alphaBlend ?? false,
     texKind,
     // Only carry the decoded pixels for image materials; share the Float32Array
     // (it is immutable per data URL) so the snapshot stays cheap.

@@ -2,6 +2,7 @@ import type { GlContext } from './gl/context';
 import { VertexArray } from './gl/VertexArray';
 import { MeshPass } from './passes/meshPass';
 import { StudioPass } from './passes/studioPass';
+import { TexturedPass } from './passes/texturedPass';
 import { WirePass } from './passes/wirePass';
 import { IntersectPass, segmentsToRibbon } from './passes/intersectPass';
 import { buildWireRibbon } from './passes/ribbon';
@@ -95,6 +96,7 @@ function selectionColor(scene: Scene, obj: SceneObject): [number, number, number
 export class Renderer {
   private readonly meshPass: MeshPass;
   private readonly studioPass: StudioPass;
+  private readonly texturedPass: TexturedPass;
   private readonly wirePass: WirePass;
   private readonly intersectPass: IntersectPass;
   private readonly gridPass: GridPass;
@@ -192,6 +194,7 @@ export class Renderer {
     const { gl, canvas } = ctx;
     this.meshPass = new MeshPass(gl, createMatcapTexture(gl));
     this.studioPass = new StudioPass(gl);
+    this.texturedPass = new TexturedPass(gl);
     this.wirePass = new WirePass(gl);
     this.intersectPass = new IntersectPass(gl);
     this.gridPass = new GridPass(gl);
@@ -408,23 +411,51 @@ export class Renderer {
     if (cached?.tex) this.ctx.gl.deleteTexture(cached.tex);
     const holder = { url, tex: null as WebGLTexture | null };
     this.matTextures.set(mat.id, holder);
-    const gl = this.ctx.gl;
     const img = new Image();
     img.onload = () => {
       if (holder.url !== mat.texDataUrl) return; // stale (url changed again)
-      const tex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-      holder.tex = tex;
+      holder.tex = this.uploadBaseColorTexture(img, mat.alphaBlend === true);
     };
     img.onerror = () => { /* leave white fallback */ };
     img.src = url;
     return null;
+  }
+
+  /**
+   * Upload a base-color image to a GL texture (SRGB8_ALPHA8, LINEAR, REPEAT).
+   *
+   * UR8-3: when `alphaBlend` is set the source may carry real transparency, and
+   * uploading a transparent `<img>` DIRECTLY flattens its alpha to 1 on some
+   * drivers (SwiftShader does — verified: texImage2D from an <img> loses the
+   * alpha channel; from a raw ArrayBufferView it is preserved exactly). So for
+   * alpha materials we round-trip the image through a 2D canvas → raw RGBA bytes
+   * and upload those. sRGB decode still happens via the internal format either
+   * way; opaque materials keep the faster direct `<img>` path.
+   */
+  private uploadBaseColorTexture(img: HTMLImageElement, alphaBlend: boolean): WebGLTexture {
+    const gl = this.ctx.gl;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    let uploaded = false;
+    if (alphaBlend && typeof document !== 'undefined') {
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const cnv = document.createElement('canvas');
+      cnv.width = w; cnv.height = h;
+      const cx = cnv.getContext('2d');
+      if (cx) {
+        cx.drawImage(img, 0, 0);
+        const bytes = new Uint8Array(cx.getImageData(0, 0, w, h).data.buffer);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+        uploaded = true;
+      }
+    }
+    if (!uploaded) gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    return tex;
   }
 
   /**
@@ -452,14 +483,7 @@ export class Renderer {
     if (!ok || mat.texDataUrl !== url) return; // decode failed or superseded
     const prev = this.matTextures.get(mat.id);
     if (prev?.tex && prev.url !== url) gl.deleteTexture(prev.tex);
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.SRGB8_ALPHA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    const tex = this.uploadBaseColorTexture(img, mat.alphaBlend === true);
     this.matTextures.set(mat.id, { url, tex });
   }
 
@@ -646,6 +670,57 @@ export class Renderer {
     };
   }
 
+  /** UR8-3: is this a mesh whose material shows its texture in every solid mode? */
+  private isAlwaysTextured(obj: SceneObject, scene: Scene): boolean {
+    return obj.kind === 'mesh' && scene.materialOf(obj).alwaysTextured === true;
+  }
+
+  /** UR8-3: is this a mesh whose material alpha-blends (transparent cutout)? */
+  private isAlphaBlend(obj: SceneObject, scene: Scene): boolean {
+    return obj.kind === 'mesh' && scene.materialOf(obj).alphaBlend === true;
+  }
+
+  /** Sort objects back-to-front by their origin's view-space depth (camera looks
+   *  down -Z, so farther = more negative → ascending z draws far first). */
+  private sortBackToFront(scene: Scene, objs: SceneObject[], view: Mat4): SceneObject[] {
+    return objs
+      .map((o) => ({ o, z: view.transformPoint(scene.worldTransformOf(o).position).z }))
+      .sort((a, b) => a.z - b.z)
+      .map((e) => e.o);
+  }
+
+  /**
+   * UR8-3 — draw the SHADELESS TEXTURED objects `objs` via the TexturedPass:
+   * opaque always-textured first (normal depth), then alphaBlend ones LAST in a
+   * blended pass, back-to-front, depth-test ON but depth-WRITE OFF. Used for the
+   * always-textured draw in matcap/studio/wireframe AND the alpha second pass in
+   * Rendered mode.
+   */
+  private drawTexturedObjects(scene: Scene, objs: SceneObject[], view: Mat4, proj: Mat4, aoTex: WebGLTexture): void {
+    if (objs.length === 0) return;
+    const { gl, canvas } = this.ctx;
+    const opaque = objs.filter((o) => !this.isAlphaBlend(o, scene));
+    const blended = this.sortBackToFront(scene, objs.filter((o) => this.isAlphaBlend(o, scene)), view);
+    this.texturedPass.begin(view, proj, aoTex, canvas.width, canvas.height);
+    for (const obj of opaque) {
+      const mat = scene.materialOf(obj);
+      this.texturedPass.setObject(scene.worldMatrix(obj), mat, this.materialTexture(mat), false);
+      this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+    }
+    if (blended.length > 0) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      for (const obj of blended) {
+        const mat = scene.materialOf(obj);
+        this.texturedPass.setObject(scene.worldMatrix(obj), mat, this.materialTexture(mat), true);
+        this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+      }
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+    }
+  }
+
   render(scene: Scene, camera: OrbitCamera): void {
     const { gl, canvas } = this.ctx;
     if (this.ctx.syncSize()) {
@@ -671,6 +746,9 @@ export class Renderer {
       const aoMeshes: SceneObject[] = [];
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
+        // UR8-3 B: alphaBlend cutouts DON'T occlude — a floating transparent
+        // plane must not sink AO into the surfaces behind it.
+        if (this.isAlphaBlend(obj, scene)) continue;
         aoMeshes.push(obj);
         this.aoPass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
@@ -702,7 +780,16 @@ export class Renderer {
 
     // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
     // no fill; matcap/studio fill triangles with their respective shaders.
+    // UR8-3 C: always-textured meshes draw their texture in matcap/studio/
+    // wireframe via the shadeless TexturedPass (part B blends the alpha ones).
+    const texturedObjs = this.shadingMode !== 'rendered'
+      ? visible.filter((o) => this.isAlwaysTextured(o, scene))
+      : [];
+    const texturedSet = new Set(texturedObjs);
+
     if (this.shadingMode === 'wireframe') {
+      // UR8-3 C: textured fill FIRST (depth on), wires drawn on top afterwards.
+      this.drawTexturedObjects(scene, texturedObjs, view, proj, aoTex);
       // Hidden-line option: prime the depth buffer with the solid faces
       // (color untouched) so backfacing wires and wires behind other geometry
       // fail the depth test; the biased lines then only survive where visible.
@@ -730,16 +817,22 @@ export class Renderer {
     } else if (this.shadingMode === 'studio') {
       this.studioPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
+        if (texturedSet.has(obj)) continue; // drawn shadeless-textured below
         this.studioPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+      this.drawTexturedObjects(scene, texturedObjs, view, proj, aoTex);
     } else if (this.shadingMode === 'rendered') {
       // World environment as the backdrop (flat / gradient / HDRI), then the
       // meshes over it. Other shading modes keep the theme clear color.
       this.syncHdriTexture(scene);
       const meshes = visible.filter((o) => o.kind === 'mesh');
+      // UR8-3 B: alphaBlend cutouts draw in a blended SECOND pass and DON'T cast
+      // shadows (a floating cutout casting a full quad shadow looks broken).
+      const opaqueMeshes = meshes.filter((o) => !this.isAlphaBlend(o, scene));
+      const alphaMeshes = meshes.filter((o) => this.isAlphaBlend(o, scene));
       const lights = collectLights(scene);
-      const { casters, cubeCasters } = this.renderShadows(scene, meshes, lights);
+      const { casters, cubeCasters } = this.renderShadows(scene, opaqueMeshes, lights);
       const invViewProj = proj.mul(view).invert();
       this.worldBgPass.render(invViewProj, eye, scene.world, this.hdriTexture);
       const amb = averageWorldColor(scene.world);
@@ -747,7 +840,7 @@ export class Renderer {
       this.renderedPass.begin(view, proj, eye, lights,
         new Vec3(amb[0] * k, amb[1] * k, amb[2] * k), this.shadowPass.textures, casters,
         this.shadowPass.cubeTextures, cubeCasters, aoTex, canvas.width, canvas.height);
-      for (const obj of meshes) {
+      for (const obj of opaqueMeshes) {
         const mat = scene.materialOf(obj);
         // P14 shader nodes: bake the graph (idempotent per version) and view
         // the material THROUGH the bake — texture slots point at the baked
@@ -781,12 +874,17 @@ export class Renderer {
         );
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+      // UR8-3 B: alphaBlend planes over the opaque result, blended back-to-front
+      // (shadeless textured — transparent HTML/image cutouts are emit planes).
+      this.drawTexturedObjects(scene, alphaMeshes, view, proj, aoTex);
     } else {
       this.meshPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
+        if (texturedSet.has(obj)) continue; // drawn shadeless-textured below
         this.meshPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+      this.drawTexturedObjects(scene, texturedObjs, view, proj, aoTex);
     }
 
     // Wireframe overlay (shading-dropdown option): the edge wires drawn over

@@ -182,8 +182,7 @@ export class HtmlPlaneDriver {
     st.lastRasterAt = nowMs;
     st.committed = target;
     st.committedScroll = scrollY;
-    const { pageW, pageH, source } = obj.html!;
-    rasterizeHtmlAt(source, target, { w: pageW, h: pageH, scrollY })
+    rasterizeHtmlAt(obj.html!.source, target, rasterOptsFor(obj, scrollY))
       .then(async ({ dataUrl }) => {
         mat.texDataUrl = dataUrl; // Rendered viewport re-uploads on url change
         const tex = await decodeTexImageLinear(dataUrl);
@@ -213,8 +212,7 @@ export class HtmlPlaneDriver {
       const mat = this.materialFor(obj);
       if (!mat) continue;
       const t = pageTime(obj, frame, scene.fps, scene.frameStart);
-      const { pageW, pageH, source, scrollY } = obj.html!;
-      const { dataUrl } = await rasterizeHtmlAt(source, t, { w: pageW, h: pageH, scrollY });
+      const { dataUrl } = await rasterizeHtmlAt(obj.html!.source, t, rasterOptsFor(obj, obj.html!.scrollY));
       mat.texDataUrl = dataUrl;
       const tex = await decodeTexImageLinear(dataUrl);
       if (tex) mat.texImage = tex;
@@ -231,4 +229,17 @@ export class HtmlPlaneDriver {
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+/**
+ * Raster options for a re-raster of `obj`'s page (UR8-3). A TRANSPARENT / cropped
+ * fragment plane re-rasters from the base 1024×768 with transparent+autoCrop so
+ * the crop (and its alpha) reproduce identically — pageW/pageH are the stored crop
+ * box, not the raster size, so they must NOT be passed as w/h here. An ordinary
+ * (opaque) page re-rasters at pageW×pageH as before.
+ */
+function rasterOptsFor(obj: SceneObject, scrollY: number): { w?: number; h?: number; scrollY: number; transparent?: boolean; autoCrop?: boolean } {
+  const h = obj.html!;
+  if (h.autoCrop) return { scrollY, transparent: true, autoCrop: true };
+  return { w: h.pageW, h: h.pageH, scrollY, transparent: h.transparent };
 }

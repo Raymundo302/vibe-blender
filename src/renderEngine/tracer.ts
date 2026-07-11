@@ -541,6 +541,28 @@ export function sampleImageBilinear(
 }
 
 /**
+ * Bilinear, clamp-to-edge sample of an image's ALPHA channel (UR8-3 cutout).
+ * Returns 1 (opaque) when the image has no decoded alpha array. Pure.
+ */
+export function sampleImageAlphaBilinear(
+  img: { width: number; height: number; alpha?: Float32Array },
+  u: number, v: number,
+): number {
+  const a = img.alpha;
+  if (!a) return 1;
+  const { width: w, height: h } = img;
+  const fx = u * w - 0.5, fy = v * h - 0.5;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const tx = fx - x0, ty = fy - y0;
+  const cx = (x: number) => (x < 0 ? 0 : x > w - 1 ? w - 1 : x);
+  const cy = (y: number) => (y < 0 ? 0 : y > h - 1 ? h - 1 : y);
+  const at = (x: number, y: number) => a[cy(y) * w + cx(x)];
+  const t = at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx;
+  const b = at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx;
+  return t * (1 - ty) + b * ty;
+}
+
+/**
  * Texture multiplier for a material at UV (u,v): [1,1,1] for 'none' (or an image
  * material with no decoded pixels). Exported for the unit tests.
  */
@@ -754,9 +776,29 @@ export function traceRay(
   const genV: [number, number, number] = [0, 0, 0]; // interpolated GENERATED coord
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    const hit = scene.bvh
+    let hit = scene.bvh
       ? intersectBVH(scene.bvh, scene.tris, ox, oy, oz, dx, dy, dz)
       : null;
+    // UR8-3 B — alpha cutout: an alphaBlend hit whose texture alpha < 0.5 is
+    // SKIPPED (the ray passes straight through, continuing to whatever is behind
+    // it); alpha ≥ 0.5 is opaque as usual. v1: no partial transparency — a hit is
+    // either fully passed through or fully opaque. Bounded guard against a ray
+    // grazing an endless run of near-coplanar cutouts.
+    for (let pt = 0; hit && pt < 64; pt++) {
+      const m = scene.materials[scene.triMat[hit.tri]] ?? scene.materials[0];
+      if (!m.alphaBlend || !m.texImage || !m.texImage.alpha || !scene.triUV) break;
+      const o = hit.tri * 6;
+      const w0 = 1 - hit.u - hit.v;
+      const cu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
+      const cv = scene.triUV[o + 1] * w0 + scene.triUV[o + 3] * hit.u + scene.triUV[o + 5] * hit.v;
+      if (sampleImageAlphaBilinear(m.texImage, cu, cv) >= 0.5) break;
+      // Pass through: advance the ray origin just past the hit and re-intersect.
+      const hx = ox + dx * hit.t, hy = oy + dy * hit.t, hz = oz + dz * hit.t;
+      ox = hx + dx * EPS; oy = hy + dy * EPS; oz = hz + dz * EPS;
+      hit = scene.bvh
+        ? intersectBVH(scene.bvh, scene.tris, ox, oy, oz, dx, dy, dz)
+        : null;
+    }
     if (!hit) {
       worldSky(scene.world, dx, dy, dz, skyC);
       rr += tr * skyC[0]; rg += tg * skyC[1]; rb += tb * skyC[2];

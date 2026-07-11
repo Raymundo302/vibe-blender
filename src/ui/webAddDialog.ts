@@ -23,6 +23,8 @@ export function buildWebAddDialogDom(): {
   input: HTMLInputElement;
   loadBtn: HTMLButtonElement;
   openBtn: HTMLButtonElement;
+  transparentCheck: HTMLInputElement;
+  cropCheck: HTMLInputElement;
 } {
   const backdrop = document.createElement('div');
   backdrop.className = 'web-add-backdrop';
@@ -42,6 +44,28 @@ export function buildWebAddDialogDom(): {
   input.placeholder = 'https://…';
   input.spellcheck = false;
   dialog.append(input);
+
+  // UR8-3 A — Open… (local .html) raster options. Both default UNCHECKED and
+  // untouched, which means "auto": addHtmlPlaneFromText applies the bare-fragment
+  // heuristic (a source with no <body>/<html> becomes transparent + auto-cropped;
+  // a full document stays opaque full-page). Toggling a box FORCES that value.
+  const opts = document.createElement('div');
+  opts.className = 'web-add-opts';
+  const mkCheck = (label: string): HTMLInputElement => {
+    const wrap = document.createElement('label');
+    wrap.className = 'web-add-check';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.addEventListener('change', () => { cb.dataset.touched = '1'; });
+    const span = document.createElement('span');
+    span.textContent = label;
+    wrap.append(cb, span);
+    opts.append(wrap);
+    return cb;
+  };
+  const transparentCheck = mkCheck('Transparent');
+  const cropCheck = mkCheck('Crop to content');
+  dialog.append(opts);
 
   const row = document.createElement('div');
   row.className = 'web-add-row';
@@ -64,7 +88,12 @@ export function buildWebAddDialogDom(): {
   hint.textContent = 'Load = live iframe portal · Open… = local .html file';
   dialog.append(hint);
 
-  return { backdrop, dialog, input, loadBtn, openBtn };
+  return { backdrop, dialog, input, loadBtn, openBtn, transparentCheck, cropCheck };
+}
+
+/** A checkbox's value only when the user TOUCHED it — else undefined ("auto"). */
+function overrideOf(cb: HTMLInputElement): boolean | undefined {
+  return cb.dataset.touched === '1' ? cb.checked : undefined;
 }
 
 export interface WebAddDialogOptions {
@@ -79,12 +108,16 @@ export interface WebAddDialogOptions {
 export class WebAddDialog {
   private readonly backdrop: HTMLDivElement;
   private readonly input: HTMLInputElement;
+  private readonly transparentCheck: HTMLInputElement;
+  private readonly cropCheck: HTMLInputElement;
   private closed = false;
 
   constructor(private readonly opts: WebAddDialogOptions) {
     const dom = buildWebAddDialogDom();
     this.backdrop = dom.backdrop;
     this.input = dom.input;
+    this.transparentCheck = dom.transparentCheck;
+    this.cropCheck = dom.cropCheck;
 
     dom.loadBtn.addEventListener('click', this.onLoad);
     dom.openBtn.addEventListener('click', this.onOpen);
@@ -111,10 +144,13 @@ export class WebAddDialog {
 
   private readonly onOpen = (): void => {
     const { scene, undo, setStatus } = this.opts;
+    // Raster options: forced only when the user touched the checkbox; otherwise
+    // undefined so the bare-fragment heuristic decides (UR8-3 A).
+    const rasterOpts = { transparent: overrideOf(this.transparentCheck), autoCrop: overrideOf(this.cropCheck) };
     this.close();
     // Live keeps the on-disk watcher where showOpenFilePicker exists; else it
     // gracefully degrades to a one-shot snapshot (tools/htmlPlane.pickHtmlLive).
-    void pickHtmlLive(scene, undo, setStatus);
+    void pickHtmlLive(scene, undo, setStatus, rasterOpts);
   };
 
   private readonly onBackdropDown = (e: PointerEvent): void => {

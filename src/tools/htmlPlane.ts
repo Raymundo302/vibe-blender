@@ -6,6 +6,50 @@ import { EditableMesh } from '../core/mesh/EditableMesh';
 import { basename, createImagePlane } from './imagePlane';
 
 /**
+ * UR8-3 A — a source WITHOUT a `<body`/`<html` tag is a bare FRAGMENT (Ray's
+ * "just the bouncy ball + shadow"): it defaults to a transparent, auto-cropped
+ * raster (real transparency around the content, plane sized to its bbox). A full
+ * document keeps the opaque, full-page 1024×768 raster. Pure — the add paths use
+ * it as the DEFAULT when the caller doesn't force transparent/autoCrop.
+ */
+export function isBareFragment(source: string): boolean {
+  return !/<body[\s>]/i.test(source) && !/<html[\s>]/i.test(source);
+}
+
+/**
+ * Scan an RGBA byte array (row-major, 4 bytes/pixel) for the bounding box of the
+ * pixels whose alpha exceeds `alphaThreshold` (0..255), padded by `pad` px and
+ * clamped to the image. Returns null when the image is fully transparent. Pure +
+ * unit-tested (UR8-3 A autoCrop) — the browser crop path calls this on the
+ * getImageData bytes, then re-draws into a canvas of exactly the returned size.
+ */
+export function alphaBBox(
+  rgba: Uint8ClampedArray | Uint8Array | number[],
+  w: number,
+  h: number,
+  pad = 2,
+  alphaThreshold = 0,
+): { x: number; y: number; w: number; h: number } | null {
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (rgba[(y * w + x) * 4 + 3] > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return null; // fully transparent
+  const x0 = Math.max(0, minX - pad);
+  const y0 = Math.max(0, minY - pad);
+  const x1 = Math.min(w - 1, maxX + pad);
+  const y1 = Math.min(h - 1, maxY + pad);
+  return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+/**
  * UR4-4 — "Image ▸ HTML Snapshot… / HTML Live…" add-menu items: rasterize a
  * self-contained .html file onto a shadeless (emit) image plane, reusing the
  * UR4-3 {@link createImagePlane} pipeline.
@@ -74,11 +118,14 @@ export function extractParts(source: string): { head: string; body: string } {
  * carrying the XHTML namespace foreignObject requires. A small reset makes
  * `height:100%` children fill the raster and gives blueprints a white ground.
  */
-export function wrapXhtml(bodyFragment: string, headFragment = ''): string {
+export function wrapXhtml(bodyFragment: string, headFragment = '', transparent = false): string {
+  // UR8-3 A: `transparent` swaps the white ground for `background:transparent`
+  // so the raster keeps real alpha around the content (a bare fragment plane).
+  const bg = transparent ? 'transparent' : '#ffffff';
   return (
     '<html xmlns="http://www.w3.org/1999/xhtml"><head>' +
     '<style>html,body{margin:0;padding:0;width:100%;height:100%;' +
-    'box-sizing:border-box;background:#ffffff;}</style>' +
+    `box-sizing:border-box;background:${bg};}</style>` +
     headFragment +
     `</head><body>${bodyFragment}</body></html>`
   );
@@ -89,17 +136,17 @@ export function wrapXhtml(bodyFragment: string, headFragment = ''): string {
  * `<foreignObject>`, sized `w × h`. `source` may be a full HTML document or a
  * bare body fragment — {@link extractParts} normalizes it.
  */
-export function buildSvgDocument(source: string, w = RASTER_W, h = RASTER_H): string {
+export function buildSvgDocument(source: string, w = RASTER_W, h = RASTER_H, transparent = false): string {
   const { head, body } = extractParts(source);
-  return buildSvgFromParts(head, body, w, h);
+  return buildSvgFromParts(head, body, w, h, transparent);
 }
 
 /** Same SVG construction from already-normalized head/body fragments. */
-export function buildSvgFromParts(head: string, body: string, w = RASTER_W, h = RASTER_H): string {
+export function buildSvgFromParts(head: string, body: string, w = RASTER_W, h = RASTER_H, transparent = false): string {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
     '<foreignObject x="0" y="0" width="100%" height="100%">' +
-    wrapXhtml(body, head) +
+    wrapXhtml(body, head, transparent) +
     '</foreignObject></svg>'
   );
 }
@@ -130,6 +177,26 @@ export interface RasterResult {
   dataUrl: string;
   /** false when the source failed to parse and an error card was drawn. */
   ok: boolean;
+  /** Final raster width in px (UR8-3 A: the CROP size when autoCrop trimmed it,
+   *  else the requested w). The plane geometry uses this for the content aspect. */
+  w: number;
+  /** Final raster height in px (see {@link w}). */
+  h: number;
+  /** True when this raster carries real transparency (transparent option) — the
+   *  add path sets the material's alphaBlend from it. */
+  transparent: boolean;
+}
+
+/** Per-raster options (UR8-3 A). */
+export interface RasterOptions {
+  w?: number;
+  h?: number;
+  scrollY?: number;
+  /** No white ground — keep alpha around the content. Default false (opaque). */
+  transparent?: boolean;
+  /** After drawing, crop the canvas to the alpha bounding box (pad 2px). Only
+   *  meaningful with transparent. Default false. */
+  autoCrop?: boolean;
 }
 
 /**
@@ -142,7 +209,14 @@ export interface RasterResult {
  * (`toDataURL` then throws SecurityError), whereas the inline data URL stays
  * clean. Self-contained content only, so encodeURIComponent is safe.
  */
-function svgToCanvas(svg: string, w: number, h: number): Promise<HTMLCanvasElement> {
+function svgToCanvas(
+  svg: string,
+  w: number,
+  h: number,
+  opts?: { transparent?: boolean; autoCrop?: boolean },
+): Promise<HTMLCanvasElement> {
+  const transparent = opts?.transparent ?? false;
+  const autoCrop = opts?.autoCrop ?? false;
   return new Promise((resolve, reject) => {
     if (typeof document === 'undefined' || typeof Image === 'undefined') {
       reject(new Error('no DOM'));
@@ -157,9 +231,29 @@ function svgToCanvas(svg: string, w: number, h: number): Promise<HTMLCanvasEleme
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) throw new Error('no 2d context');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, w, h);
+        // UR8-3 A: transparent → NO white ground fill, so the raster keeps the
+        // content's alpha. Opaque → paint white first (self-contained blueprint).
+        if (!transparent) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, w, h);
+        }
         ctx.drawImage(img, 0, 0, w, h);
+        if (autoCrop) {
+          // Scan the alpha channel for the content bbox and re-draw into a canvas
+          // of EXACTLY that size (padding 2px) so the plane uses the content aspect.
+          const rgba = ctx.getImageData(0, 0, w, h).data;
+          const box = alphaBBox(rgba, w, h, 2);
+          if (box) {
+            const out = document.createElement('canvas');
+            out.width = box.w;
+            out.height = box.h;
+            const octx = out.getContext('2d');
+            if (!octx) throw new Error('no 2d context');
+            octx.drawImage(canvas, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+            resolve(out);
+            return;
+          }
+        }
         resolve(canvas);
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
@@ -172,8 +266,18 @@ function svgToCanvas(svg: string, w: number, h: number): Promise<HTMLCanvasEleme
   });
 }
 
-function svgToPng(svg: string, w: number, h: number): Promise<string> {
-  return svgToCanvas(svg, w, h).then((canvas) => canvas.toDataURL('image/png'));
+/** Rasterize an SVG string to a PNG data URL + its final pixel size. */
+function svgToPng(
+  svg: string,
+  w: number,
+  h: number,
+  opts?: { transparent?: boolean; autoCrop?: boolean },
+): Promise<{ dataUrl: string; w: number; h: number }> {
+  return svgToCanvas(svg, w, h, opts).then((canvas) => ({
+    dataUrl: canvas.toDataURL('image/png'),
+    w: canvas.width,
+    h: canvas.height,
+  }));
 }
 
 /** Last-resort plain-canvas error card if even the error SVG can't rasterize. */
@@ -223,19 +327,23 @@ export async function rasterizeHtml(
   source: string,
   w: number = RASTER_W,
   h: number = RASTER_H,
+  opts?: { transparent?: boolean; autoCrop?: boolean },
 ): Promise<RasterResult> {
+  const transparent = opts?.transparent ?? false;
+  const autoCrop = opts?.autoCrop ?? false;
   try {
     const { head, body } = sanitizeToXhtml(source);
-    const dataUrl = await svgToPng(buildSvgFromParts(head, body, w, h), w, h);
-    return { dataUrl, ok: true };
+    const png = await svgToPng(buildSvgFromParts(head, body, w, h, transparent), w, h,
+      { transparent, autoCrop });
+    return { dataUrl: png.dataUrl, ok: true, w: png.w, h: png.h, transparent };
   } catch {
-    // Parse/draw failed → rasterize an error card instead of throwing.
+    // Parse/draw failed → rasterize an error card instead of throwing (opaque).
     try {
       const errSvg = buildSvgDocument(errorCardFragment(), w, h);
-      const dataUrl = await svgToPng(errSvg, w, h);
-      return { dataUrl, ok: false };
+      const png = await svgToPng(errSvg, w, h);
+      return { dataUrl: png.dataUrl, ok: false, w: png.w, h: png.h, transparent: false };
     } catch {
-      return { dataUrl: fallbackErrorCanvas(w, h), ok: false };
+      return { dataUrl: fallbackErrorCanvas(w, h), ok: false, w, h, transparent: false };
     }
   }
 }
@@ -300,32 +408,36 @@ export function scrollWrap(body: string, scrollY: number): string {
 export async function rasterizeHtmlAt(
   source: string,
   tSeconds: number,
-  opts?: { w?: number; h?: number; scrollY?: number },
+  opts?: RasterOptions,
 ): Promise<RasterResult> {
   const w = opts?.w ?? RASTER_W;
   const h = opts?.h ?? RASTER_H;
   const scrollY = opts?.scrollY ?? 0;
+  const transparent = opts?.transparent ?? false;
+  const autoCrop = opts?.autoCrop ?? false;
   try {
     const { head, body } = sanitizeToXhtml(source);
-    const dataUrl = await svgToPng(
-      buildSvgFromParts(head + pausedAnimationStyle(tSeconds), scrollWrap(body, scrollY), w, h),
+    const png = await svgToPng(
+      buildSvgFromParts(head + pausedAnimationStyle(tSeconds), scrollWrap(body, scrollY), w, h, transparent),
       w,
       h,
+      { transparent, autoCrop },
     );
-    return { dataUrl, ok: true };
+    return { dataUrl: png.dataUrl, ok: true, w: png.w, h: png.h, transparent };
   } catch {
     try {
       const errSvg = buildSvgDocument(errorCardFragment(), w, h);
-      const dataUrl = await svgToPng(errSvg, w, h);
-      return { dataUrl, ok: false };
+      const png = await svgToPng(errSvg, w, h);
+      return { dataUrl: png.dataUrl, ok: false, w: png.w, h: png.h, transparent: false };
     } catch {
-      return { dataUrl: fallbackErrorCanvas(w, h), ok: false };
+      return { dataUrl: fallbackErrorCanvas(w, h), ok: false, w, h, transparent: false };
     }
   }
 }
 
-/** Decoded texture cache shape (linear RGB, row 0 = top) — matches the tracer. */
-type TexImage = { width: number; height: number; pixels: Float32Array };
+/** Decoded texture cache shape (linear RGB, row 0 = top) — matches the tracer.
+ *  `alpha` (UR8-3) is the per-pixel alpha (0..1) so the tracer cutout can read it. */
+type TexImage = { width: number; height: number; pixels: Float32Array; alpha?: Float32Array };
 
 /**
  * Decode a PNG data URL to linear-light pixels for the F12 path tracer (awaitable
@@ -348,12 +460,14 @@ export function decodeTexImageLinear(dataUrl: string): Promise<TexImage | null> 
         ctx.drawImage(img, 0, 0);
         const rgba = ctx.getImageData(0, 0, w, h).data;
         const pixels = new Float32Array(w * h * 3);
-        for (let p = 0, q = 0; p < rgba.length; p += 4, q += 3) {
+        const alpha = new Float32Array(w * h);
+        for (let p = 0, q = 0, a = 0; p < rgba.length; p += 4, q += 3, a += 1) {
           pixels[q] = srgbToLinear(rgba[p] / 255);
           pixels[q + 1] = srgbToLinear(rgba[p + 1] / 255);
           pixels[q + 2] = srgbToLinear(rgba[p + 2] / 255);
+          alpha[a] = rgba[p + 3] / 255;
         }
-        resolve({ width: w, height: h, pixels });
+        resolve({ width: w, height: h, pixels, alpha });
       } catch { resolve(null); }
     };
     img.onerror = () => resolve(null);
@@ -376,23 +490,35 @@ export async function addHtmlPlaneFromText(
   name: string,
   setStatus?: (text: string) => void,
   quiet = false,
+  opts?: { transparent?: boolean; autoCrop?: boolean },
 ): Promise<{ obj: SceneObject; ok: boolean }> {
-  const { dataUrl, ok } = await rasterizeHtml(text);
+  // UR8-3 A heuristic: a bare fragment (no <body>/<html>) defaults to a
+  // transparent, auto-cropped raster; a full document keeps the opaque full
+  // page. Either can be forced via opts (the add-dialog checkboxes).
+  const bare = isBareFragment(text);
+  const transparent = opts?.transparent ?? bare;
+  const autoCrop = opts?.autoCrop ?? bare;
+  const { dataUrl, ok, w, h } = await rasterizeHtml(text, RASTER_W, RASTER_H, { transparent, autoCrop });
   const obj = createImagePlane(scene, undo, {
     dataUrl,
     name,
-    w: RASTER_W,
-    h: RASTER_H,
+    // Cropped fragment → the plane uses the CONTENT aspect (crop box), not 1024×768.
+    w,
+    h,
     mode: 'emit',
+    // Transparent rasters carry real alpha → blend + tracer cutout.
+    alphaBlend: transparent,
   });
   // UR7-1: stamp the HTML-plane payload so the page can animate on the plane and
   // Play becomes a keyable channel. kind 'file' serializes the source text into
   // the scene. Old scenes (no payload) load as plain static image planes.
-  obj.html = defaultHtmlPlaneData('file', text);
+  // UR8-3 A: pageW/pageH store the CROP box so the plane matches the content;
+  // transparent/autoCrop ride along so the playback driver re-rasters identically.
+  obj.html = { ...defaultHtmlPlaneData('file', text), pageW: w, pageH: h, transparent, autoCrop };
   if (!quiet) {
     setStatus?.(
       ok
-        ? `Added HTML plane "${name}" (${RASTER_W}×${RASTER_H}; self-contained HTML only — no scripts or external images/fonts/CSS)`
+        ? `Added HTML plane "${name}" (${w}×${h}${transparent ? ', transparent' : ''}; self-contained HTML only — no scripts or external images/fonts/CSS)`
         : `Added HTML plane "${name}" — ${PARSE_FAILURE_MESSAGE} (self-contained HTML only — no scripts/external resources)`,
     );
   }
@@ -522,6 +648,7 @@ export function pickHtmlSnapshot(
   scene: Scene,
   undo: UndoStack,
   setStatus?: (text: string) => void,
+  opts?: { transparent?: boolean; autoCrop?: boolean },
 ): void {
   if (typeof document === 'undefined') return;
   const input = document.createElement('input');
@@ -534,7 +661,7 @@ export function pickHtmlSnapshot(
     if (!file) return; // cancelled → nothing happens
     file
       .text()
-      .then((text) => addHtmlPlaneFromText(scene, undo, text, basename(file.name), setStatus))
+      .then((text) => addHtmlPlaneFromText(scene, undo, text, basename(file.name), setStatus, false, opts))
       .catch(() => setStatus?.('Could not read HTML file'));
   });
   document.body.appendChild(input);
@@ -549,6 +676,9 @@ interface LiveEntry {
   mat: Material;
   handle: FileSystemFileHandle;
   lastModified: number;
+  /** UR8-3 A: re-rasterize the live file with the same transparent/crop opts. */
+  transparent: boolean;
+  autoCrop: boolean;
 }
 
 /**
@@ -597,7 +727,8 @@ async function pollLivePlanes(): Promise<void> {
       if (file.lastModified === entry.lastModified) continue;
       entry.lastModified = file.lastModified;
       const text = await file.text();
-      const { dataUrl } = await rasterizeHtml(text);
+      const { dataUrl } = await rasterizeHtml(text, RASTER_W, RASTER_H,
+        { transparent: entry.transparent, autoCrop: entry.autoCrop });
       // Swap the SAME material's texture in place. Renderer.materialTexture
       // re-uploads on a url change (its cache is keyed by material id + url),
       // so this is the invalidation path — no explicit cache poke needed.
@@ -619,6 +750,7 @@ export async function pickHtmlLive(
   scene: Scene,
   undo: UndoStack,
   setStatus?: (text: string) => void,
+  rasterOpts?: { transparent?: boolean; autoCrop?: boolean },
 ): Promise<void> {
   const picker = (window as unknown as {
     showOpenFilePicker?: (opts?: unknown) => Promise<FileSystemFileHandle[]>;
@@ -626,7 +758,7 @@ export async function pickHtmlLive(
 
   if (typeof picker !== 'function') {
     setStatus?.('Live HTML unavailable — added snapshot');
-    pickHtmlSnapshot(scene, undo, setStatus);
+    pickHtmlSnapshot(scene, undo, setStatus, rasterOpts);
     return;
   }
 
@@ -645,10 +777,13 @@ export async function pickHtmlLive(
     const file = await handle.getFile();
     const text = await file.text();
     const name = basename(file.name);
-    const { obj } = await addHtmlPlaneFromText(scene, undo, text, name, setStatus, true);
+    const bare = isBareFragment(text);
+    const transparent = rasterOpts?.transparent ?? bare;
+    const autoCrop = rasterOpts?.autoCrop ?? bare;
+    const { obj } = await addHtmlPlaneFromText(scene, undo, text, name, setStatus, true, { transparent, autoCrop });
     const mat = scene.getMaterial(obj.materialId ?? -1);
     if (!mat) return;
-    const entry: LiveEntry = { obj, scene, mat, handle, lastModified: file.lastModified };
+    const entry: LiveEntry = { obj, scene, mat, handle, lastModified: file.lastModified, transparent, autoCrop };
     liveEntries.add(entry);
     handleByObject.set(obj, handle);
     ensurePoller();
@@ -689,12 +824,14 @@ function updateTracerImage(mat: Material, dataUrl: string): void {
       ctx.drawImage(img, 0, 0);
       const rgba = ctx.getImageData(0, 0, w, h).data;
       const pixels = new Float32Array(w * h * 3);
-      for (let p = 0, q = 0; p < rgba.length; p += 4, q += 3) {
+      const alpha = new Float32Array(w * h);
+      for (let p = 0, q = 0, a = 0; p < rgba.length; p += 4, q += 3, a += 1) {
         pixels[q] = srgbToLinear(rgba[p] / 255);
         pixels[q + 1] = srgbToLinear(rgba[p + 1] / 255);
         pixels[q + 2] = srgbToLinear(rgba[p + 2] / 255);
+        alpha[a] = rgba[p + 3] / 255;
       }
-      mat.texImage = { width: w, height: h, pixels };
+      mat.texImage = { width: w, height: h, pixels, alpha };
     } catch {
       /* leave the previous tracer image */
     }

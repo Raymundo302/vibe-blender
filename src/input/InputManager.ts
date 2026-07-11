@@ -1148,6 +1148,12 @@ export class InputManager {
       // HTML plane active (and not mid mesh-edit) → enter page mode, not edit.
       const active = scene.activeObject;
       if (!scene.editMode && active?.html) {
+        // UR8-3 A: a cropped fragment plane is a self-contained DOCUMENT sized to
+        // its content — there is nothing to scroll, so page mode is disabled.
+        if (active.html.autoCrop) {
+          this.ctx.setStatus('Cropped fragment — page scrolling disabled');
+          return;
+        }
         pageModeState.object = active;
         this.ctx.setStatus('Page Mode — scroll to browse, Tab/Esc to exit');
         return;

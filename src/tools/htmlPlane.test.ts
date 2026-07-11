@@ -13,6 +13,8 @@ import {
   scrollWrap,
   makeHtmlPlaneMesh,
   htmlPlaneExtent,
+  alphaBBox,
+  isBareFragment,
 } from './htmlPlane';
 import { makeImagePlaneMesh } from './imagePlane';
 import { defaultHtmlPlaneData, HTML_PLANE_DEFAULT_FPS } from '../core/scene/objectData';
@@ -215,5 +217,50 @@ describe('defaultHtmlPlaneData (UR7-1 payload)', () => {
     expect(RASTER_W).toBe(1024);
     expect(RASTER_H).toBe(768);
     expect(HTML_PLANE_DEFAULT_FPS).toBe(8);
+  });
+});
+
+// UR8-3 A — auto-crop bbox math on synthetic RGBA arrays + the bare-fragment heuristic.
+describe('alphaBBox (UR8-3 auto-crop)', () => {
+  /** Build a w×h RGBA byte array, opaque (alpha 255) inside [x0,x1]×[y0,y1]. */
+  function rgbaWithBox(w: number, h: number, x0: number, y0: number, x1: number, y1: number): Uint8ClampedArray {
+    const a = new Uint8ClampedArray(w * h * 4);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) a[(y * w + x) * 4 + 3] = 255;
+    }
+    return a;
+  }
+
+  it('finds the content bbox and pads it by 2px', () => {
+    const box = alphaBBox(rgbaWithBox(20, 20, 8, 6, 12, 10), 20, 20, 2);
+    expect(box).toEqual({ x: 6, y: 4, w: 9, h: 9 }); // 8..12 +/-2 -> 6..14 = 9 wide
+  });
+
+  it('clamps padding to the image bounds', () => {
+    const box = alphaBBox(rgbaWithBox(10, 10, 0, 0, 1, 1), 10, 10, 2);
+    expect(box).toEqual({ x: 0, y: 0, w: 4, h: 4 }); // 0..1 +2 -> 0..3, low clamped to 0
+  });
+
+  it('returns null for a fully transparent image', () => {
+    expect(alphaBBox(new Uint8ClampedArray(6 * 6 * 4), 6, 6, 2)).toBeNull();
+  });
+
+  it('honors the alpha threshold (semi-transparent below threshold is excluded)', () => {
+    const a = new Uint8ClampedArray(8 * 8 * 4);
+    a[(4 * 8 + 4) * 4 + 3] = 100; // one semi-transparent pixel
+    expect(alphaBBox(a, 8, 8, 0, 128)).toBeNull();
+    expect(alphaBBox(a, 8, 8, 0, 50)).toEqual({ x: 4, y: 4, w: 1, h: 1 });
+  });
+});
+
+describe('isBareFragment (UR8-3 heuristic)', () => {
+  it('treats a source with no body/html tag as a bare fragment', () => {
+    expect(isBareFragment('<div class="ball"></div>')).toBe(true);
+    expect(isBareFragment('  <span>hi</span>')).toBe(true);
+  });
+  it('treats a full document (body or html tag) as NOT bare', () => {
+    expect(isBareFragment('<html><body><div></div></body></html>')).toBe(false);
+    expect(isBareFragment('<body style="margin:0"><p>x</p></body>')).toBe(false);
+    expect(isBareFragment('<!doctype html><html></html>')).toBe(false);
   });
 });

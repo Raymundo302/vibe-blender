@@ -36,6 +36,9 @@ export interface CreateImagePlaneOptions {
   /** Natural image height in pixels. */
   h: number;
   mode: ImagePlaneMode;
+  /** UR8-3: the texture carries real transparency → material.alphaBlend (blended
+   *  draw + tracer cutout + no shadow/AO casting). Default false. */
+  alphaBlend?: boolean;
 }
 
 /**
@@ -131,6 +134,11 @@ export function createImagePlane(
   mat.texKind = 'image';
   mat.texDataUrl = dataUrl;
   mat.shadeless = mode === 'emit';
+  // UR8-3 C: image + HTML planes should look like themselves in EVERY shading
+  // mode — Always Textured on by default for these materials.
+  mat.alwaysTextured = true;
+  // UR8-3 B: transparent rasters (e.g. auto-cropped HTML fragments) alpha-blend.
+  mat.alphaBlend = opts.alphaBlend === true;
 
   // Decode the pixels for the F12 path tracer (browser only, best-effort — the
   // Rendered viewport uploads the data URL straight to GL and never needs this).
@@ -204,8 +212,9 @@ export function decodeImageSize(dataUrl: string): Promise<{ w: number; h: number
   });
 }
 
-/** Decoded texture cache shape (linear RGB, row 0 = top) — matches the tracer. */
-type TexImage = { width: number; height: number; pixels: Float32Array };
+/** Decoded texture cache shape (linear RGB, row 0 = top) — matches the tracer.
+ *  `alpha` (UR8-3) carries the per-pixel alpha (0..1) for the tracer cutout. */
+type TexImage = { width: number; height: number; pixels: Float32Array; alpha?: Float32Array };
 
 /**
  * Decode a data URL to linear-light pixels for the tracer (sRGB→linear, row 0 =
@@ -227,12 +236,14 @@ function decodeTexImage(dataUrl: string): Promise<TexImage | null> {
         ctx.drawImage(img, 0, 0);
         const rgba = ctx.getImageData(0, 0, w, h).data;
         const pixels = new Float32Array(w * h * 3);
-        for (let p = 0, q = 0; p < rgba.length; p += 4, q += 3) {
+        const alpha = new Float32Array(w * h);
+        for (let p = 0, q = 0, a = 0; p < rgba.length; p += 4, q += 3, a += 1) {
           pixels[q] = srgbToLinear(rgba[p] / 255);
           pixels[q + 1] = srgbToLinear(rgba[p + 1] / 255);
           pixels[q + 2] = srgbToLinear(rgba[p + 2] / 255);
+          alpha[a] = rgba[p + 3] / 255;
         }
-        resolve({ width: w, height: h, pixels });
+        resolve({ width: w, height: h, pixels, alpha });
       } catch { resolve(null); }
     };
     img.onerror = () => resolve(null);

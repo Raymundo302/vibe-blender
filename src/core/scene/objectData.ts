@@ -179,6 +179,13 @@ export interface HtmlPlaneData {
   playing: boolean;
   /** Re-raster cap for live viewport playback, fps (clamped 1..15, default 8). */
   fps: number;
+  /** UR8-3 A: rasterize with a TRANSPARENT background (no white ground) — set for
+   *  bare fragments so the plane keeps real alpha. The playback driver re-uses this
+   *  so re-rasters (scrub/playback) don't clobber the transparency. Default false. */
+  transparent?: boolean;
+  /** UR8-3 A: auto-crop the raster to the content bbox. When set, pageW/pageH hold
+   *  the CROP box and re-rasters reproduce it from the base 1024×768. Default false. */
+  autoCrop?: boolean;
 }
 
 export const HTML_PLANE_DEFAULT_W = 1024;
@@ -264,6 +271,19 @@ export interface Material {
    *  space AO still multiplies in Rendered mode. Optional; absent → false, so
    *  pre-v10 scenes/materials are byte-identically unaffected. */
   shadeless?: boolean;
+  /** Alpha blending (UR8-3 B): the material's base-color texture carries real
+   *  transparency (its alpha channel). Rendered viewport draws these in a second
+   *  blended pass (back-to-front, depth-write off); the tracer treats alpha<0.5
+   *  as a cutout (ray passes through); alphaBlend objects DON'T cast shadow-map /
+   *  AO occlusion. Set automatically for transparent HTML rasters. Optional;
+   *  absent → false, so opaque materials are byte-identically unaffected. */
+  alphaBlend?: boolean;
+  /** Always Textured (UR8-3 C): the object shows its texture in EVERY solid
+   *  shading mode (matcap / studio / wireframe), not just Rendered — image + HTML
+   *  planes look like themselves everywhere. Set TRUE by default when an image /
+   *  html plane creates its material; off → the plane shades like any mesh
+   *  (matcap grey). Optional; absent → false. */
+  alwaysTextured?: boolean;
   /** Base-color texture (P11): none, procedural checker, or a packed image. */
   texKind: 'none' | 'checker' | 'image';
   /** Packed image as a data URL when texKind === 'image' (worldData-style). */
@@ -301,8 +321,10 @@ export interface Material {
   };
   /** Bumped by the shader editor on ANY graph mutation → re-bake + re-trace. */
   nodeGraphVersion?: number;
-  /** Runtime decoded pixels cache — NOT serialized (rebuilt on load/select). */
-  texImage?: { width: number; height: number; pixels: Float32Array };
+  /** Runtime decoded pixels cache — NOT serialized (rebuilt on load/select).
+   *  `alpha` (UR8-3) is the per-pixel alpha channel (0..1, row 0 = top), present
+   *  when the packed image had transparency — the tracer's cutout reads it. */
+  texImage?: { width: number; height: number; pixels: Float32Array; alpha?: Float32Array };
   /** Runtime decoded map caches (P13) — NOT serialized. Raw 0..1 values (no
    *  sRGB conversion — normal/rough/metal maps store data, not color). */
   normalImage?: { width: number; height: number; pixels: Float32Array };

@@ -159,4 +159,66 @@ runE2e(async (t) => {
     imageItems.includes('Diffuse…') && imageItems.includes('Emit…') &&
     imageItems.includes('HTML / Website…') && imageItems.length === 3);
   await t.key('Escape', 'Escape', 0);
+
+  // ======================================================================
+  // UR8-3 C — "Always Textured": an image plane shows its texture in EVERY
+  // solid shading mode (matcap AND studio AND wireframe), not just Rendered;
+  // toggling the flag off shades it like any mesh (matcap grey).
+  // ======================================================================
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) S.remove(o.id);
+    window.__app.undo.clear();
+    // A solid BLUE image → a diffuse (lit) plane, so alwaysTextured is what makes
+    // it show its texture in the solid modes (an emit plane would show anyway).
+    const cvs = document.createElement('canvas'); cvs.width = 8; cvs.height = 8;
+    const cx = cvs.getContext('2d'); cx.fillStyle = 'rgb(40,90,220)'; cx.fillRect(0,0,8,8);
+    window.__blueUrl = cvs.toDataURL('image/png');
+    const obj = window.__ip.createImagePlane(S, window.__app.undo, {
+      dataUrl: window.__blueUrl, name: 'bluetex', w: 256, h: 256, mode: 'diffuse',
+    });
+    window.__at = { id: obj.id, mid: obj.materialId };
+    const cam = window.__app.camera; cam.yaw = 0; cam.pitch = 1.4; cam.distance = 4;
+    window.__app.shadePrefs.ao = false;
+    S.deselectAll();
+    // Probe helper: viewport pixel at object-normalized (sx,sy) within the plane.
+    window.__probeAt = (sx, sy) => {
+      const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+      app.renderer.render(app.scene, app.camera);
+      const obj = app.scene.get(window.__at.id);
+      const xs = [...obj.mesh.verts.values()].map((v) => v.co.x);
+      const ys = [...obj.mesh.verts.values()].map((v) => v.co.y);
+      const halfW = Math.max(...xs), halfH = Math.max(...ys);
+      const w = app.scene.worldMatrix(obj).transformPoint({ x: sx*halfW, y: sy*halfH, z: 0 });
+      const p = app.renderer.currentViewProj(app.scene, app.camera).transformPoint(w);
+      const px = Math.round((p.x*0.5+0.5)*c.width), py = Math.round((p.y*0.5+0.5)*c.height);
+      const out = new Uint8Array(4); gl.readPixels(px, py, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+      return [out[0], out[1], out[2]];
+    };
+  })()`);
+  t.check('always-textured blue image plane added',
+    await t.until('!!(window.__at && window.__app.scene.getMaterial(window.__at.mid).alwaysTextured === true)'));
+  // Wait for the GL texture to upload (probe until the fill reads blue in matcap).
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  t.check('texture uploaded (blue visible in matcap)',
+    await t.until(`(() => { const p = window.__probeAt(0.3, 0.3); return p[2] > p[0] + 40 && p[2] > 100; })()`));
+
+  const blueIn = (mode) => t.evaluate(
+    `(() => { window.__app.renderer.shadingMode = '${mode}'; return window.__probeAt(0.3, 0.3); })()`);
+  const mMat = await blueIn('matcap');
+  const mStudio = await blueIn('studio');
+  const mWire = await blueIn('wireframe');
+  const isBlue = (p) => p[2] > p[0] + 40 && p[2] > p[1] && p[2] > 90;
+  t.check('Always Textured: matcap shows the TEXTURE (blue): ' + JSON.stringify(mMat), isBlue(mMat));
+  t.check('Always Textured: studio shows the TEXTURE (blue): ' + JSON.stringify(mStudio), isBlue(mStudio));
+  t.check('Always Textured: wireframe shows the TEXTURE fill (blue): ' + JSON.stringify(mWire), isBlue(mWire));
+
+  // Toggle OFF → the plane shades like any mesh (matcap grey), NOT blue.
+  const greyPx = await t.evaluate(`(() => {
+    window.__app.scene.getMaterial(window.__at.mid).alwaysTextured = false;
+    window.__app.renderer.shadingMode = 'matcap';
+    return window.__probeAt(0.3, 0.3);
+  })()`);
+  t.check('toggle OFF → matcap GREY (R≈G≈B, no blue dominance): ' + JSON.stringify(greyPx),
+    Math.abs(greyPx[2] - greyPx[0]) < 40 && !(greyPx[2] > greyPx[0] + 40));
 });

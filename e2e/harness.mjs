@@ -8,7 +8,7 @@
  *     t.check('label', await t.evaluate('1+1') === 2);
  *   });
  */
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import { rmSync, readdirSync } from 'node:fs';
 
 /**
@@ -26,6 +26,12 @@ function reapOrphanProfiles() {
     if (!m || Number(m[1]) === process.pid) continue;
     try { process.kill(Number(m[1]), 0); } catch (err) {
       if (err.code === 'ESRCH') {
+        // The owning suite is gone — kill any chrome it stranded (a SIGKILLed
+        // suite never runs its exit cleanup; orphan chromes once piled the box
+        // to load-avg 36), then remove the profile. The pattern is the literal
+        // profile dir name, which never appears in THIS process's argv, so
+        // pkill -f cannot self-match (the CLAUDE.md pkill gotcha).
+        try { execSync(`pkill -f -- "${name}"`, { stdio: 'ignore' }); } catch { /* none alive */ }
         try { rmSync(`/tmp/${name}`, { recursive: true, force: true }); } catch { /* best effort */ }
       }
     }

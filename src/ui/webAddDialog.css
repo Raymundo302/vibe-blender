@@ -82,3 +82,24 @@
   font-size: 11px;
   color: var(--vb-text-dim, #8a8a8a);
 }
+
+/* UR8-3 A — Open… raster options (Transparent / Crop to content). */
+.web-add-opts {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.web-add-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--vb-text-dim, #8a8a8a);
+  cursor: pointer;
+  user-select: none;
+}
+.web-add-check input {
+  accent-color: var(--vb-accent, #fe730f);
+  cursor: pointer;
+}
