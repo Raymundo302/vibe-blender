@@ -90,6 +90,11 @@ export function wrapXhtml(bodyFragment: string, headFragment = ''): string {
  */
 export function buildSvgDocument(source: string, w = RASTER_W, h = RASTER_H): string {
   const { head, body } = extractParts(source);
+  return buildSvgFromParts(head, body, w, h);
+}
+
+/** Same SVG construction from already-normalized head/body fragments. */
+export function buildSvgFromParts(head: string, body: string, w = RASTER_W, h = RASTER_H): string {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
     '<foreignObject x="0" y="0" width="100%" height="100%">' +
@@ -185,9 +190,29 @@ function fallbackErrorCanvas(w: number, h: number): string {
 }
 
 /**
- * Rasterize an HTML source to a PNG data URL via SVG `<foreignObject>`. On any
- * parse/draw failure it falls back to an **error-card** raster (never throws),
- * with `ok:false`. Browser only.
+ * Normalize arbitrary real-world HTML into well-formed XHTML fragments.
+ * foreignObject demands strict XML, but real pages have unclosed `<br>`,
+ * `&nbsp;`, unquoted attributes, … — so we round-trip through the browser's
+ * LENIENT HTML parser (DOMParser text/html never throws) and re-emit each
+ * head/body child with XMLSerializer, which is well-formed by construction.
+ * `<script>` elements are dropped (they never execute inside an SVG image and
+ * their raw `<`/`&` content would re-break the XML). Browser only.
+ */
+export function sanitizeToXhtml(source: string): { head: string; body: string } {
+  const doc = new DOMParser().parseFromString(source, 'text/html');
+  for (const s of Array.from(doc.querySelectorAll('script'))) s.remove();
+  const ser = new XMLSerializer();
+  const serialize = (el: Element): string =>
+    Array.from(el.childNodes).map((n) => ser.serializeToString(n)).join('');
+  return { head: serialize(doc.head), body: serialize(doc.body) };
+}
+
+/**
+ * Rasterize an HTML source to a PNG data URL via SVG `<foreignObject>`. The
+ * source is sanitized to well-formed XHTML first (see {@link sanitizeToXhtml}),
+ * so ordinary non-XML HTML rasterizes fine. On any remaining parse/draw
+ * failure it falls back to an **error-card** raster (never throws), with
+ * `ok:false`. Browser only.
  */
 export async function rasterizeHtml(
   source: string,
@@ -195,7 +220,8 @@ export async function rasterizeHtml(
   h: number = RASTER_H,
 ): Promise<RasterResult> {
   try {
-    const dataUrl = await svgToPng(buildSvgDocument(source, w, h), w, h);
+    const { head, body } = sanitizeToXhtml(source);
+    const dataUrl = await svgToPng(buildSvgFromParts(head, body, w, h), w, h);
     return { dataUrl, ok: true };
   } catch {
     // Parse/draw failed → rasterize an error card instead of throwing.

@@ -5,7 +5,7 @@
  * (bypassing the native file picker) and asserts:
  *  - a solid-red-div HTML string rasterizes through the REAL SVG-foreignObject
  *    pipeline into an emit plane; a Rendered-mode pixel probe shows the red;
- *  - parse-garbage input produces the error-card plane (ok:false), NOT an
+ *  - messy real-world (non-XML) HTML is sanitized and rasterizes ok:true, NOT an
  *    exception, and still adds exactly one plane;
  *  - in headless (no showOpenFilePicker) the Live path gracefully falls back to
  *    snapshot behaviour with the documented status note;
@@ -90,24 +90,27 @@ runE2e(async (t) => {
   // Eyes-on screenshot of the HTML plane in Rendered mode.
   await t.screenshot('/home/raymundo/Vibe Coded Blender/research/html-plane-rendered.png');
 
-  // --- Parse-garbage input → error-card plane, NOT an exception. ----------
+  // --- Real-world non-XML HTML → sanitized and rasterized OK (Ray's bug ----
+  // 2026-07-11: unclosed <br>/<img>, &nbsp;, mismatched tags used to hit the
+  // "HTML failed to parse" error card; sanitizeToXhtml now round-trips them
+  // through the lenient HTML parser). Must succeed AND never throw.
   await t.evaluate(`(() => {
     const S = window.__app.scene;
     for (const o of [...S.objects]) S.remove(o.id);
     window.__app.undo.clear();
     window.__hpGarbage = null;
-    // Mismatched/unclosed tags kill the XML parse of the foreignObject.
-    const junk = '<div><span>oops</div></p><br><img>';
-    window.__hp.addHtmlPlaneFromText(S, window.__app.undo, junk, 'broken').then((r) => {
+    const messy = '<p>a<br>b&nbsp;&mdash;c</p><div><span>oops</div></p>' +
+      '<img src=missing.png width=100><script>document.write("nope")</scr' + 'ipt>';
+    window.__hp.addHtmlPlaneFromText(S, window.__app.undo, messy, 'messy').then((r) => {
       window.__hpGarbage = { ok: r.ok, objs: S.objects.length, kind: r.obj.kind,
         texKind: S.getMaterial(r.obj.materialId).texKind };
     }).catch((e) => { window.__hpGarbage = { error: String(e) }; });
   })()`);
-  t.check('garbage HTML resolved', await t.until('!!window.__hpGarbage'));
+  t.check('messy HTML resolved', await t.until('!!window.__hpGarbage'));
   const junk = await t.evaluate('window.__hpGarbage');
-  t.check('garbage input did NOT throw: ' + JSON.stringify(junk), !junk.error);
-  t.check('garbage input yields the error-card plane (ok=false), one plane added',
-    junk.ok === false && junk.objs === 1 && junk.kind === 'mesh' && junk.texKind === 'image');
+  t.check('messy input did NOT throw: ' + JSON.stringify(junk), !junk.error);
+  t.check('messy real-world HTML rasterizes OK (ok=true, sanitized), one plane added',
+    junk.ok === true && junk.objs === 1 && junk.kind === 'mesh' && junk.texKind === 'image');
 
   // --- Live path in headless: graceful snapshot fallback + status. --------
   await t.evaluate(`(() => {
