@@ -206,10 +206,13 @@ export class ElementPickPass {
    * Render the id buffer for `mode`. Blender semantics: only the current element
    * kind is clickable, and front elements win. Leaves the id FBO unbound; the
    * caller reads a region and restores the main viewport.
+   *
+   * @param xray effective select-through. Defaults to the shared Alt+Z state,
+   *   but the caller passes `xrayState.enabled || !hiddenLine[mode]` so a
+   *   see-through shading mode also picks hidden elements (spec UR5-1).
    */
-  render(modelView: Mat4, proj: Mat4, mesh: EditableMesh, mode: ElementMode): void {
+  render(modelView: Mat4, proj: Mat4, mesh: EditableMesh, mode: ElementMode, xray = xrayState.enabled): void {
     const gl = this.gl;
-    const xray = xrayState.enabled;
     this.rebuild(mesh);
     this.fbo.bind();
     // X-ray: disable the depth test so back-side elements aren't rejected by

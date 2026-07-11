@@ -186,11 +186,11 @@ const helpOverlay = new HelpOverlay(document.body);
 
 // Viewport N-panel (P6-2): a slim Item sidebar overlaid on the viewport's right
 // edge, toggled with N. Lives inside #viewport-wrap, not a workspace area.
-const nPanel = new NPanel(viewportWrap, scene, undo);
+const nPanel = new NPanel(viewportWrap, scene, undo, camera, renderer);
 
 // Passepartout (P10-2): darkens the viewport outside the 16:9 render frame while
 // looking through a camera. Driven from the frame loop (like the panels below).
-const passepartout = new Passepartout(viewportWrap, renderer, canvas);
+const passepartout = new Passepartout(viewportWrap, renderer, canvas, scene);
 
 // 3D cursor marker (P12): DOM overlay projected from scene.cursor every frame.
 const cursorOverlay = new CursorOverlay(viewportWrap, scene, camera, renderer, canvas);

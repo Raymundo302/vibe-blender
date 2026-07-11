@@ -136,7 +136,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(10);
+    expect(parsed.version).toBe(12);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -319,6 +319,75 @@ describe('sceneJson format v3 lights / cameras / materials', () => {
     // objects: [Cube, CamA, CamB]; active should map to CamB at index 2.
     expect(dst.activeCamera!.name).toBe('CamB');
     expect(dst.activeCameraId).toBe(dst.objects[2].id);
+  });
+
+  it('round-trips empty objects (kind + displaySize) byte-identically', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const e = scene.addEmpty('Empty');
+    e.empty!.displaySize = 2.5;
+    e.transform = e.transform.withPosition(new Vec3(1, 2, 3));
+    const s1 = serializeScene(scene, new OrbitCamera());
+
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+
+    const re = dst.objects[1];
+    expect(re.kind).toBe('empty');
+    expect(re.empty!.displaySize).toBe(2.5);
+    expect(re.mesh.verts.size).toBe(0);
+    expect(re.transform.position.x).toBe(1);
+  });
+
+  it('serializes camera focus/lookAt as OBJECT INDICES and remaps to ids on load', () => {
+    const scene = new Scene();
+    const cube = scene.add('Cube', makeCube());      // index 0
+    const target = scene.addEmpty('Target');         // index 1
+    const cam = scene.addCamera('Camera');           // index 2
+    cam.camera!.focusObjectId = target.id;
+    cam.camera!.lookAtId = cube.id;
+
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    // Refs are the objects INDICES, not the (runtime) ids.
+    expect(json.objects[2].camera.focusObject).toBe(1);
+    expect(json.objects[2].camera.lookAt).toBe(0);
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    const rcam = dst.objects[2];
+    expect(rcam.camera!.focusObjectId).toBe(dst.objects[1].id);
+    expect(rcam.camera!.lookAtId).toBe(dst.objects[0].id);
+  });
+
+  it('omits camera focus/lookAt keys when unset (byte-identical to no-target file)', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    scene.addCamera('Camera');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect('focusObject' in json.objects[1].camera).toBe(false);
+    expect('lookAt' in json.objects[1].camera).toBe(false);
+  });
+
+  it('an id-gap scene with camera targets round-trips byte-identically', () => {
+    const scene = new Scene();
+    const a = scene.add('A', makeCube());
+    const target = scene.addEmpty('Target');
+    const b = scene.add('B', makeCube());
+    const cam = scene.addCamera('Camera');
+    cam.camera!.lookAtId = target.id;
+    cam.camera!.focusObjectId = b.id;
+    // Delete an early object to leave an id gap (ids no longer 0..n).
+    scene.remove(a.id);
+
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+    // Refs still resolve after the remap.
+    const rcam = dst.objects.find((o) => o.kind === 'camera')!;
+    expect(dst.get(rcam.camera!.lookAtId!)!.name).toBe('Target');
+    expect(dst.get(rcam.camera!.focusObjectId!)!.name).toBe('B');
   });
 
   it('restores the material library and keeps materialId verbatim', () => {
@@ -684,11 +753,11 @@ describe('sceneJson material bakeRes (P16 follow-up)', () => {
 });
 
 describe('sceneJson material shadeless (v10 / UR4-3)', () => {
-  it('writes the v10 format version', () => {
+  it('writes the current format version', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(10);
+    expect(json.version).toBe(12);
   });
 
   it('round-trips a shadeless material', () => {
@@ -719,5 +788,55 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const dst = new Scene();
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
     expect(dst.materials[0].shadeless).toBe(false);
+  });
+});
+
+describe('sceneJson output resolution (v12 / UR5-5)', () => {
+  it('defaults a new scene to 1920×1080 and serializes it', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect(json.renderSettings).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it('round-trips a custom resolution', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    scene.renderSettings = { width: 1000, height: 1000 };
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.renderSettings).toEqual({ width: 1000, height: 1000 });
+  });
+
+  it('a non-square resolution survives byte-identically', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    scene.renderSettings = { width: 2560, height: 1080 };
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+
+  it('loads an old file with no renderSettings key using the 1920×1080 default', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    delete json.renderSettings; // pre-v12 file
+    json.version = 11;
+    const dst = new Scene();
+    dst.renderSettings = { width: 640, height: 480 }; // prove it is overwritten
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.renderSettings).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it('clamps sub-1 / non-integer dimensions on load', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    json.renderSettings = { width: 0, height: 720.7 };
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.renderSettings).toEqual({ width: 1, height: 720 });
   });
 });

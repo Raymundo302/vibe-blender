@@ -167,6 +167,57 @@ describe('editOverlayData', () => {
     expect(sel.faces.size).toBe(0); // pruned
   });
 
+  it('emits one face-center dot per face in face mode, zero otherwise', () => {
+    const mesh = makeCube();
+    const sel = new EditModeState(0);
+
+    // vert mode: no dots
+    let data = editOverlayData(mesh, sel);
+    expect(data.dotCount).toBe(0);
+    expect(data.dotPositions.length).toBe(0);
+    expect(data.dotColors.length).toBe(0);
+
+    // edge mode: no dots
+    sel.elementMode = 'edge';
+    expect(editOverlayData(mesh, sel).dotCount).toBe(0);
+
+    // face mode: one dot per face
+    sel.elementMode = 'face';
+    data = editOverlayData(mesh, sel);
+    expect(data.dotCount).toBe(mesh.faces.size); // cube = 6
+    expect(data.dotPositions.length).toBe(mesh.faces.size * 3);
+    expect(data.dotColors.length).toBe(mesh.faces.size * 3);
+  });
+
+  it("colors a selected face's dot orange, unselected grey, at the centroid", () => {
+    const mesh = makeCube();
+    const sel = new EditModeState(0);
+    sel.elementMode = 'face';
+    const faceIds = [...mesh.faces.keys()];
+    const fid = faceIds[0];
+    sel.faces.add(fid);
+    sel.touch();
+    const data = editOverlayData(mesh, sel);
+
+    // dot 0 corresponds to face 0 (same key iteration order) → orange
+    expect(data.dotColors[0]).toBeCloseTo(0.996, 2);
+    expect(data.dotColors[1]).toBeCloseTo(0.451, 2);
+    // an unselected face's dot stays dark grey
+    expect(data.dotColors[3]).toBeLessThan(0.2);
+
+    // centroid math: dot 0 == average of face 0's vert positions
+    const f = mesh.faces.get(fid)!;
+    let cx = 0, cy = 0, cz = 0;
+    for (const vid of f.verts) {
+      const co = mesh.verts.get(vid)!.co;
+      cx += co.x; cy += co.y; cz += co.z;
+    }
+    const n = f.verts.length;
+    expect(data.dotPositions[0]).toBeCloseTo(cx / n, 6);
+    expect(data.dotPositions[1]).toBeCloseTo(cy / n, 6);
+    expect(data.dotPositions[2]).toBeCloseTo(cz / n, 6);
+  });
+
   it('elementIndexMaps ordering is stable across clone/copyFrom', () => {
     const mesh = makeCube();
     const before = elementIndexMaps(mesh);

@@ -13,6 +13,7 @@ import {
   ElementPickPass,
   closestNonZeroId,
   decodePick,
+  xrayState,
   type ElementPickResult,
 } from './passes/elementPickPass';
 import { elementIndexMaps } from '../core/mesh/editOverlayData';
@@ -20,8 +21,9 @@ import { RenderedPass, WorldBackgroundPass, collectLights, shadowCasterIndices, 
 import { ShadowPass, sunShadowMatrix, spotShadowMatrix, cubeFaceView, SHADOW_SLOTS, CUBE_SHADOW_SLOTS } from './passes/shadowPass';
 import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
-import { CameraFrustumPass, cameraViewMatrix, cameraProjMatrix } from './passes/cameraFrustumPass';
+import { CameraFrustumPass, cameraFrameProjMatrix } from './passes/cameraFrustumPass';
 import { LightDirPass, hasAimArrow } from './passes/lightDirPass';
+import { EmptyAxesPass } from './passes/emptyAxesPass';
 import { ensureBaked } from '../core/nodes/bake';
 import { nodeImageCache } from '../core/nodes/imageCache';
 import { cameraFovY, type Material } from '../core/scene/objectData';
@@ -104,6 +106,7 @@ export class Renderer {
   private readonly iconPass: IconPass;
   private readonly cameraFrustumPass: CameraFrustumPass;
   private readonly lightDirPass: LightDirPass;
+  private readonly emptyAxesPass: EmptyAxesPass;
   /** GPU buffers per object id, invalidated by mesh.version. */
   private readonly gpuMeshes = new Map<number, GpuMesh>();
   /**
@@ -200,6 +203,7 @@ export class Renderer {
     this.iconPass = new IconPass(gl);
     this.cameraFrustumPass = new CameraFrustumPass(gl);
     this.lightDirPass = new LightDirPass(gl);
+    this.emptyAxesPass = new EmptyAxesPass(gl);
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
@@ -562,11 +566,18 @@ export class Renderer {
       if (!camObj || camObj.kind !== 'camera') {
         this.cameraViewId = null; // object gone: fall through to the user camera
       } else if (camObj.visible && camObj.camera) {
-        const pose = scene.worldTransformOf(camObj);
+        // Central world matrix (UR5-7): applies Look At orientation when set, so
+        // the through-camera view, tracer and frustum all agree.
+        const world = scene.cameraWorldMatrix(camObj);
+        // Letterbox the projection to the scene's OUTPUT resolution (UR5-5): the
+        // camera FOV maps to the render frame, not the canvas, and the image is
+        // framed inside the passepartout rect — what you see inside the frame is
+        // what F12 renders.
+        const rs = scene.renderSettings;
         return {
-          view: cameraViewMatrix(camObj, pose),
-          proj: cameraProjMatrix(camObj.camera, aspect),
-          eye: pose.position,
+          view: world.invert(),
+          proj: cameraFrameProjMatrix(camObj.camera, rs.width, rs.height, canvas.width, canvas.height),
+          eye: scene.worldTransformOf(camObj).position,
           fovY: cameraFovY(camObj.camera),
         };
       }
@@ -620,13 +631,21 @@ export class Renderer {
     }
     const aoTex = aoOn ? this.aoPass.texture : this.aoPass.white;
 
+    // While an object is in edit mode its EDGE lines are skipped in every
+    // wirePass draw below — the edit cage IS its wireframe (Blender's model),
+    // and letting wirePass also draw those grey edges made them depth-fight the
+    // orange cage and cover it. Its TRIANGLES still draw (depth prime / solid
+    // fill) so it occludes other objects normally. -1 = nothing being edited.
+    const editSkipId = scene.editObject?.id ?? -1;
+    const hiddenLine = shadePrefs.hiddenLine[this.shadingMode];
+
     // Solid pass — branch on shading mode. Wireframe draws dark edge lines with
     // no fill; matcap/studio fill triangles with their respective shaders.
     if (this.shadingMode === 'wireframe') {
       // Hidden-line option: prime the depth buffer with the solid faces
       // (color untouched) so backfacing wires and wires behind other geometry
       // fail the depth test; the biased lines then only survive where visible.
-      if (shadePrefs.wireHiddenLine) {
+      if (hiddenLine) {
         this.wirePass.begin(view, proj);
         gl.colorMask(false, false, false, false);
         for (const obj of visible) {
@@ -635,9 +654,9 @@ export class Renderer {
         }
         gl.colorMask(true, true, true, true);
       }
-      this.wirePass.begin(view, proj, shadePrefs.wireHiddenLine ? 0.002 : 0,
-        shadePrefs.wireHiddenLine);
+      this.wirePass.begin(view, proj, hiddenLine ? 0.002 : 0, hiddenLine);
       for (const obj of visible) {
+        if (obj.id === editSkipId) continue; // cage draws its wireframe
         this.wirePass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
@@ -704,14 +723,24 @@ export class Renderer {
     }
 
     // Wireframe overlay (shading-dropdown option): the edge wires drawn over
-    // the shaded result, depth-tested against it with a small bias so lines on
-    // the surface win. Occlusion comes free from the solid pass's depth buffer.
+    // the shaded result. Hidden Line ON (per mode): depth-tested against the
+    // solid pass's depth buffer with a small bias + backface cull so only
+    // visible wires survive. Hidden Line OFF: depth test disabled so the FULL
+    // wireframe shows through the geometry ("so I can see the full mesh").
+    // The edit object's edges are skipped either way (its cage is its wire).
     if (shadePrefs.wireOverlay && this.shadingMode !== 'wireframe') {
-      this.wirePass.begin(view, proj, 0.002, true);
+      if (hiddenLine) {
+        this.wirePass.begin(view, proj, 0.002, true);
+      } else {
+        gl.disable(gl.DEPTH_TEST);
+        this.wirePass.begin(view, proj, 0, false);
+      }
       for (const obj of visible) {
+        if (obj.id === editSkipId) continue;
         this.wirePass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).edges.draw(gl.LINES);
       }
+      if (!hiddenLine) gl.enable(gl.DEPTH_TEST);
     }
 
     // Mesh-mesh intersection curves (shading-dropdown "Intersections" option):
@@ -744,7 +773,7 @@ export class Renderer {
       const viewProj = proj.mul(view);
       this.cameraFrustumPass.begin();
       for (const obj of frustums) {
-        this.cameraFrustumPass.draw(viewProj, obj, selectionColor(scene, obj), scene.worldTransformOf(obj));
+        this.cameraFrustumPass.draw(viewProj, obj, selectionColor(scene, obj), scene.cameraWorldMatrix(obj));
       }
     }
 
@@ -759,9 +788,20 @@ export class Renderer {
       }
     }
 
-    // Billboard icons for non-mesh objects (lights, cameras). The looked-through
-    // camera has no icon either (it is the viewpoint).
-    const icons = visible.filter((o) => overlays.icons && o.kind !== 'mesh' && o.id !== this.cameraViewId);
+    // Plain-axes display for empties (UR5-7) — rides the icons toggle, same
+    // selection tint as light/camera glyphs. Drawn instead of a billboard.
+    const empties = visible.filter((o) => overlays.icons && o.kind === 'empty' && o.empty);
+    if (empties.length > 0) {
+      const viewProj = proj.mul(view);
+      this.emptyAxesPass.begin();
+      for (const obj of empties) {
+        this.emptyAxesPass.draw(viewProj, scene.worldTransformOf(obj).position, obj.empty!.displaySize, selectionColor(scene, obj));
+      }
+    }
+
+    // Billboard icons for lights + cameras. The looked-through camera has no icon
+    // (it is the viewpoint); empties draw axes above, not a billboard.
+    const icons = visible.filter((o) => overlays.icons && (o.kind === 'light' || o.kind === 'camera') && o.id !== this.cameraViewId);
     if (icons.length > 0) {
       this.iconPass.begin(proj.mul(view), canvas.width, canvas.height);
       for (const obj of icons) {
@@ -783,11 +823,15 @@ export class Renderer {
       this.outlinePass.renderEdges();
     }
 
-    // Edit-mode cage (verts/edges/selected-face fill)
+    // Edit-mode cage (verts/edges/selected-face fill). Hidden Line OFF for the
+    // current mode → draw the cage with the depth test disabled so the full
+    // orange cage (incl. back-side edges) is always visible through geometry.
     if (editObj && scene.effectiveVisible(editObj) && scene.editMode) {
       const modelView = view.mul(scene.worldMatrix(editObj));
+      if (!hiddenLine) gl.disable(gl.DEPTH_TEST);
       this.editOverlayPass.render(modelView, proj, editObj.mesh, scene.editMode);
       if (this.editPreviewLines) this.editOverlayPass.renderPreview(modelView, proj, this.editPreviewLines);
+      if (!hiddenLine) gl.enable(gl.DEPTH_TEST);
     }
 
     // Translate gizmo — on top of everything (clear depth after outlines).
@@ -869,10 +913,59 @@ export class Renderer {
     this.pickingPass.end(canvas.width, canvas.height);
 
     const dpr = window.devicePixelRatio || 1;
-    const raw = this.pickingPass.read(Math.round(cssX * dpr), Math.round(cssY * dpr));
-    if (raw === 0) return null;
+    const px = Math.round(cssX * dpr);
+    const py = Math.round(cssY * dpr);
+    const raw = this.pickingPass.read(px, py);
+    // Gizmo handles win over everything (they drew last with depth cleared) —
+    // keep that ordering regardless of the select-through phase below.
     if (raw >= GIZMO_PICK_BASE) return { kind: 'gizmo', axis: GIZMO_AXES[raw - GIZMO_PICK_BASE] };
+
+    // Object select-through: when Hidden Line is off for the current mode the
+    // wireframe is see-through, so a click on/near ANY visible wire — including
+    // one behind other geometry — should select that object. Runs BEFORE the
+    // surface result; an empty proximity window falls back to the triangle pick.
+    if (!shadePrefs.hiddenLine[this.shadingMode]) {
+      const wireId = this.wireProximityPick(scene, viewProj, px, py);
+      if (wireId !== null) return { kind: 'object', id: wireId };
+    }
+
+    if (raw === 0) return null;
     return { kind: 'object', id: raw - 1 };
+  }
+
+  /**
+   * Object select-through helper: render every visible object's EDGE lines into
+   * the pick buffer with the depth test OFF (so wires behind geometry still
+   * write their id), then find the id of the non-zero pixel nearest the cursor
+   * within an N×N window (expanding Chebyshev rings — nearest wins, and we stop
+   * at the first ring that has a hit). Returns the object id, or null if no wire
+   * is within the window. Does not touch the gizmo (handled by the caller).
+   */
+  private wireProximityPick(scene: Scene, viewProj: Mat4, px: number, py: number): number | null {
+    const { gl, canvas } = this.ctx;
+    this.pickingPass.begin();
+    gl.disable(gl.DEPTH_TEST);
+    for (const obj of scene.objects) {
+      if (!scene.effectiveVisible(obj) || obj.kind !== 'mesh') continue;
+      this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
+      this.gpuMesh(obj, scene).edges.draw(gl.LINES);
+    }
+    gl.enable(gl.DEPTH_TEST);
+    this.pickingPass.end(canvas.width, canvas.height);
+
+    const half = 5; // N = 11
+    for (let ring = 0; ring <= half; ring++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue; // this ring only
+          const x = px + dx, y = py + dy;
+          if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue;
+          const id = this.pickingPass.read(x, y);
+          if (id !== 0 && id < GIZMO_PICK_BASE) return id - 1;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -896,7 +989,10 @@ export class Renderer {
     const view = camera.viewMatrix();
     const proj = camera.projMatrix(canvas.width / canvas.height);
     const modelView = view.mul(scene.worldMatrix(editObj));
-    this.elementPickPass.render(modelView, proj, editObj.mesh, kindOverride ?? sel.elementMode);
+    // Effective select-through: Alt+Z x-ray OR a see-through shading mode
+    // (Hidden Line off for the current mode) — so clicks reach hidden elements.
+    const xray = xrayState.enabled || !shadePrefs.hiddenLine[this.shadingMode];
+    this.elementPickPass.render(modelView, proj, editObj.mesh, kindOverride ?? sel.elementMode, xray);
 
     // Center a clamped 9×9 window on the cursor (device pixels, GL bottom-up).
     const dpr = window.devicePixelRatio || 1;
@@ -914,5 +1010,56 @@ export class Renderer {
 
     if (raw === 0) return null;
     return decodePick(raw, elementIndexMaps(editObj.mesh));
+  }
+
+  /**
+   * True when edit-mode face picking should use centroid-dot proximity instead
+   * of the surface pick — i.e. Hidden Line is OFF for the current shading mode
+   * (the see-through case where face-center dots are the pick targets).
+   */
+  faceProximityPickActive(): boolean {
+    return !shadePrefs.hiddenLine[this.shadingMode];
+  }
+
+  /**
+   * Proximity face pick: project every edit-mesh face CENTROID to screen and
+   * return the id of the face whose dot is nearest the click, THROUGH geometry
+   * (no occlusion), within `radius` CSS px. Null = miss (nothing in range).
+   */
+  pickFaceByProximity(
+    scene: Scene,
+    camera: OrbitCamera,
+    cssX: number,
+    cssY: number,
+    radius = 40,
+  ): number | null {
+    const editObj = scene.editObject;
+    const sel = scene.editMode;
+    if (!editObj || !sel) return null;
+    const { canvas } = this.ctx;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = canvas.width / dpr;
+    const cssH = canvas.height / dpr;
+    const mvp = camera
+      .projMatrix(canvas.width / canvas.height)
+      .mul(camera.viewMatrix())
+      .mul(scene.worldMatrix(editObj));
+    const mesh = editObj.mesh;
+    let best: number | null = null;
+    let bestD = radius * radius;
+    for (const f of mesh.faces.values()) {
+      let cx = 0, cy = 0, cz = 0;
+      for (const vid of f.verts) {
+        const co = mesh.verts.get(vid)!.co;
+        cx += co.x; cy += co.y; cz += co.z;
+      }
+      const n = f.verts.length;
+      const ndc = mvp.transformPoint(new Vec3(cx / n, cy / n, cz / n));
+      const sx = ((ndc.x + 1) / 2) * cssW;
+      const sy = ((1 - ndc.y) / 2) * cssH;
+      const d = (sx - cssX) ** 2 + (sy - cssY) ** 2;
+      if (d < bestD) { bestD = d; best = f.id; }
+    }
+    return best;
   }
 }

@@ -2,7 +2,7 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
-import type { LightType } from '../core/scene/objectData';
+import { CAMERA_SPAWN_ROTATION, type LightType } from '../core/scene/objectData';
 import { pickImagePlane, type ImagePlaneMode } from '../tools/imagePlane';
 import { pickHtmlSnapshot, pickHtmlLive } from '../tools/htmlPlane';
 import { OpPanel } from './opPanel';
@@ -80,6 +80,9 @@ export class AddMenu {
     ]);
     this.directItem('Camera', () =>
       this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
+    // Empty (UR5-7): a null object for rigging/targeting (DoF focus, look-at).
+    this.directItem('Empty', () =>
+      this.commitAdd('Empty', this.opts.scene.addEmpty('Empty')));
 
     // Position at the pointer, then clamp so the menu stays inside the host.
     this.root.style.left = `${opts.x}px`;
@@ -257,6 +260,10 @@ export class AddMenu {
     const { scene, undo, setStatus } = this.opts;
     // Blender semantics (P12): new objects spawn at the 3D cursor.
     obj.transform = obj.transform.withPosition(scene.cursor);
+    // Cameras spawn looking toward the horizon (world +Y), not the floor (UR5-5,
+    // Part B). Only the add-menu spawn carries this rotation — scene loads /
+    // Camera-to-View set their own transform, so they must not be rotated here.
+    if (obj.kind === 'camera') obj.transform = obj.transform.withRotation(CAMERA_SPAWN_ROTATION);
     // Any add supersedes the previous redo panel — only the latest add shows one.
     activeOpPanel?.close();
     scene.selectOnly(obj.id);

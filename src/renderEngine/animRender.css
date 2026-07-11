@@ -52,6 +52,15 @@
   border-color: var(--vb-accent, #fe730f);
 }
 
+.anim-render-hint {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--vb-text-dim, #9a9a9a);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
 .anim-render-progress {
   margin-top: 14px;
   height: 8px;

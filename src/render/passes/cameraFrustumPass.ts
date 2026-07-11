@@ -33,6 +33,40 @@ export function cameraProjMatrix(data: CameraData, aspect: number): Mat4 {
   return Mat4.perspective(cameraFovY(data), aspect, data.near, data.far);
 }
 
+/**
+ * Through-camera projection that maps the camera's FOV to the OUTPUT RENDER
+ * frame (aspect = renderW/renderH) LETTERBOXED inside the canvasW×canvasH
+ * viewport (UR5-5). The rendered image occupies exactly the largest
+ * render-aspect rect centered in the canvas — the same rect the passepartout
+ * marks (frameRect) — so what you see inside the frame equals what F12 renders.
+ *
+ * Built as the render-aspect perspective, then a clip-space x/y scale that
+ * shrinks NDC into the frame rect: pillarbox (render narrower than canvas) scales
+ * x by renderAspect/canvasAspect; letterbox (render wider) scales y by the
+ * reciprocal. Pure (no DOM); the perspective is column-major so clip.x rides on
+ * m[0] and clip.y on m[5] — scaling those alone is the whole transform.
+ */
+export function cameraFrameProjMatrix(
+  data: CameraData,
+  renderW: number,
+  renderH: number,
+  canvasW: number,
+  canvasH: number,
+): Mat4 {
+  const renderAspect = renderH > 0 ? renderW / renderH : 1;
+  const proj = cameraProjMatrix(data, renderAspect);
+  if (canvasW <= 0 || canvasH <= 0) return proj;
+  const canvasAspect = canvasW / canvasH;
+  let sx = 1;
+  let sy = 1;
+  if (renderAspect <= canvasAspect) sx = renderAspect / canvasAspect; // pillarbox
+  else sy = canvasAspect / renderAspect; // letterbox
+  const m = proj.m.slice();
+  m[0] *= sx;
+  m[5] *= sy;
+  return new Mat4(m);
+}
+
 // The drawn frustum's virtual image plane: a fixed distance along local -Z at a
 // 16:9 aspect. near/far don't change the DRAWN shape (only focalLength does), so
 // the geometry caches on focalLength alone.
@@ -86,11 +120,13 @@ export class CameraFrustumPass {
     this.shader.use();
   }
 
-  /** Draw one camera's frustum. `viewProj` is the SCENE view/proj; the camera's
-   *  own scale-free model matrix places the wireframe. Call begin() first. */
-  draw(viewProj: Mat4, obj: SceneObject, color: readonly [number, number, number], pose: Transform = obj.transform): void {
+  /** Draw one camera's frustum. `viewProj` is the SCENE view/proj; `model` is the
+   *  camera's scale-free WORLD matrix (scene.cameraWorldMatrix — so a Look At
+   *  camera's frustum visibly aims at its target). Defaults to the local
+   *  translation×rotation for callers without a scene. Call begin() first. */
+  draw(viewProj: Mat4, obj: SceneObject, color: readonly [number, number, number], model: Mat4 = cameraModelMatrix(obj)): void {
     if (!obj.camera) return;
-    const mvp = viewProj.mul(cameraModelMatrix(obj, pose));
+    const mvp = viewProj.mul(model);
     this.shader.setMat4('u_mvp', mvp);
     this.shader.setVec4('u_color', color[0], color[1], color[2], 1);
     this.vao(obj.camera.focalLength).draw(this.gl.LINES);

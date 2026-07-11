@@ -9,6 +9,7 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type {
   CameraData,
+  EmptyData,
   LightData,
   LightType,
   Material,
@@ -41,8 +42,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 10;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const VERSION = 12;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -87,9 +88,26 @@ function serializeLight(l: LightData): Record<string, unknown> {
   };
 }
 
-/** Full CameraData payload, numbers rounded. */
-function serializeCamera(c: CameraData): Record<string, unknown> {
-  return { focalLength: num(c.focalLength), near: num(c.near), far: num(c.far), lockToView: !!c.lockToView };
+/**
+ * Full CameraData payload, numbers rounded. Focus Object / Look At refs
+ * (UR5-7) are stored as OBJECT INDICES, not ids (the P8 activeCamera rule) —
+ * omitted (undefined dropped by JSON.stringify) when unset or when the target is
+ * no longer in the scene, so cameras without targets serialize byte-identically.
+ */
+function serializeCamera(c: CameraData, scene: Scene): Record<string, unknown> {
+  const idxOf = (id: number | undefined): number | undefined => {
+    if (id === undefined || id === null) return undefined;
+    const i = scene.objects.findIndex((o) => o.id === id);
+    return i < 0 ? undefined : i;
+  };
+  return {
+    focalLength: num(c.focalLength),
+    near: num(c.near),
+    far: num(c.far),
+    lockToView: !!c.lockToView,
+    focusObject: idxOf(c.focusObjectId),
+    lookAt: idxOf(c.lookAtId),
+  };
 }
 
 /**
@@ -155,7 +173,8 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
     })),
   };
   if (obj.light) out.light = serializeLight(obj.light);
-  if (obj.camera) out.camera = serializeCamera(obj.camera);
+  if (obj.camera) out.camera = serializeCamera(obj.camera, scene);
+  if (obj.empty) out.empty = { displaySize: num(obj.empty.displaySize) };
   // Animation (v7; v9 adds an optional per-key extras object: easing direction
   // + free bezier handles) — key omitted entirely for never-keyed objects.
   if (obj.anim && obj.anim.fcurves.length > 0) {
@@ -245,6 +264,12 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
     frameStart: scene.frameStart,
     frameEnd: scene.frameEnd,
     frameCurrent: scene.frameCurrent,
+    // Output resolution (v12/UR5-5) — the real render frame + aspect. Always
+    // written; pre-v12 files omit it and default to 1920×1080 on load.
+    renderSettings: {
+      width: scene.renderSettings.width,
+      height: scene.renderSettings.height,
+    },
     collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
     materials: scene.materials.map((m) => ({
       id: m.id,
@@ -345,6 +370,7 @@ interface ObjectData {
   modifiers: ModifierData[];
   light?: LightData;
   camera?: CameraData;
+  empty?: EmptyData;
 }
 interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
@@ -363,6 +389,8 @@ interface SceneData {
   frameStart: number;
   frameEnd: number;
   frameCurrent: number;
+  /** Output resolution (absent pre-v12 → 1920×1080). */
+  renderSettings: { width: number; height: number };
   /** File format version, for load-time migrations (v8: Y-up → Z-up). */
   version: number;
 }
@@ -452,6 +480,17 @@ function parseScene(json: string): SceneData {
       fail(`objects[${oi}].collection index ${od.collection} is out of range`);
     }
   }
+  // Camera Focus/Look-At refs (UR5-7) are objects indices — range-checked here;
+  // remapped to fresh ids on apply. (Cyclic lookAt is tolerated at runtime, not
+  // a file error.)
+  for (const [oi, od] of objects.entries()) {
+    if (od.kind !== 'camera' || !od.camera) continue;
+    for (const [key, idx] of [['focusObject', od.camera.focusObjectId], ['lookAt', od.camera.lookAtId]] as const) {
+      if (idx !== undefined && (idx < 0 || idx >= objects.length)) {
+        fail(`objects[${oi}].camera.${key} index ${idx} is out of range`);
+      }
+    }
+  }
   // Parent indices (v4): in range, not self, and acyclic.
   for (const [oi, od] of objects.entries()) {
     if (od.parent === null) continue;
@@ -481,7 +520,8 @@ function parseScene(json: string): SceneData {
   const frameStart = root.frameStart === undefined ? 1 : numField(root.frameStart, 'frameStart');
   const frameEnd = root.frameEnd === undefined ? 120 : numField(root.frameEnd, 'frameEnd');
   const frameCurrent = root.frameCurrent === undefined ? 1 : numField(root.frameCurrent, 'frameCurrent');
-  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode, frameStart, frameEnd, frameCurrent, version: root.version as number };
+  const renderSettings = parseRenderSettings(root.renderSettings);
+  return { camera, activeCamera, world, collections, materials, objects, cursor, pivotMode, frameStart, frameEnd, frameCurrent, renderSettings, version: root.version as number };
 }
 
 /**
@@ -512,6 +552,24 @@ function parseWorld(v: unknown): World {
     strength,
     hdri,
     hdriImage: null,
+  };
+}
+
+/**
+ * Parse the output resolution block (absent pre-v12 → 1920×1080). Dimensions
+ * must be positive integers; non-integers are floored, sub-1 values clamped to 1.
+ */
+function parseRenderSettings(v: unknown): { width: number; height: number } {
+  if (v === undefined || v === null) return { width: 1920, height: 1080 };
+  if (typeof v !== 'object' || Array.isArray(v)) fail('renderSettings must be an object');
+  const r = v as Record<string, unknown>;
+  const dim = (raw: unknown, where: string): number => {
+    const n = numField(raw, where);
+    return Math.max(1, Math.floor(n));
+  };
+  return {
+    width: r.width === undefined ? 1920 : dim(r.width, 'renderSettings.width'),
+    height: r.height === undefined ? 1080 : dim(r.height, 'renderSettings.height'),
   };
 }
 
@@ -609,17 +667,35 @@ function parseLight(v: unknown, i: number): LightData {
   };
 }
 
-/** Parse an object's CameraData payload (kind 'camera' only). */
+/** Parse an object's CameraData payload (kind 'camera' only). Focus/Look-At refs
+ *  are OBJECT INDICES (UR5-7); they temporarily HOLD the index here and are
+ *  remapped to fresh object ids in applySceneJson. Range-checked in parseScene. */
 function parseCamera(v: unknown, i: number): CameraData {
   if (typeof v !== 'object' || v === null) fail(`objects[${i}].camera is missing`);
   const c = v as Record<string, unknown>;
+  const parseRef = (raw: unknown, name: string): number | undefined => {
+    if (raw === undefined || raw === null) return undefined;
+    const idx = numField(raw, `objects[${i}].camera.${name}`);
+    if (!Number.isInteger(idx)) fail(`objects[${i}].camera.${name} must be an integer index`);
+    return idx;
+  };
   return {
     focalLength: numField(c.focalLength, `objects[${i}].camera.focalLength`),
     near: numField(c.near, `objects[${i}].camera.near`),
     far: numField(c.far, `objects[${i}].camera.far`),
     // Optional (pre-lock files omit it) → false.
     lockToView: c.lockToView === true,
+    focusObjectId: parseRef(c.focusObject, 'focusObject'),
+    lookAtId: parseRef(c.lookAt, 'lookAt'),
   };
+}
+
+/** Parse an object's EmptyData payload (kind 'empty' only). */
+function parseEmpty(v: unknown, i: number): EmptyData {
+  if (typeof v !== 'object' || v === null) fail(`objects[${i}].empty is missing`);
+  const e = v as Record<string, unknown>;
+  const displaySize = e.displaySize === undefined ? 1 : numField(e.displaySize, `objects[${i}].empty.displaySize`);
+  return { displaySize };
 }
 
 function parseObject(o: unknown, i: number): ObjectData {
@@ -631,8 +707,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   // kind: absent (v1/v2) → 'mesh'; otherwise validated.
   let kind: ObjectKind = 'mesh';
   if (obj.kind !== undefined) {
-    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera') {
-      fail(`objects[${i}].kind must be one of mesh, light, camera`);
+    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty') {
+      fail(`objects[${i}].kind must be one of mesh, light, camera, empty`);
     }
     kind = obj.kind;
   }
@@ -750,9 +826,10 @@ function parseObject(o: unknown, i: number): ObjectData {
     modifiers: parseModifiers(obj.modifiers, i),
   };
 
-  // Light/camera payloads validated up front (before any scene mutation).
+  // Light/camera/empty payloads validated up front (before any scene mutation).
   if (kind === 'light') data.light = parseLight(obj.light, i);
   if (kind === 'camera') data.camera = parseCamera(obj.camera, i);
+  if (kind === 'empty') data.empty = obj.empty === undefined ? { displaySize: 1 } : parseEmpty(obj.empty, i);
   return data;
 }
 
@@ -1029,7 +1106,10 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
     if (od.kind === 'light') {
       obj = scene.addLight(od.name, od.light!.type, { ...od.light!, color: [...od.light!.color] });
     } else if (od.kind === 'camera') {
+      // Focus/Look-At still hold INDICES here — remapped to ids below.
       obj = scene.addCamera(od.name, { ...od.camera! });
+    } else if (od.kind === 'empty') {
+      obj = scene.addEmpty(od.name, { ...od.empty! });
     } else {
       obj = scene.add(od.name, mesh!);
     }
@@ -1057,6 +1137,18 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
     rebuilt[i].parentId = od.parent === null ? null : rebuilt[od.parent].id;
   }
 
+  // Camera Focus/Look-At refs (UR5-7): saved as objects INDICES — remap onto the
+  // rebuilt objects' fresh ids. Out-of-range (defensive) → unset. The clone from
+  // addCamera copied the indices onto rebuilt[i].camera; overwrite with ids.
+  for (const [i, { od }] of built.entries()) {
+    if (od.kind !== 'camera' || !od.camera || !rebuilt[i].camera) continue;
+    const cam = rebuilt[i].camera!;
+    const remap = (idx: number | undefined): number | undefined =>
+      idx !== undefined && idx >= 0 && idx < rebuilt.length ? rebuilt[idx].id : undefined;
+    cam.focusObjectId = remap(od.camera.focusObjectId);
+    cam.lookAtId = remap(od.camera.lookAtId);
+  }
+
   // 3D cursor + pivot mode (P12).
   scene.cursor = Vec3.fromArray(data.cursor);
   scene.pivotMode = data.pivotMode;
@@ -1065,6 +1157,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   scene.frameStart = data.frameStart;
   scene.frameEnd = data.frameEnd;
   scene.frameCurrent = data.frameCurrent;
+  // Output resolution (v12/UR5-5).
+  scene.renderSettings = { width: data.renderSettings.width, height: data.renderSettings.height };
   for (const [i, { od }] of built.entries()) {
     if (od.anim) rebuilt[i].anim = od.anim;
   }

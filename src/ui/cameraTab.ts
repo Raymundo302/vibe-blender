@@ -62,6 +62,29 @@ export class CameraCommand implements Command {
   }
 }
 
+/**
+ * One undoable change of the scene's output resolution (UR5-5). Snapshots the
+ * whole {width,height} before/after so undo restores both. Scene-level (not
+ * per-camera), but hosted in the Camera tab's Format section — the closest
+ * analogue to Blender's Output properties in this app.
+ */
+export class SetRenderResolutionCommand implements Command {
+  readonly name = 'Set Resolution';
+  constructor(
+    private readonly scene: Scene,
+    private readonly before: { width: number; height: number },
+    private readonly after: { width: number; height: number },
+  ) {}
+
+  undo(): void {
+    this.scene.renderSettings = { ...this.before };
+  }
+
+  redo(): void {
+    this.scene.renderSettings = { ...this.after };
+  }
+}
+
 /** One undoable change of the scene's active camera. */
 export class SetActiveCameraCommand implements Command {
   readonly name = 'Set Active Camera';
@@ -85,12 +108,21 @@ export class SetActiveCameraCommand implements Command {
 class CameraTab {
   private readonly empty: HTMLDivElement;
   private readonly body: HTMLDivElement;
+  /** Scene-level Format (output resolution) — always visible, independent of
+   *  whether a camera is selected (UR5-5). */
+  private readonly resWInput: HTMLInputElement;
+  private readonly resHInput: HTMLInputElement;
   private readonly focalInput: HTMLInputElement;
   private readonly nearInput: HTMLInputElement;
   private readonly farInput: HTMLInputElement;
   private readonly lockInput: HTMLInputElement;
+  private readonly focusSelect: HTMLSelectElement;
+  private readonly lookAtSelect: HTMLSelectElement;
+  private readonly lookAtWarning: HTMLDivElement;
   private readonly activeBtn: HTMLButtonElement;
   private readonly activeBadge: HTMLSpanElement;
+  /** Signature of the last-built picker option list, to skip needless rebuilds. */
+  private pickerSig = '';
 
   constructor(
     container: HTMLElement,
@@ -103,6 +135,23 @@ class CameraTab {
 
     this.body = document.createElement('div');
     this.body.className = 'properties-body';
+
+    // Format: output resolution (UR5-5) --------------------------------------
+    // Scene-level, so it lives in its OWN always-visible section (not inside the
+    // per-camera body). Drives the passepartout aspect, the through-camera
+    // projection letterbox and the F12/anim render dimensions.
+    const format = document.createElement('div');
+    format.className = 'properties-body camera-tab-format';
+    const formatTitle = document.createElement('div');
+    formatTitle.className = 'properties-group-title camera-tab-format-title';
+    formatTitle.textContent = 'Format';
+    format.append(formatTitle);
+    this.resWInput = this.numberInput('resX', 1, undefined, 1);
+    this.resWInput.addEventListener('change', () => this.commitResolution('x'));
+    format.append(this.labelledRow('Resolution X', this.resWInput));
+    this.resHInput = this.numberInput('resY', 1, undefined, 1);
+    this.resHInput.addEventListener('change', () => this.commitResolution('y'));
+    format.append(this.labelledRow('Resolution Y', this.resHInput));
 
     // Focal length (mm, 1..300) ---------------------------------------------
     this.focalInput = this.numberInput('focal', 1, 300, 1);
@@ -157,6 +206,33 @@ class CameraTab {
     lockRow.append(lockLabel, this.lockInput);
     this.body.append(lockRow);
 
+    // Focus Object (DoF) + Look At (orientation) object pickers (UR5-7) --------
+    // Dropdowns of None + every OTHER scene object by name. Value is the object
+    // id (-1 = None). Options rebuild via a signature diff in update(). Edits go
+    // through the same undoable CameraCommand path as the numeric fields.
+    this.focusSelect = this.objectSelect('focusObject');
+    this.focusSelect.addEventListener('change', () => {
+      const id = parseInt(this.focusSelect.value, 10);
+      this.commit('Set Focus Object', (c) => { c.focusObjectId = id < 0 ? undefined : id; });
+    });
+    this.body.append(this.labelledRow('Focus Object', this.focusSelect));
+
+    this.lookAtSelect = this.objectSelect('lookAt');
+    this.lookAtSelect.addEventListener('change', () => {
+      const id = parseInt(this.lookAtSelect.value, 10);
+      this.commit('Set Look At', (c) => { c.lookAtId = id < 0 ? undefined : id; });
+    });
+    this.body.append(this.labelledRow('Look At', this.lookAtSelect));
+
+    // Warning line: shown when Look At targets a descendant of the camera (the
+    // lookAt is ignored to avoid world-matrix recursion — see Scene).
+    this.lookAtWarning = document.createElement('div');
+    this.lookAtWarning.className = 'camera-tab-warning';
+    this.lookAtWarning.dataset.warning = 'lookat-cycle';
+    this.lookAtWarning.textContent = '⚠ Look At target is a child of this camera — ignored.';
+    this.lookAtWarning.style.display = 'none';
+    this.body.append(this.lookAtWarning);
+
     // Set Active + indicator -------------------------------------------------
     const activeRow = document.createElement('div');
     activeRow.className = 'camera-tab-active';
@@ -172,7 +248,8 @@ class CameraTab {
     activeRow.append(this.activeBtn, this.activeBadge);
     this.body.append(activeRow);
 
-    container.append(this.empty, this.body);
+    container.append(format, this.empty, this.body);
+    this.writeFormat();
     this.update();
   }
 
@@ -185,6 +262,50 @@ class CameraTab {
     if (max !== undefined) input.max = String(max);
     if (step !== undefined) input.step = String(step);
     return input;
+  }
+
+  /** A bare object-picker <select> (options filled by refreshPickers). */
+  private objectSelect(field: string): HTMLSelectElement {
+    const select = document.createElement('select');
+    select.className = 'camera-tab-select';
+    select.dataset.field = field;
+    return select;
+  }
+
+  /**
+   * (Re)build the Focus Object / Look At option lists (None + every other scene
+   * object by name) when the scene composition or the camera's own refs change,
+   * and set each select's value to the camera's current ref (falling back to
+   * None for a stale/deleted target — the defensive-unset behavior). Skips the
+   * rebuild while the signature is unchanged so an open dropdown isn't clobbered.
+   */
+  private refreshPickers(cam: SceneObject): void {
+    const others = this.scene.objects.filter((o) => o.id !== cam.id);
+    const c = cam.camera!;
+    const sig = `${others.map((o) => `${o.id}:${o.name}`).join('|')}#${c.focusObjectId ?? -1}#${c.lookAtId ?? -1}`;
+    if (sig === this.pickerSig && !this.isPanelFocused()) {
+      // Composition unchanged — nothing to do.
+      return;
+    }
+    this.pickerSig = sig;
+    for (const [select, current] of [
+      [this.focusSelect, c.focusObjectId],
+      [this.lookAtSelect, c.lookAtId],
+    ] as const) {
+      select.textContent = '';
+      const none = document.createElement('option');
+      none.value = '-1';
+      none.textContent = '(None)';
+      select.append(none);
+      for (const o of others) {
+        const opt = document.createElement('option');
+        opt.value = String(o.id);
+        opt.textContent = o.name;
+        select.append(opt);
+      }
+      select.value = String(current ?? -1);
+      if (select.selectedIndex < 0) select.value = '-1'; // stale/deleted → None
+    }
   }
 
   private labelledRow(text: string, control: HTMLElement): HTMLElement {
@@ -204,7 +325,31 @@ class CameraTab {
     return obj && obj.kind === 'camera' && obj.camera ? obj : null;
   }
 
+  /** Push one undoable resolution change (clamped to a positive integer). Never
+   *  overwrites the field the user is editing until it's committed. */
+  private commitResolution(axis: 'x' | 'y'): void {
+    const input = axis === 'x' ? this.resWInput : this.resHInput;
+    const raw = parseFloat(input.value);
+    if (!Number.isFinite(raw) || raw < 1) return this.writeFormat();
+    const v = Math.max(1, Math.round(raw));
+    const before = { ...this.scene.renderSettings };
+    const after = axis === 'x' ? { ...before, width: v } : { ...before, height: v };
+    if (after.width === before.width && after.height === before.height) return this.writeFormat();
+    this.scene.renderSettings = after;
+    this.undo.push(new SetRenderResolutionCommand(this.scene, before, after));
+    this.writeFormat();
+  }
+
+  /** Sync the resolution fields to the model (skips the one being edited). */
+  private writeFormat(): void {
+    const active = document.activeElement;
+    const rs = this.scene.renderSettings;
+    if (active !== this.resWInput) this.resWInput.value = String(rs.width);
+    if (active !== this.resHInput) this.resHInput.value = String(rs.height);
+  }
+
   update(): void {
+    this.writeFormat();
     const obj = this.activeCamera();
     if (!obj || !obj.camera) {
       this.empty.style.display = '';
@@ -218,6 +363,11 @@ class CameraTab {
     const isActive = this.scene.activeCameraId === obj.id;
     this.activeBtn.disabled = isActive;
     this.activeBadge.hidden = !isActive;
+
+    // Object pickers + cyclic-lookAt warning always track the model (selects
+    // steal no text focus; the signature diff avoids clobbering an open dropdown).
+    this.refreshPickers(obj);
+    this.lookAtWarning.style.display = this.scene.cameraLookAtIsCyclic(obj) ? '' : 'none';
 
     // Never overwrite a field the user is mid-edit in (matches the Light tab).
     if (this.isPanelFocused()) return;

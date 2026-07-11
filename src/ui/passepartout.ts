@@ -1,26 +1,32 @@
 import type { Renderer } from '../render/Renderer';
+import type { Scene } from '../core/scene/Scene';
+import { viewPrefs } from '../render/viewPrefs';
 import './passepartout.css';
 
 /**
- * Passepartout overlay (P10-2) — Blender's darkened border shown ONLY while
- * looking through a camera (Numpad0). A DOM overlay inside #viewport-wrap dims
- * everything outside the render frame: the largest 16:9 rect (the path tracer's
- * output aspect) that fits centered in the viewport. Four absolutely-positioned
- * mask panes cover the letterbox margins; a 1px rect outlines the frame.
+ * Passepartout overlay (P10-2, UR5-5) — Blender's darkened border shown ONLY
+ * while looking through a camera (Numpad0). A DOM overlay inside #viewport-wrap
+ * dims everything outside the render frame: the largest scene-aspect rect (the
+ * scene's REAL output resolution, scene.renderSettings) that fits centered in
+ * the viewport. Four absolutely-positioned mask panes cover the letterbox
+ * margins; a 1px rect outlines the frame. What lands inside the frame is exactly
+ * what F12 renders (Renderer letterboxes the through-camera projection to the
+ * same aspect).
  *
  * Purely a viewport read-out: it owns no state, computes the frame from the live
- * canvas size + renderer.cameraViewId every update(), and is pointer-events:none
- * so it never eats viewport input (clicks select straight through the frame).
- * main.ts drives update() from the frame loop (the panels' pattern), so it
- * recomputes on resize and camera-view enter/exit automatically.
+ * canvas size + scene render aspect + renderer.cameraViewId every update(), and
+ * is pointer-events:none so it never eats viewport input (clicks select straight
+ * through the frame). main.ts drives update() from the frame loop (the panels'
+ * pattern), so it recomputes on resize, resolution change and camera-view
+ * enter/exit automatically.
  */
 
-/** The output aspect the tracer renders at — the frame the passepartout marks. */
+/** Fallback aspect when no scene is supplied (kept for the frameRect default). */
 const FRAME_ASPECT = 16 / 9;
 
 /**
- * The largest FRAME_ASPECT rect centered in a w×h viewport, in CSS px. Pure so
- * the letterbox math is trivially reasoned about (and reusable by e2e).
+ * The largest `aspect` rect centered in a w×h viewport, in CSS px. Pure so the
+ * letterbox math is trivially reasoned about (and reusable by e2e).
  */
 export function frameRect(w: number, h: number, aspect = FRAME_ASPECT): { x: number; y: number; w: number; h: number } {
   if (w <= 0 || h <= 0) return { x: 0, y: 0, w: 0, h: 0 };
@@ -44,6 +50,7 @@ export class Passepartout {
     host: HTMLElement,
     private readonly renderer: Renderer,
     private readonly canvas: HTMLElement,
+    private readonly scene: Scene,
   ) {
     this.root = document.createElement('div');
     this.root.className = 'passepartout';
@@ -65,7 +72,7 @@ export class Passepartout {
 
   /** Show + lay out the masks while in camera view; hide otherwise. */
   update(): void {
-    if (this.renderer.cameraViewId === null) {
+    if (this.renderer.cameraViewId === null || !viewPrefs.passepartout) {
       if (this.root.style.display !== 'none') this.root.style.display = 'none';
       return;
     }
@@ -73,7 +80,9 @@ export class Passepartout {
     // origin with the canvas, so 0,0 aligns with the canvas's top-left.
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
-    const r = frameRect(w, h);
+    const rs = this.scene.renderSettings;
+    const aspect = rs.height > 0 ? rs.width / rs.height : FRAME_ASPECT;
+    const r = frameRect(w, h, aspect);
     this.root.style.display = '';
 
     // Four margin panes around the frame (any zero-size pane simply collapses).

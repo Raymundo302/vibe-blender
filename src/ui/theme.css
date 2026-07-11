@@ -233,10 +233,37 @@
  */
 .n-panel {
   position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;
-  width: 208px; box-sizing: border-box;
+  width: 234px; box-sizing: border-box;
   background: var(--vb-panel, #2b2b2b); border-left: 1px solid var(--vb-border, #3d3d3d);
-  padding: 6px 10px 10px; overflow-y: auto;
   font: var(--vb-font); color: var(--vb-text, #d0d0d0); user-select: none;
+  display: flex; flex-direction: row; align-items: stretch;
+}
+/* Content column (left) + vertical tab strip (right edge, Blender). */
+.n-panel-content { flex: 1 1 auto; min-width: 0; padding: 6px 10px 10px; overflow-y: auto; }
+.n-panel-tabs {
+  flex: 0 0 auto; display: flex; flex-direction: column; gap: 2px;
+  padding: 6px 0 0; border-left: 1px solid var(--vb-border, #3d3d3d);
+  background: var(--vb-input, #1f1f1f);
+}
+.n-panel-tab {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  border: none; background: transparent; color: var(--vb-text-dim, #8a8a8a);
+  font: inherit; font-size: 11px; letter-spacing: 0.03em; cursor: pointer;
+  padding: 9px 3px; border-top-left-radius: 4px; border-bottom-left-radius: 4px;
+}
+.n-panel-tab:hover { color: var(--vb-text, #d0d0d0); }
+.n-panel-tab-active {
+  background: var(--vb-panel, #2b2b2b); color: var(--vb-text, #d0d0d0);
+  box-shadow: inset 2px 0 0 var(--vb-accent, #fe730f);
+}
+/* View tab rows. */
+.n-panel-field-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.n-panel-field-label { flex: 1 1 auto; min-width: 0; color: var(--vb-text-dim, #8a8a8a); }
+.n-panel-num { flex: 0 0 auto; width: 74px; }
+.n-panel-check-row { display: flex; align-items: center; gap: 6px; padding: 5px 0; cursor: pointer; }
+.n-panel-cam-section {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--vb-border, #3d3d3d);
 }
 .n-panel-heading {
   font-size: 11px; font-weight: 700; text-transform: uppercase;

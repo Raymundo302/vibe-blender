@@ -1,6 +1,32 @@
 import './renderWindow.css';
 
 /**
+ * Reinhard tonemap + gamma 1/2.2 of an averaged path-tracer accumulation buffer
+ * (length w*h*3, summed radiance over `sample` passes) into an RGBA byte buffer
+ * (length w*h*4, alpha forced 255). Extracted so the live Render Result window
+ * (updateFrame below) and the headless Render-Animation path (animRender.ts) map
+ * traced radiance to pixels identically — the "headless driver seam" the anim
+ * renderer reuses instead of forking the tracer's presentation math.
+ */
+export function tonemapAccumToRgba(
+  accum: Float32Array,
+  sample: number,
+  out: Uint8ClampedArray,
+): void {
+  const inv = sample > 0 ? 1 / sample : 1;
+  for (let i = 0, j = 0; i < accum.length; i += 3, j += 4) {
+    let r = accum[i] * inv;
+    let g = accum[i + 1] * inv;
+    let b = accum[i + 2] * inv;
+    r = r / (r + 1); g = g / (g + 1); b = b / (b + 1); // Reinhard
+    out[j] = Math.min(255, Math.pow(r, 1 / 2.2) * 255);
+    out[j + 1] = Math.min(255, Math.pow(g, 1 / 2.2) * 255);
+    out[j + 2] = Math.min(255, Math.pow(b, 1 / 2.2) * 255);
+    out[j + 3] = 255;
+  }
+}
+
+/**
  * DOM overlay "Render Result" window (P8-4). Owns a 2D canvas the tracer's
  * accumulation buffer is blitted into (Reinhard tonemap + gamma, matching
  * renderedPass), a sample/time readout, a Save PNG button, and a close ×.
@@ -9,12 +35,14 @@ import './renderWindow.css';
 export class RenderWindow {
   readonly root: HTMLDivElement;
   readonly canvas: HTMLCanvasElement;
-  readonly width: number;
-  readonly height: number;
+  /** Output pixel dimensions. Mutable so the F12 driver can size the window to
+   *  the scene's render resolution (UR5-5) via resize() before each render. */
+  width: number;
+  height: number;
 
   private readonly ctx: CanvasRenderingContext2D;
   private readonly readout: HTMLDivElement;
-  private readonly imageData: ImageData;
+  private imageData: ImageData;
   private readonly host: HTMLElement;
   private readonly apertureInput: HTMLInputElement;
   private readonly focusInput: HTMLInputElement;
@@ -121,6 +149,26 @@ export class RenderWindow {
     // canvases (e.g. the workspace viewport-swap logic) isn't disturbed.
   }
 
+  /**
+   * Resize the output canvas + backing ImageData to w×h (UR5-5: the F12 driver
+   * sets this to scene.renderSettings before a render). No-op when unchanged, so
+   * repeated renders at the same resolution keep the retained last-render pixels.
+   *
+   * NOTE (Vega 7): very large frames (>4K, ~33M px) are slow to path-trace on the
+   * integrated GPU / CPU tracer — this deliberately does NOT cap the size (the
+   * resolution is the user's Output setting); document, don't gate.
+   */
+  resize(w: number, h: number): void {
+    const nw = Math.max(1, Math.floor(w));
+    const nh = Math.max(1, Math.floor(h));
+    if (nw === this.width && nh === this.height) return;
+    this.width = nw;
+    this.height = nh;
+    this.canvas.width = nw;
+    this.canvas.height = nh;
+    this.imageData = this.ctx.createImageData(nw, nh);
+  }
+
   open(): void {
     this.isOpen = true;
     this.root.classList.add('render-win-open');
@@ -164,18 +212,7 @@ export class RenderWindow {
    */
   updateFrame(accum: Float32Array, sample: number, elapsedMs: number): void {
     this.sample = sample;
-    const inv = sample > 0 ? 1 / sample : 1;
-    const px = this.imageData.data;
-    for (let i = 0, j = 0; i < accum.length; i += 3, j += 4) {
-      let r = accum[i] * inv;
-      let g = accum[i + 1] * inv;
-      let b = accum[i + 2] * inv;
-      r = r / (r + 1); g = g / (g + 1); b = b / (b + 1); // Reinhard
-      px[j] = Math.min(255, Math.pow(r, 1 / 2.2) * 255);
-      px[j + 1] = Math.min(255, Math.pow(g, 1 / 2.2) * 255);
-      px[j + 2] = Math.min(255, Math.pow(b, 1 / 2.2) * 255);
-      px[j + 3] = 255;
-    }
+    tonemapAccumToRgba(accum, sample, this.imageData.data);
     this.ctx.putImageData(this.imageData, 0, 0);
     this.readout.textContent = `Sample ${sample} · ${(elapsedMs / 1000).toFixed(1)}s`;
   }

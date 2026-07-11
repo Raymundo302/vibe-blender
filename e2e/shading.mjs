@@ -25,7 +25,7 @@ runE2e(async (t) => {
   t.check('menu shows AO / wireframe / intersections / hidden-line checkboxes',
     await t.evaluate(`(() => {
       const keys = [...document.querySelectorAll('[data-shade-pref]')].map((r) => r.dataset.shadePref);
-      return keys.join(',') === 'ao,wireOverlay,intersections,wireHiddenLine';
+      return keys.join(',') === 'ao,wireOverlay,intersections,hiddenLine';
     })()`));
   await t.key('Escape', 'Escape', 0);
   await t.sleep(60);
@@ -203,9 +203,9 @@ runE2e(async (t) => {
     return dark;
   })()`);
   const classicWires = await countWirePixels();
-  await setPref('wireHiddenLine', true);
+  await setPref('hiddenLine.wireframe', true);
   const hiddenWires = await countWirePixels();
-  await setPref('wireHiddenLine', false);
+  await setPref('hiddenLine.wireframe', false);
   t.check('classic wireframe draws a full wire set', classicWires > 200, `pixels=${classicWires}`);
   t.check('hidden-line removes the occluded edges',
     hiddenWires < classicWires * 0.92,
@@ -660,7 +660,7 @@ runE2e(async (t) => {
   }
 
   // (5) Persistence — driving the selects (object, method 4) fires their change
-  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v3'.
+  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v4'.
   const persisted = await t.evaluate(`(() => {
     const modeSel = document.querySelector('select[data-shade-mode]');
     const methodSel = document.querySelector('select[data-shade-method]');
@@ -668,9 +668,9 @@ runE2e(async (t) => {
       modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
       methodSel.value = '2'; methodSel.dispatchEvent(new Event('change'));
     }
-    return localStorage.getItem('vibe-shading-v3') || '';
+    return localStorage.getItem('vibe-shading-v4') || '';
   })()`);
-  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v3)',
+  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v4)',
     persisted.includes('"aoMode":"object"'), `stored=${persisted.slice(0, 90)}`);
 
   // Restore global state: close menu, revert selects to screen (re-persists),
@@ -796,5 +796,232 @@ runE2e(async (t) => {
     S.deselectAll();
     window.__app.shadePrefs.intersections = false;
     window.__app.renderer.shadingMode = 'matcap';
+  })()`);
+
+  // ===================================================================
+  // UR5-1: unified per-mode Hidden Line — the cage-over-wires bug fix,
+  // the see-through cage, object select-through, and the dropdown follow.
+  // ===================================================================
+
+  // Enter edit mode on a cube and select ALL its edges (whole cage orange).
+  // Use the first non-Floor mesh (the boot Cube). Direct scene API — rendering
+  // only reads scene.editMode, so this drives the same cage the UI would.
+  await t.evaluate(`(() => {
+    const S = window.__app.scene;
+    const cube = S.objects.find((o) => o.kind === 'mesh' && o.name !== 'Floor');
+    S.enterEditMode(cube.id);
+    const e = S.editMode;
+    e.elementMode = 'edge';
+    e.edges.clear();
+    for (const k of cube.mesh.edges().keys()) e.edges.add(k);
+    e.touch();
+    S.deselectAll ? null : null; // keep the cube active/edited
+  })()`);
+  t.check('UR5: edit mode entered with all edges selected',
+    await t.until(`(() => { const e = window.__app.scene.editMode; return !!e && e.edges.size >= 12; })()`));
+
+  // Orange pixels around the cube's NEAREST-to-camera edge midpoint — that edge
+  // is guaranteed unoccluded (nothing is in front of the closest edge), so it
+  // stays orange even with Hidden Line ON. Counts a REGION so a single rounded
+  // pixel can't decide the check.
+  const orangeOnNearestEdge = (r) => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas, S = app.scene;
+    const obj = S.editObject;
+    app.renderer.render(S, app.camera);
+    const wm = S.worldMatrix(obj).m, m = app.renderer.currentViewProj(S, app.camera).m;
+    let best = null, bestW = 1e9;
+    for (const e of obj.mesh.edges().values()) {
+      const a = obj.mesh.verts.get(e.v0).co, b = obj.mesh.verts.get(e.v1).co;
+      const lx = (a.x+b.x)/2, ly = (a.y+b.y)/2, lz = (a.z+b.z)/2;
+      const wx = wm[0]*lx+wm[4]*ly+wm[8]*lz+wm[12];
+      const wy = wm[1]*lx+wm[5]*ly+wm[9]*lz+wm[13];
+      const wz = wm[2]*lx+wm[6]*ly+wm[10]*lz+wm[15];
+      const cx = m[0]*wx+m[4]*wy+m[8]*wz+m[12];
+      const cy = m[1]*wx+m[5]*wy+m[9]*wz+m[13];
+      const cw = m[3]*wx+m[7]*wy+m[11]*wz+m[15];
+      if (cw > 0 && cw < bestW) {
+        bestW = cw;
+        best = [(cx/cw*0.5+0.5)*c.width, (cy/cw*0.5+0.5)*c.height];
+      }
+    }
+    if (!best) return -1;
+    const px = Math.round(best[0]), py = Math.round(best[1]);
+    const rr = ${r}, s = 2*rr+1;
+    const x0 = Math.max(0, Math.min(px-rr, c.width-s));
+    const y0 = Math.max(0, Math.min(py-rr, c.height-s));
+    const buf = new Uint8Array(s*s*4);
+    gl.readPixels(x0, y0, s, s, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let orange = 0;
+    for (let i = 0; i < s*s; i++) {
+      const R = buf[i*4], G = buf[i*4+1], B = buf[i*4+2];
+      if (R > 150 && G > 40 && G < 190 && B < 90 && (R - B) > 90) orange++;
+    }
+    return orange;
+  })()`);
+
+  // Orange pixels across the WHOLE edit-object screen bbox (all 8 world corners).
+  const orangeInEditBBox = () => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas, S = app.scene;
+    const obj = S.editObject;
+    let mn = [1e9,1e9,1e9], mx = [-1e9,-1e9,-1e9];
+    for (const v of obj.mesh.verts.values()) {
+      mn[0]=Math.min(mn[0],v.co.x); mn[1]=Math.min(mn[1],v.co.y); mn[2]=Math.min(mn[2],v.co.z);
+      mx[0]=Math.max(mx[0],v.co.x); mx[1]=Math.max(mx[1],v.co.y); mx[2]=Math.max(mx[2],v.co.z);
+    }
+    app.renderer.render(S, app.camera);
+    const wm = S.worldMatrix(obj).m, m = app.renderer.currentViewProj(S, app.camera).m;
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+    for (let i = 0; i < 8; i++) {
+      const lx = i&1?mx[0]:mn[0], ly = i&2?mx[1]:mn[1], lz = i&4?mx[2]:mn[2];
+      const wx = wm[0]*lx+wm[4]*ly+wm[8]*lz+wm[12];
+      const wy = wm[1]*lx+wm[5]*ly+wm[9]*lz+wm[13];
+      const wz = wm[2]*lx+wm[6]*ly+wm[10]*lz+wm[15];
+      const cx = m[0]*wx+m[4]*wy+m[8]*wz+m[12];
+      const cy = m[1]*wx+m[5]*wy+m[9]*wz+m[13];
+      const cw = m[3]*wx+m[7]*wy+m[11]*wz+m[15];
+      const px = (cx/cw*0.5+0.5)*c.width, py = (cy/cw*0.5+0.5)*c.height;
+      x0=Math.min(x0,px); x1=Math.max(x1,px); y0=Math.min(y0,py); y1=Math.max(y1,py);
+    }
+    x0=Math.max(0,Math.floor(x0)); y0=Math.max(0,Math.floor(y0));
+    const w=Math.min(c.width-x0,Math.ceil(x1-x0)), h=Math.min(c.height-y0,Math.ceil(y1-y0));
+    const buf = new Uint8Array(w*h*4);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let orange = 0;
+    for (let i = 0; i < w*h; i++) {
+      const R = buf[i*4], G = buf[i*4+1], B = buf[i*4+2];
+      if (R > 150 && G > 40 && G < 190 && B < 90 && (R - B) > 90) orange++;
+    }
+    return orange;
+  })()`);
+
+  // --- Criterion 1: THE BUG. matcap + wireOverlay ON + hiddenLine.matcap ON
+  // → the selected edge's ORANGE survives (the grey overlay no longer covers
+  // the cage, because the edit object's wirePass edges are skipped). ---------
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+  await setPref('wireOverlay', true);
+  await setPref('hiddenLine.matcap', true);
+  await t.sleep(60);
+  const orangeMatcapHL = await orangeOnNearestEdge(10);
+  await t.screenshot('research/ur5-bug-cage.png');
+  t.check('THE BUG: orange cage survives over wireOverlay+hiddenLine (matcap)',
+    orangeMatcapHL > 8, `orange=${orangeMatcapHL}`);
+
+  // Same in wireframe mode with hiddenLine ON.
+  await t.evaluate(`window.__app.renderer.shadingMode = 'wireframe'`);
+  await setPref('hiddenLine.wireframe', true);
+  await t.sleep(60);
+  const orangeWireHL = await orangeOnNearestEdge(10);
+  t.check('THE BUG: orange cage survives in wireframe + hiddenLine ON',
+    orangeWireHL > 8, `orange=${orangeWireHL}`);
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+
+  // --- Criterion 2: hiddenLine.matcap OFF → a BACK-side cage edge contributes
+  // visible pixels (see-through cage): total orange in the bbox jumps because
+  // the occluded back edges now draw. --------------------------------------
+  await setPref('hiddenLine.matcap', true);
+  await t.sleep(60);
+  const bboxOrangeHL = await orangeInEditBBox();
+  await setPref('hiddenLine.matcap', false);
+  await t.sleep(60);
+  const bboxOrangeSee = await orangeInEditBBox();
+  await t.screenshot('research/ur5-seethrough-cage.png');
+  t.check('see-through cage: hiddenLine OFF reveals back-side cage edges',
+    bboxOrangeSee > bboxOrangeHL + 20 && bboxOrangeSee > 40,
+    `hiddenLine=${bboxOrangeHL} seeThrough=${bboxOrangeSee}`);
+
+  // Reset + leave edit mode.
+  await setPref('wireOverlay', false);
+  await setPref('hiddenLine.matcap', true);
+  await t.evaluate(`window.__app.scene.exitEditMode()`);
+
+  // --- Criterion 4: dropdown checkbox follows the mode. --------------------
+  await t.evaluate(`(() => {
+    const p = window.__app.shadePrefs;
+    p.hiddenLine = { matcap: true, studio: true, rendered: true, wireframe: false };
+  })()`);
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
+  await t.sleep(80);
+  const followsMode = await t.evaluate(`(() => {
+    const box = document.querySelector('[data-shade-pref="hiddenLine"] input');
+    const p = window.__app.shadePrefs;
+    document.querySelector('.shading-menu-mode[data-mode="matcap"]').click();
+    const matcapChecked = box.checked, matcapPref = p.hiddenLine.matcap;
+    document.querySelector('.shading-menu-mode[data-mode="wireframe"]').click();
+    const wireChecked = box.checked, wirePref = p.hiddenLine.wireframe;
+    return { matcapChecked, matcapPref, wireChecked, wirePref };
+  })()`);
+  t.check('dropdown: Hidden Line checkbox reflects matcap mode (on)',
+    followsMode.matcapChecked === true && followsMode.matcapPref === true,
+    JSON.stringify(followsMode));
+  t.check('dropdown: Hidden Line checkbox follows to wireframe mode (off)',
+    followsMode.wireChecked === false && followsMode.wirePref === false,
+    JSON.stringify(followsMode));
+  t.check('dropdown: checkbox actually CHANGED with the mode',
+    followsMode.matcapChecked !== followsMode.wireChecked);
+  await t.key('Escape', 'Escape', 0);
+  await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
+
+  // --- Criterion 3: OBJECT select-through. Two cubes, one fully behind the
+  // other; wireframe mode. hiddenLine OFF → clicking the back cube's wire
+  // (visible through the front) selects the BACK cube; ON → selects the front.
+  await t.evaluate(`(async () => {
+    const app = window.__app, S = app.scene;
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    S.exitEditMode();
+    for (const o of [...S.objects]) S.remove(o.id);
+    const front = S.add('FrontCube', prim.makeCube(1));
+    const e = app.camera.eye;
+    const len = Math.hypot(e.x, e.y, e.z) || 1;
+    // origin + (direction from eye toward origin)*3 → 3 units PAST origin,
+    // i.e. behind the front cube from the camera's viewpoint.
+    const bx = -e.x/len*3, by = -e.y/len*3, bz = -e.z/len*3;
+    const back = S.add('BackCube', prim.makeCube(0.5));
+    back.transform = back.transform.withPosition(new V(bx, by, bz));
+    S.deselectAll();
+    window.__ur5 = { frontId: front.id, backId: back.id, bx, by, bz };
+  })()`);
+  t.check('select-through scene: two cubes placed',
+    await t.until(`window.__ur5 && window.__app.scene.objects.length === 2`));
+  await t.sleep(120);
+
+  // Call pick() directly at the back cube's top-front edge midpoint (world).
+  const pickAt = (wx, wy, wz) => t.evaluate(`(() => {
+    const app = window.__app, c = app.renderer.ctx.gl.canvas;
+    const dpr = window.devicePixelRatio || 1;
+    const m = app.renderer.currentViewProj(app.scene, app.camera).m;
+    const cx = m[0]*${wx}+m[4]*${wy}+m[8]*${wz}+m[12];
+    const cy = m[1]*${wx}+m[5]*${wy}+m[9]*${wz}+m[13];
+    const cw = m[3]*${wx}+m[7]*${wy}+m[11]*${wz}+m[15];
+    const devX = (cx/cw*0.5+0.5)*c.width;
+    const devYbottom = (cy/cw*0.5+0.5)*c.height;
+    const cssX = devX/dpr, cssY = (c.height - devYbottom)/dpr;
+    return app.renderer.pick(app.scene, app.camera, cssX, cssY);
+  })()`);
+  const ur5 = await t.evaluate(`window.__ur5`);
+  const edgeWx = ur5.bx, edgeWy = ur5.by - 0.5, edgeWz = ur5.bz + 0.5;
+
+  await t.evaluate(`window.__app.renderer.shadingMode = 'wireframe'`);
+  await setPref('hiddenLine.wireframe', false);
+  await t.sleep(60);
+  const pickOff = await pickAt(edgeWx, edgeWy, edgeWz);
+  t.check('select-through: click a back-cube wire → back cube selected (hiddenLine off)',
+    pickOff && pickOff.kind === 'object' && pickOff.id === ur5.backId,
+    JSON.stringify(pickOff) + ` back=${ur5.backId} front=${ur5.frontId}`);
+
+  await setPref('hiddenLine.wireframe', true);
+  await t.sleep(60);
+  const pickOn = await pickAt(edgeWx, edgeWy, edgeWz);
+  t.check('select-through OFF: same click → front cube selected (hiddenLine on)',
+    pickOn && pickOn.kind === 'object' && pickOn.id === ur5.frontId,
+    JSON.stringify(pickOn) + ` back=${ur5.backId} front=${ur5.frontId}`);
+
+  // Cleanup.
+  await t.evaluate(`(() => {
+    const p = window.__app.shadePrefs;
+    p.hiddenLine = { matcap: true, studio: true, rendered: true, wireframe: false };
+    p.wireOverlay = false;
+    window.__app.renderer.shadingMode = 'matcap';
+    window.__app.scene.deselectAll();
   })()`);
 });

@@ -609,6 +609,12 @@ runE2e(async (t) => {
   // =====================================================================
   // STAGE 9 — F12 path trace ≥64 samples (hero), + 4-sample control, + DoF.
   // =====================================================================
+  // F12 now renders at scene.renderSettings (UR5-5); a fresh scene defaults to
+  // 1920×1080. Pin the historical 960×540 here so the headless per-sample timing
+  // this stage's budget assumes (see HERO comment below) holds — the tracer is
+  // resolution-bound and 1920×1080 would be ~4× slower. (Round-trips stay
+  // byte-identical: stage 10 re-serializes with this same value.)
+  await t.evaluate('window.__app.scene.renderSettings = { width: 960, height: 540 }');
   const grabDef = `window.__grab = () => {
     const cv = window.__renderEngine.canvas();
     const c2 = cv.getContext('2d');

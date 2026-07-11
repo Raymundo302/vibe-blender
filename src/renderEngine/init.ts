@@ -54,12 +54,21 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
 
   const startRender = (): void => {
     stopWorker();
+    // Render at the scene's OUTPUT resolution (UR5-5): the window + tracer buffer
+    // are sized to scene.renderSettings, so the output aspect matches the
+    // through-camera passepartout frame and what F12 produces is the real frame.
+    const rs = ctx.scene.renderSettings;
+    win.resize(rs.width, rs.height);
     const snapshot = buildSnapshot(ctx.scene, ctx.camera);
     // Depth of field: aperture from the render window, focus distance from the
     // window if the user set one, else the snapshot's auto (bounding-box) value.
     snapshot.camera.aperture = win.aperture;
     win.showAutoFocus(snapshot.camera.focusDistance ?? 5);
-    if (win.focusDistance !== null) snapshot.camera.focusDistance = win.focusDistance;
+    // A Focus Object (UR5-7) locks the distance per render — the manual field only
+    // applies when no focus object is set.
+    if (win.focusDistance !== null && !snapshot.camera.focusFromObject) {
+      snapshot.camera.focusDistance = win.focusDistance;
+    }
     win.open();
     win.reset();
     startTime = performance.now();

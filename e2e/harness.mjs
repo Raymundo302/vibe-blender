@@ -9,7 +9,28 @@
  *   });
  */
 import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { rmSync, readdirSync } from 'node:fs';
+
+/**
+ * Reap profiles orphaned by suites that died without their 'exit' cleanup
+ * (SIGKILL, OOM, harness crash). Each profile dir is keyed by its owner's PID;
+ * if that PID is gone, the dir is garbage. Without this, killed runs leaked
+ * ~165MB each until /tmp (tmpfs) filled and the box OOM'd (524 orphans found
+ * 2026-07-11).
+ */
+function reapOrphanProfiles() {
+  let names = [];
+  try { names = readdirSync('/tmp'); } catch { return; }
+  for (const name of names) {
+    const m = /^vibe-blender-e2e-profile-(\d+)$/.exec(name);
+    if (!m || Number(m[1]) === process.pid) continue;
+    try { process.kill(Number(m[1]), 0); } catch (err) {
+      if (err.code === 'ESRCH') {
+        try { rmSync(`/tmp/${name}`, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
+    }
+  }
+}
 
 // Fixed 9222 by default, but overridable so concurrent runs don't hijack each
 // other's headless Chrome (a stale/parallel 9222 silently pollutes localStorage).
@@ -23,6 +44,7 @@ export function runE2e(testFn, { url = process.argv[2] ?? 'http://localhost:5199
 }
 
 async function main(testFn, url) {
+  reapOrphanProfiles();
   // Default: SwiftShader for deterministic pixels. E2E_GPU=1 runs on the real
   // GPU instead — REQUIRED for driver-sensitive features (the AO lowp-sampler
   // bug was invisible on SwiftShader; see research/ notes 2026-07-08).

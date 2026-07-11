@@ -16,6 +16,7 @@ const KIND_GLYPH: Record<ObjectKind, string> = {
   mesh: '▢', // ▢
   light: '\u{1F4A1}', // 💡
   camera: '\u{1F3A5}', // 🎥
+  empty: '✛', // plain-axes empty (UR5-7)
 };
 
 /**

@@ -33,6 +33,14 @@ export interface EditOverlayData {
   /** Fan-triangulated corners of SELECTED faces only (translucent fill). */
   selFacePositions: Float32Array;
   selFaceVertexCount: number;
+  /**
+   * Face-center dots — ONE per face at its centroid, emitted only in face
+   * element mode (empty / dotCount 0 in vert & edge modes). Orange when that
+   * face is selected, vert-default grey otherwise. Rendered like vert points.
+   */
+  dotPositions: Float32Array;
+  dotColors: Float32Array;
+  dotCount: number;
 }
 
 const VERT_DEFAULT = [0.06, 0.06, 0.06] as const;
@@ -88,6 +96,28 @@ export function editOverlayData(mesh: EditableMesh, sel: EditModeState): EditOve
     }
   }
 
+  // Face-center dots — one per face at its centroid, face element mode only.
+  let dotPositions = new Float32Array(0);
+  let dotColors = new Float32Array(0);
+  let dotCount = 0;
+  if (sel.elementMode === 'face') {
+    const faceIds = [...mesh.faces.keys()];
+    dotCount = faceIds.length;
+    dotPositions = new Float32Array(dotCount * 3);
+    dotColors = new Float32Array(dotCount * 3);
+    faceIds.forEach((id, i) => {
+      const f = mesh.faces.get(id)!;
+      let cx = 0, cy = 0, cz = 0;
+      for (const vid of f.verts) {
+        const co = mesh.verts.get(vid)!.co;
+        cx += co.x; cy += co.y; cz += co.z;
+      }
+      const n = f.verts.length;
+      dotPositions.set([cx / n, cy / n, cz / n], i * 3);
+      dotColors.set(sel.isFaceSelected(id) ? SELECTED : VERT_DEFAULT, i * 3);
+    });
+  }
+
   return {
     vertPositions,
     vertColors,
@@ -97,5 +127,8 @@ export function editOverlayData(mesh: EditableMesh, sel: EditModeState): EditOve
     edgeVertexCount: edges.length * 2,
     selFacePositions,
     selFaceVertexCount: triCount * 3,
+    dotPositions,
+    dotColors,
+    dotCount,
   };
 }

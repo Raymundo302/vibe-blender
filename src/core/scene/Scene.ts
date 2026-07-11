@@ -8,9 +8,11 @@ import type { Modifier, ModifierContext } from '../modifiers/Modifier';
 import {
   DEFAULT_MATERIAL,
   defaultCamera,
+  defaultEmpty,
   defaultLight,
   makeMaterial,
   type CameraData,
+  type EmptyData,
   type LightData,
   type LightType,
   type Material,
@@ -43,6 +45,8 @@ export class SceneObject {
   light?: LightData;
   /** Camera payload — set iff kind === 'camera'. */
   camera?: CameraData;
+  /** Empty payload — set iff kind === 'empty' (UR5-7). */
+  empty?: EmptyData;
   /** Assigned material id (scene.materials), or null → DEFAULT_MATERIAL. */
   materialId: number | null = null;
   /** Owning collection id (scene.collections), or null → scene root. */
@@ -102,6 +106,14 @@ export class Scene {
   readonly collections: SceneCollection[] = [];
   /** The camera F12 renders from / Numpad-0 looks through, or null. */
   activeCameraId: number | null = null;
+  /**
+   * Scene output resolution (UR5-5) — Blender's Output "Format" resolution. It
+   * is the REAL frame the F12 tracer / Ctrl+F12 animation render at, and the
+   * aspect (width/height) the passepartout marks and the through-camera
+   * projection letterboxes to. Defaults to 1920×1080; loading an old file that
+   * predates it also lands here.
+   */
+  renderSettings: { width: number; height: number } = { width: 1920, height: 1080 };
   /** Environment (background + image-based lighting). Default reproduces the
    *  path tracer's original hardcoded sky, so pre-World scenes are unchanged. */
   world: World = defaultWorld();
@@ -166,6 +178,15 @@ export class Scene {
     obj.camera = data ?? defaultCamera();
     this.objects.push(obj);
     if (this.activeCameraId === null) this.activeCameraId = obj.id;
+    return obj;
+  }
+
+  /** Add an empty object (null object: rig/target helper drawn as plain axes).
+   *  Carries an empty mesh so every mesh code path no-ops. Not auto-selected. */
+  addEmpty(name: string, data?: EmptyData): SceneObject {
+    const obj = new SceneObject(this.nextId++, name, new EditableMesh(), 'empty');
+    obj.empty = data ?? defaultEmpty();
+    this.objects.push(obj);
     return obj;
   }
 
@@ -309,6 +330,78 @@ export class Scene {
     return Transform.fromMat4(this.worldMatrix(obj));
   }
 
+  // --- Camera world matrix (UR5-7) -------------------------------------------
+
+  /**
+   * The Look At target of a camera, resolved defensively (UR5-7): null when
+   * lookAtId is unset, the target was deleted, points at the camera itself, or
+   * the target is a DESCENDANT of the camera (a lookAt there would make the
+   * world-matrix computation recurse — the cycle guard). When this returns null
+   * the camera keeps its own transform orientation.
+   */
+  cameraLookAtTarget(cam: SceneObject): SceneObject | null {
+    const id = cam.camera?.lookAtId;
+    if (id === undefined || id === null) return null;
+    const target = this.get(id);
+    if (!target || target.id === cam.id) return null;
+    // Descendant of the camera → ignore (world-matrix recursion would loop).
+    if (this.isAncestor(cam, target)) return null;
+    return target;
+  }
+
+  /**
+   * True when a camera's lookAtId points at a descendant of the camera (or
+   * itself): the lookAt is IGNORED and the Camera tab surfaces a warning. Distinct
+   * from a merely-deleted target (which is silently unset, not a cycle).
+   */
+  cameraLookAtIsCyclic(cam: SceneObject): boolean {
+    const id = cam.camera?.lookAtId;
+    if (id === undefined || id === null) return false;
+    const target = this.get(id);
+    if (!target) return false; // deleted → stale, not cyclic
+    return target.id === cam.id || this.isAncestor(cam, target);
+  }
+
+  /**
+   * The single source of a camera object's world matrix (translation × rotation,
+   * scale ignored — Blender treats camera scale as display only). EVERY consumer
+   * — the through-camera viewport view, the path tracer, the frustum drawing and
+   * Numpad0 — routes through here so they always agree.
+   *
+   * Position comes from the parent chain (worldTransformOf). Orientation is the
+   * aim-at-target lookAt basis when a valid Look At is set (local -Z toward the
+   * target's world origin, up = world +Z, with a fallback up when the aim is
+   * straight up/down so the basis stays defined), otherwise the object's own
+   * world rotation.
+   */
+  cameraWorldMatrix(cam: SceneObject): Mat4 {
+    const pose = this.worldTransformOf(cam);
+    const target = this.cameraLookAtTarget(cam);
+    if (!target) {
+      return Mat4.translation(pose.position).mul(Mat4.fromQuat(pose.rotation));
+    }
+    const eye = pose.position;
+    const targetPos = this.worldTransformOf(target).position;
+    let fwd = targetPos.sub(eye);
+    if (fwd.lengthSq() < 1e-12) {
+      // Coincident eye/target → keep the camera's own orientation.
+      return Mat4.translation(eye).mul(Mat4.fromQuat(pose.rotation));
+    }
+    fwd = fwd.normalize();
+    // Standard lookAt basis: camera +Z points back toward the viewer (−fwd).
+    const worldUp = Vec3.Z;
+    const up = Math.abs(fwd.dot(worldUp)) > 0.9995 ? Vec3.Y : worldUp; // degenerate up/down
+    const z = fwd.scale(-1);
+    const x = up.cross(z).normalize();
+    const y = z.cross(x); // already unit-length (x, z orthonormal)
+    return new Mat4([
+      x.x, x.y, x.z, 0,
+      y.x, y.y, y.z, 0,
+      z.x, z.y, z.z, 0,
+      eye.x, eye.y, eye.z, 1,
+    ]);
+  }
+
   /** Re-express a world-space transform in obj's CURRENT parent space. */
   localFromWorld(obj: SceneObject, world: Transform): Transform {
     if (obj.parentId === null) return world;
@@ -340,6 +433,7 @@ export class Scene {
     const obj = new SceneObject(this.nextId++, name, src.mesh.clone(), src.kind);
     if (src.light) obj.light = { ...src.light, color: [...src.light.color] };
     if (src.camera) obj.camera = { ...src.camera };
+    if (src.empty) obj.empty = { ...src.empty };
     obj.transform = src.transform; // Transform is immutable — sharing is safe.
     obj.visible = src.visible;
     obj.shadeSmooth = src.shadeSmooth;

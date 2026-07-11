@@ -4,6 +4,8 @@
  * scene load, persisted in localStorage and replayed at boot.
  */
 
+import type { ShadingMode } from './Renderer';
+
 /** AO estimator family: 'screen' = GTAO from the depth buffer; 'object' =
  *  Ray's AO-Prototype technique — a march against per-object voxel SDFs in
  *  world space, camera-independent by construction. */
@@ -37,9 +39,15 @@ export interface ShadePrefs {
   /** Draw mesh-mesh intersection curves as light grey lines (all shading
    *  modes) — where two objects' geometry passes through each other. */
   intersections: boolean;
-  /** Wireframe mode: hide backfacing wires + wires behind geometry (depth-
-   *  primed hidden-line look) instead of the classic see-through wireframe. */
-  wireHiddenLine: boolean;
+  /**
+   * Hidden Line, PER shading mode. In wireframe mode, true = depth-primed
+   * hidden-line look, false = classic see-through wireframe. In the solid
+   * modes (matcap/studio/rendered), it drives the Wireframe OVERLAY and the
+   * edit CAGE: true = depth-tested (occluded wires/cage hidden), false = drawn
+   * with the depth test OFF so the full mesh / full orange cage shows through
+   * geometry. Also feeds edit-mode element pick + object select-through.
+   */
+  hiddenLine: Record<ShadingMode, boolean>;
 }
 
 /** Slider bounds — shared by the UI and the loader's clamping. */
@@ -47,10 +55,12 @@ export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 0.3 };
 export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 1 };
 export const AO_SAMPLES_RANGE = { min: 16, max: 96, default: 48 };
 
-// v3: Object (SDF) AO became the default estimator with Ray's picked look
-// (Baseline, radius 0.3, strength 1) — new key so stored v2 GTAO-era values
-// don't shadow the new defaults. (v2: half-res GTAO rebuild, 2026-07-08.)
-const STORAGE_KEY = 'vibe-shading-v3';
+// v4: Hidden Line went PER shading mode (was the single wireframe-only
+// `wireHiddenLine`). New key so a stored v3 blob's boolean can be migrated into
+// `.wireframe` without shadowing the new per-mode defaults.
+// (v3: Object SDF AO default; v2: half-res GTAO rebuild, 2026-07-08.)
+const STORAGE_KEY = 'vibe-shading-v4';
+const LEGACY_V3_KEY = 'vibe-shading-v3';
 
 export function defaultShadePrefs(): ShadePrefs {
   return {
@@ -62,30 +72,57 @@ export function defaultShadePrefs(): ShadePrefs {
     aoSamples: AO_SAMPLES_RANGE.default,
     wireOverlay: false,
     intersections: false,
-    wireHiddenLine: false,
+    // Hidden Line on in the solid modes (occlusion looks natural there),
+    // off in wireframe (classic see-through is the historical default).
+    hiddenLine: { matcap: true, studio: true, rendered: true, wireframe: false },
   };
 }
 
 /** The live singleton the Renderer + shading menu read/write. */
 export const shadePrefs: ShadePrefs = defaultShadePrefs();
 
-/** Read prefs from localStorage into the singleton (missing keys → defaults). */
+/** Read prefs from localStorage into the singleton (missing keys → defaults).
+ *  Prefers the v4 blob; falls back to a stored v3 blob and migrates its single
+ *  `wireHiddenLine` boolean into `hiddenLine.wireframe` (other modes default). */
 export function loadShadePrefs(): ShadePrefs {
   const d = defaultShadePrefs();
-  let stored: unknown = null;
+  let src: Record<string, unknown> = {};
+  let fromV3 = false;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw !== null) stored = JSON.parse(raw);
+    const rawV4 = localStorage.getItem(STORAGE_KEY);
+    if (rawV4 !== null) {
+      const p = JSON.parse(rawV4);
+      if (p && typeof p === 'object') src = p as Record<string, unknown>;
+    } else {
+      const rawV3 = localStorage.getItem(LEGACY_V3_KEY);
+      if (rawV3 !== null) {
+        const p = JSON.parse(rawV3);
+        if (p && typeof p === 'object') { src = p as Record<string, unknown>; fromV3 = true; }
+      }
+    }
   } catch {
-    stored = null;
+    src = {};
+    fromV3 = false;
   }
-  const src = (stored && typeof stored === 'object') ? stored as Record<string, unknown> : {};
   for (const key of Object.keys(d) as (keyof ShadePrefs)[]) {
+    if (key === 'hiddenLine') continue; // object-valued — handled below
     const want = typeof d[key];
     const v = src[key];
     (shadePrefs as unknown as Record<string, unknown>)[key] =
       typeof v === want && (want !== 'number' || Number.isFinite(v as number)) ? v : d[key];
   }
+  // Hidden Line: per-mode record. Start from defaults, overlay any valid stored
+  // booleans, then migrate a v3 blob's flat `wireHiddenLine` into `.wireframe`.
+  const hl: Record<ShadingMode, boolean> = { ...d.hiddenLine };
+  const storedHl = src.hiddenLine;
+  if (storedHl && typeof storedHl === 'object') {
+    for (const m of Object.keys(hl) as ShadingMode[]) {
+      const val = (storedHl as Record<string, unknown>)[m];
+      if (typeof val === 'boolean') hl[m] = val;
+    }
+  }
+  if (fromV3 && typeof src.wireHiddenLine === 'boolean') hl.wireframe = src.wireHiddenLine;
+  shadePrefs.hiddenLine = hl;
   // Clamp the numeric prefs into their slider ranges (stale/hand-edited storage).
   if (shadePrefs.aoMode !== 'screen' && shadePrefs.aoMode !== 'object') shadePrefs.aoMode = 'object';
   shadePrefs.aoMethod = Math.min(AO_METHODS.length - 1, Math.max(0, Math.round(shadePrefs.aoMethod)));

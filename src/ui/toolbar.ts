@@ -5,6 +5,16 @@ import { TranslateOperator } from '../tools/translate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { runIntersectTool } from '../tools/intersectTool';
+import { selectModeState, selectModeLabel } from '../tools/circleSelect';
+
+/** Icon per select mode for the dynamic Select button. */
+const SELECT_ICONS: Record<'box' | 'circle' | 'lasso', string> = {
+  box: '▭',
+  circle: '◯',
+  lasso: '➰',
+};
+/** Operator names the Select button lights up for. */
+const SELECT_OP_NAMES = new Set(['Box Select', 'Circle Select', 'Lasso Select']);
 
 /**
  * A tool-palette entry (UR3-1). One button in the viewport's left-edge strip.
@@ -76,6 +86,11 @@ export class Toolbar {
       { id: 'intersect', label: 'Intersect', icon: '∩', shortcut: '', modes: ['object'],
         run: () => runIntersectTool(this.scene, this.undo, this.setStatus) },
       // --- Edit mode ---------------------------------------------------------
+      // ONE Select button whose icon/label reflect the current select mode (W
+      // cycles Box/Circle/Lasso); clicking it starts that area select (same path
+      // as B). update() refreshes its face + active state per frame.
+      { id: 'select', label: 'Select', icon: SELECT_ICONS.box, shortcut: 'B', modes: ['edit'],
+        run: () => im.startAreaSelect() },
       { id: 'edit-move', label: 'Move', icon: '✥', shortcut: 'G', modes: ['edit'], opName: 'Move',
         run: () => im.startEditMove() },
       { id: 'edit-rotate', label: 'Rotate', icon: '⟳', shortcut: 'R', modes: ['edit'], opName: 'Rotate',
@@ -126,7 +141,17 @@ export class Toolbar {
     }
     const active = this.input.activeOperatorName;
     for (const { el, tool } of this.buttons) {
-      el.classList.toggle('active', !!tool.opName && tool.opName === active);
+      if (tool.id === 'select') {
+        // Dynamic Select button: face + tooltip track the current select mode,
+        // active highlight tracks any of the three area-select operators.
+        const mode = selectModeState.mode;
+        const icon = SELECT_ICONS[mode];
+        if (el.textContent !== icon) el.textContent = icon;
+        el.title = `Select: ${selectModeLabel(mode)} (B; W cycles)`;
+        el.classList.toggle('active', active !== null && SELECT_OP_NAMES.has(active));
+      } else {
+        el.classList.toggle('active', !!tool.opName && tool.opName === active);
+      }
     }
   }
 }

@@ -1092,4 +1092,147 @@ runE2e(async (t) => {
   t.check('P7-5: Shift+D in vert mode shows face-only status',
     await t.evaluate(`document.getElementById('status').textContent.includes('face mode only')`));
   t.check('P7-5: vert-mode Shift+D mutates nothing', (await dupVerts()) === 8);
+
+  // --- UR5-2: face-center dots ---
+  // Face mode on the cube → a dot at each face centroid. Selected face's dot is
+  // solid orange; we isolate it from the translucent orange fill by requiring a
+  // LOW blue channel (the blended fill keeps blue high, the solid dot does not).
+  await t.reload();
+  await t.sleep(200);
+  await t.key('Tab', 'Tab');
+  t.check('UR5-2: entered edit mode on the cube', (await mode()) === 'edit');
+  await t.key('3', 'Digit3');
+  t.check('UR5-2: face select mode', (await editSel('e.elementMode')) === 'face');
+  await t.evaluate('window.__app.shadePrefs.hiddenLine.matcap = true'); // surface pick
+  await t.click(ccX, ccY);
+  t.check('UR5-2: front face selected for the dot probe', (await editSel('e.faces.size')) === 1);
+
+  // Device-pixel location of the selected face's projected centroid.
+  const dotCentroid = await t.evaluate(`(() => {
+    const app = window.__app, obj = app.scene.editObject, cam = app.camera;
+    const c = app.renderer.ctx.gl.canvas;
+    const fid = [...app.scene.editMode.faces][0];
+    const f = obj.mesh.faces.get(fid);
+    let x=0,y=0,z=0; for (const v of f.verts){const p=obj.mesh.verts.get(v).co;x+=p.x;y+=p.y;z+=p.z;}
+    const n=f.verts.length;
+    const mvp = cam.projMatrix(c.width/c.height).mul(cam.viewMatrix()).mul(app.scene.worldMatrix(obj));
+    const nd = mvp.transformPoint({x:x/n,y:y/n,z:z/n});
+    return { px: Math.round((nd.x+1)/2*c.width), py: Math.round((nd.y+1)/2*c.height) };
+  })()`);
+  // Count solid-orange (dot) pixels in a small device-pixel window at that point.
+  const dotProbe = (px, py) => `(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const buf = new Uint8Array(4); let dot = 0;
+    for (let dx=-9;dx<=9;dx++) for (let dy=-9;dy<=9;dy++) {
+      const x=${px}+dx, y=${py}+dy;
+      if (x<0||y<0||x>=c.width||y>=c.height) continue;
+      gl.readPixels(x,y,1,1,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+      if (buf[0]>200 && buf[1]>=60 && buf[1]<=170 && buf[2]<90) dot++;
+    }
+    return dot;
+  })()`;
+  const dotOn = await t.evaluate(dotProbe(dotCentroid.px, dotCentroid.py));
+  t.check('UR5-2: solid-orange dot pixels at the selected face centroid', dotOn >= 4, `dot=${dotOn}`);
+  await t.screenshot('research/ur5-2-face-dots.png');
+
+  // Vert mode: no face dots (and no fill) → the orange dot vanishes at that pixel.
+  await t.key('1', 'Digit1');
+  const dotOffVert = await t.evaluate(dotProbe(dotCentroid.px, dotCentroid.py));
+  t.check('UR5-2: no face-center dot in vert mode', dotOffVert <= 1, `on=${dotOn} vert=${dotOffVert}`);
+
+  // --- UR5-2: proximity face picking (dot-nearest, through geometry) ---
+  // One mesh with two quads facing the camera: a large FRONT plane (closer,
+  // covers the view) and a small BACK plane (farther, centroid offset sideways).
+  // Built directly via fromData in world coords (importObj would rotate them
+  // through its Y-up→Z-up axis conversion). Object transform stays identity, so
+  // these world positions are the mesh's local coords unchanged.
+  await t.evaluate(`(() => {
+    const app = window.__app, s = app.scene, cam = app.camera;
+    const Mesh = s.objects[0].mesh.constructor; // grab EditableMesh before clearing
+    const add=(a,b)=>({x:a.x+b.x,y:a.y+b.y,z:a.z+b.z});
+    const scl=(a,k)=>({x:a.x*k,y:a.y*k,z:a.z*k});
+    const cross=(a,b)=>({x:a.y*b.z-a.z*b.y,y:a.z*b.x-a.x*b.z,z:a.x*b.y-a.y*b.x});
+    const norm=(a)=>{const L=Math.hypot(a.x,a.y,a.z);return{x:a.x/L,y:a.y/L,z:a.z/L};};
+    const eye=cam.eye, fwd=cam.forward, dist=cam.distance;
+    const right=norm(cross(fwd,{x:0,y:0,z:1})), up=norm(cross(right,fwd));
+    const quad=(cen,hs)=>[
+      add(add(cen,scl(right,-hs)),scl(up,-hs)),
+      add(add(cen,scl(right, hs)),scl(up,-hs)),
+      add(add(cen,scl(right, hs)),scl(up, hs)),
+      add(add(cen,scl(right,-hs)),scl(up, hs))];
+    const fq=quad(add(eye,scl(fwd,dist*0.5)), dist*0.45);
+    const bq=quad(add(add(eye,scl(fwd,dist*0.85)),scl(right,dist*0.12)), dist*0.06);
+    const vs=[...fq,...bq].map(v=>[v.x,v.y,v.z]);
+    if (s.editMode) s.exitEditMode();
+    for (const o of [...s.objects]) s.remove(o.id);
+    const mesh = Mesh.fromData(vs, [[0,1,2,3],[4,5,6,7]]);
+    const obj = s.add('Planes', mesh);
+    s.selectOnly(obj.id);
+  })()`);
+  t.check('UR5-2: two-plane mesh built (2 faces)',
+    (await t.evaluate('window.__app.scene.objects[0].mesh.faces.size')) === 2);
+
+  await t.key('Tab', 'Tab');
+  t.check('UR5-2: entered edit mode on the two-plane mesh', (await mode()) === 'edit');
+  await t.key('3', 'Digit3');
+
+  // Face ids (import order: front, back) + page-space centroid click points.
+  const planes = await t.evaluate(`(() => {
+    const app=window.__app, obj=app.scene.editObject, cam=app.camera;
+    const rect=document.querySelector('canvas').getBoundingClientRect();
+    const w=rect.width,h=rect.height;
+    const mvp=cam.projMatrix(w/h).mul(cam.viewMatrix()).mul(app.scene.worldMatrix(obj));
+    const cen=(fid)=>{const f=obj.mesh.faces.get(fid);let x=0,y=0,z=0;for(const v of f.verts){const p=obj.mesh.verts.get(v).co;x+=p.x;y+=p.y;z+=p.z;}const n=f.verts.length;const nd=mvp.transformPoint({x:x/n,y:y/n,z:z/n});return{x:(nd.x+1)/2*w,y:(1-nd.y)/2*h};};
+    const ids=[...obj.mesh.faces.keys()];
+    const fc=cen(ids[0]), bc=cen(ids[1]);
+    return { frontId:ids[0], backId:ids[1],
+      frontPage:{x:Math.round(rect.left+fc.x),y:Math.round(rect.top+fc.y)},
+      backPage:{x:Math.round(rect.left+bc.x),y:Math.round(rect.top+bc.y)},
+      sep:Math.hypot(fc.x-bc.x,fc.y-bc.y) };
+  })()`);
+  t.check('UR5-2: the two centroid dots are >40px apart on screen', planes.sep > 40, `sep=${planes.sep.toFixed(1)}`);
+
+  const selFaces = () => t.evaluate('[...window.__app.scene.editMode.faces]');
+  const clearSel = () => t.evaluate('window.__app.scene.editMode.clearSelection(); window.__app.scene.editMode.touch()');
+
+  // hiddenLine OFF → proximity path active; click near the BACK dot → BACK face.
+  await t.evaluate('window.__app.shadePrefs.hiddenLine.matcap = false');
+  t.check('UR5-2: proximity face picking is active with hiddenLine off',
+    await t.evaluate('window.__app.renderer.faceProximityPickActive()'));
+  await clearSel();
+  await t.click(planes.backPage.x, planes.backPage.y);
+  const selBack = await selFaces();
+  t.check('UR5-2: hiddenLine OFF, click near back dot selects the BACK face (through the front)',
+    selBack.length === 1 && selBack[0] === planes.backId, `sel=[${selBack}] back=${planes.backId}`);
+  await t.screenshot('research/ur5-2-proximity.png');
+
+  // hiddenLine ON → surface pick; SAME click hits the covering FRONT face.
+  await clearSel();
+  await t.evaluate('window.__app.shadePrefs.hiddenLine.matcap = true');
+  await t.click(planes.backPage.x, planes.backPage.y);
+  const selFront = await selFaces();
+  t.check('UR5-2: hiddenLine ON, same click selects the FRONT (occluding) face',
+    selFront.length === 1 && selFront[0] === planes.frontId, `sel=[${selFront}] front=${planes.frontId}`);
+
+  // Shift-click adds a second face in proximity mode (back, then + front).
+  await t.evaluate('window.__app.shadePrefs.hiddenLine.matcap = false');
+  await clearSel();
+  await t.click(planes.backPage.x, planes.backPage.y);
+  t.check('UR5-2: proximity click selects one face before shift-add',
+    (await selFaces()).length === 1);
+  await t.click(planes.frontPage.x, planes.frontPage.y, 'left', 8); // shift
+  const selBoth = await selFaces();
+  t.check('UR5-2: shift-click adds a second face in proximity mode',
+    selBoth.length === 2 && selBoth.includes(planes.frontId) && selBoth.includes(planes.backId),
+    `sel=[${selBoth}]`);
+  // Shift-clicking the front dot again toggles that face back off.
+  await t.click(planes.frontPage.x, planes.frontPage.y, 'left', 8);
+  const selToggled = await selFaces();
+  t.check('UR5-2: shift-click toggles the proximity face off again',
+    selToggled.length === 1 && selToggled[0] === planes.backId, `sel=[${selToggled}]`);
+
+  // Miss (click far from any dot) deselects all in proximity mode.
+  await t.click(emptyX, emptyY);
+  t.check('UR5-2: proximity miss deselects all', (await selFaces()).length === 0);
 });

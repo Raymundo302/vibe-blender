@@ -61,6 +61,8 @@ export class EditOverlayPass {
   private edgeVa: VertexArray | null = null;
   private vertVa: VertexArray | null = null;
   private fillVa: VertexArray | null = null;
+  // Face-center dots (face element mode only); null in vert/edge modes.
+  private dotVa: VertexArray | null = null;
   // UV seam edges, drawn Blender-red over the cage (P11-1). #d94a4a ≈ (0.851,
   // 0.290, 0.290). Rebuilt alongside the cage; null when the mesh has no seams.
   private seamVa: VertexArray | null = null;
@@ -78,6 +80,7 @@ export class EditOverlayPass {
     this.edgeVa?.dispose();
     this.vertVa?.dispose();
     this.fillVa?.dispose();
+    this.dotVa?.dispose();
     this.seamVa?.dispose();
 
     const data = editOverlayData(mesh, sel);
@@ -92,6 +95,13 @@ export class EditOverlayPass {
     this.fillVa =
       data.selFaceVertexCount > 0
         ? new VertexArray(this.gl, [{ location: 0, size: 3, data: data.selFacePositions }])
+        : null;
+    this.dotVa =
+      data.dotCount > 0
+        ? new VertexArray(this.gl, [
+            { location: 0, size: 3, data: data.dotPositions },
+            { location: 1, size: 3, data: data.dotColors },
+          ])
         : null;
 
     // Seam overlay: one red line segment per seam edge whose verts still exist.
@@ -185,6 +195,15 @@ export class EditOverlayPass {
       this.wireShader.setFloat('u_depthBias', 0.0015);
       this.wireShader.setFloat('u_pointSize', 6.0);
       this.vertVa!.draw(gl.POINTS);
+    }
+
+    // Face-center dots only in face mode (verts aren't drawn here, so no clash);
+    // smaller than vert points. Depth behavior follows the cage rule (the
+    // caller disables the depth test when hiddenLine is off for the mode).
+    if (sel.elementMode === 'face' && this.dotVa) {
+      this.wireShader.setFloat('u_depthBias', 0.0015);
+      this.wireShader.setFloat('u_pointSize', 4.5);
+      this.dotVa.draw(gl.POINTS);
     }
   }
 }

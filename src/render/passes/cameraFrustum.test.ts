@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cameraViewMatrix, cameraProjMatrix } from './cameraFrustumPass';
+import { cameraViewMatrix, cameraProjMatrix, cameraFrameProjMatrix } from './cameraFrustumPass';
 import { Scene } from '../../core/scene/Scene';
 import { cameraFovY, defaultCamera } from '../../core/scene/objectData';
 import { Mat4 } from '../../core/math/mat4';
@@ -64,5 +64,62 @@ describe('cameraProjMatrix', () => {
     const tele = cameraProjMatrix({ focalLength: 85, near: 0.1, far: 500 }, aspect);
     // m[5] = 1/tan(fovY/2): a narrower FOV (longer lens) makes it larger.
     expect(tele.m[5]).toBeGreaterThan(wide.m[5]);
+  });
+});
+
+describe('cameraFrameProjMatrix (UR5-5 letterbox)', () => {
+  const cam = defaultCamera();
+
+  // The through-camera projection scales a view-space point to NDC. For a point
+  // on the forward axis at distance d, its clip.x/clip.y are 0. To probe the
+  // horizontal/vertical scale we project a point offset in view X or Y.
+  const clip = (proj: Mat4, x: number, y: number, z: number) => {
+    const m = proj.m;
+    const cx = m[0] * x + m[4] * y + m[8] * z + m[12];
+    const cy = m[1] * x + m[5] * y + m[9] * z + m[13];
+    const cw = m[3] * x + m[7] * y + m[11] * z + m[15];
+    return { x: cx / cw, y: cy / cw };
+  };
+
+  it('a square render on a wide canvas: the frame projection matches the wide-canvas perspective inside the frame', () => {
+    // renderAspect 1 (square), canvas 2:1 (wide) → pillarbox. Inside the frame the
+    // vertical FOV is preserved and horizontal is squeezed into the centered square:
+    // this equals perspective(fovY, canvasAspect).
+    const frame = cameraFrameProjMatrix(cam, 1000, 1000, 2000, 1000);
+    const wideCanvas = cameraProjMatrix(cam, 2000 / 1000);
+    const p = new Vec3(0.3, 0.4, -5);
+    const a = clip(frame, p.x, p.y, p.z);
+    const b = clip(wideCanvas, p.x, p.y, p.z);
+    expect(a.x).toBeCloseTo(b.x, 5);
+    expect(a.y).toBeCloseTo(b.y, 5);
+  });
+
+  it('is NOT the same as the naive canvas-aspect projection for a square render (it must use the render aspect)', () => {
+    // The old (buggy) behavior used the CANVAS aspect for the projection AND drew
+    // full-canvas; here the frame projection differs from a naive square-canvas
+    // perspective because it letterboxes into a wide canvas.
+    const frame = cameraFrameProjMatrix(cam, 1000, 1000, 2000, 1000);
+    const naiveSquare = cameraProjMatrix(cam, 1); // pretends canvas is square
+    const p = new Vec3(0.3, 0, -5);
+    expect(clip(frame, p.x, p.y, p.z).x).not.toBeCloseTo(clip(naiveSquare, p.x, p.y, p.z).x, 3);
+  });
+
+  it('a wide render on a square canvas letterboxes (vertical FOV shrinks)', () => {
+    // renderAspect 2 (wide), canvas 1:1 (square) → letterbox top/bottom. The
+    // horizontal scale keeps the render-aspect perspective; vertical is squeezed.
+    const frame = cameraFrameProjMatrix(cam, 2000, 1000, 1000, 1000);
+    const renderProj = cameraProjMatrix(cam, 2); // render-aspect perspective
+    const p = new Vec3(0.3, 0.4, -5);
+    // Horizontal scale unchanged (sx = 1).
+    expect(clip(frame, p.x, p.y, p.z).x).toBeCloseTo(clip(renderProj, p.x, p.y, p.z).x, 5);
+    // Vertical squeezed by canvasAspect/renderAspect = 0.5.
+    expect(clip(frame, p.x, p.y, p.z).y).toBeCloseTo(clip(renderProj, p.x, p.y, p.z).y * 0.5, 5);
+  });
+
+  it('an object centered on the forward axis stays centered regardless of aspect', () => {
+    const frame = cameraFrameProjMatrix(cam, 1000, 1000, 2000, 1000);
+    const c = clip(frame, 0, 0, -5);
+    expect(c.x).toBeCloseTo(0, 6);
+    expect(c.y).toBeCloseTo(0, 6);
   });
 });

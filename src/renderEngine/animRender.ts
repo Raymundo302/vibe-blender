@@ -2,28 +2,86 @@ import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type { Renderer } from '../render/Renderer';
 import { applyAnimation } from '../core/anim/sampler';
+import { buildSnapshot } from './snapshot';
+import { prepareScene, renderSample } from './tracer';
+import { tonemapAccumToRgba } from './renderWindow';
 import './animRender.css';
 
 /**
- * P16-1 — Render Animation (🎞 / Ctrl+F12).
+ * P16-1 / UR5-3 — Render Animation (🎞 / Ctrl+F12).
  *
- * Loops the scene's frame range, poses each frame with applyAnimation, forces a
- * Rendered-mode renderer pass looking THROUGH the active camera, and captures
- * the viewport canvas per frame into one of two outputs:
- *   - WebM video: canvas.captureStream(0) + MediaRecorder, one requestFrame per
- *     rendered frame, spaced at 1/fps so the recorder timestamps at the target
- *     rate. → single .webm download.
- *   - PNG sequence: gl.readPixels each frame → an offscreen 2D canvas → toBlob,
- *     packed into a minimal STORE-only (no compression) ZIP (implemented below,
- *     CRC32 table) → single .zip download.
+ * Loops the scene's frame range, poses each frame with applyAnimation, and
+ * captures a final frame per frame from one of two ENGINES into one of three
+ * FORMATS:
  *
- * A small modal picks mode / fps / start / end and shows a progress bar + frame
- * counter + a working Cancel. Prior frameCurrent, playing state and shading mode
- * are restored when the run ends (completed OR cancelled).
+ * Engines:
+ *   - Viewport: forces a Rendered-mode renderer pass looking THROUGH the active
+ *     camera (the original P16-1 behavior, pixel-identical).
+ *   - Path Traced: reuses the EXISTING tracer (snapshot.ts + tracer.ts — the F12
+ *     path) headlessly, N samples-per-pixel per frame, WITHOUT opening the
+ *     Render Result window. The traced radiance is Reinhard+gamma mapped via the
+ *     same tonemapAccumToRgba() the render window uses.
  *
- * The pure helpers (frameCount, crc32, buildStoreZip) are exported for unit
- * tests; they touch no DOM.
+ * Formats:
+ *   - WebM / MP4 video: a single 2D "recording canvas" is the MediaRecorder
+ *     captureStream(0) source; BOTH engines draw their final frame onto it (the
+ *     viewport engine copies the GL canvas in, the tracer puts its RGBA in), one
+ *     requestFrame per frame spaced at 1/fps. MP4 is offered only when the
+ *     browser can record it (probeSupportedMp4). → single .webm / .mp4 download.
+ *   - PNG sequence: the "exact pixels" path — viewport uses gl.readPixels, the
+ *     tracer uses its RGBA buffer — each frame → toBlob → a STORE-only ZIP.
+ *
+ * A modal picks engine / samples / format / fps / start / end and shows a
+ * progress bar + `frame i/total · sample s/N` counter + a working Cancel that
+ * aborts mid-frame (the tracer sample loop checks the cancel flag between
+ * passes). Prior frameCurrent, playing state and shading mode are restored when
+ * the run ends (completed OR cancelled).
+ *
+ * The pure helpers (frameCount, crc32, buildStoreZip, seedForFrame,
+ * probeSupportedMp4) are exported for unit tests; they touch no DOM.
  */
+
+// ---------------------------------------------------------------------------
+// Path-traced per-frame seed (pure, unit-tested).
+// ---------------------------------------------------------------------------
+
+/** Base RNG seed the live F12 render uses (init.ts posts seed 0x1234567). */
+export const ANIM_SEED_BASE = 0x1234567;
+
+/**
+ * Per-frame tracer seed. The tracer is fully seeded, so a fixed base seed makes
+ * every frame draw IDENTICAL noise — a static shot would show frozen grain. We
+ * XOR the F12 base seed with the frame index times a large odd constant
+ * (different from the tracer's internal per-sample constant, 0x9e3779b1, to
+ * avoid structured correlation) so each frame decorrelates while staying fully
+ * deterministic: the same frame index always yields the same seed, hence the
+ * same image.
+ */
+export function seedForFrame(frame: number): number {
+  return (ANIM_SEED_BASE ^ (Math.floor(frame) * 0x85ebca6b)) >>> 0;
+}
+
+// ---------------------------------------------------------------------------
+// MP4 codec probe (pure, unit-tested with a stubbed isTypeSupported).
+// ---------------------------------------------------------------------------
+
+/**
+ * MP4 (H.264/AVC) recording MIME shortlist, most-specific first. Chrome's
+ * MediaRecorder accepts H.264 in an mp4 container only on some
+ * platforms/builds, so we probe a shortlist and use the first that works.
+ */
+export const MP4_MIME_CANDIDATES = [
+  'video/mp4;codecs=avc1.42E01E',
+  'video/mp4;codecs=avc1.640028',
+  'video/mp4;codecs=h264',
+  'video/mp4',
+];
+
+/** First supported MP4 MIME from the shortlist, or null if none work. */
+export function probeSupportedMp4(isSupported: (type: string) => boolean): string | null {
+  for (const c of MP4_MIME_CANDIDATES) if (isSupported(c)) return c;
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested — no DOM)
@@ -154,13 +212,28 @@ export function buildStoreZip(entries: ZipEntry[]): Uint8Array {
 // Render controller (DOM)
 // ---------------------------------------------------------------------------
 
-export type AnimRenderMode = 'webm' | 'png';
+/** Output format. 'webm'/'png' kept back-compatible with the P16-1 API. */
+export type AnimRenderMode = 'webm' | 'mp4' | 'png';
+/** Which engine produces each frame. */
+export type AnimEngine = 'viewport' | 'pathtraced';
 
 export interface AnimRenderOptions {
+  /** Output format. Default 'webm'. */
   mode: AnimRenderMode;
+  /** Rendering engine. Default 'viewport'. */
+  engine?: AnimEngine;
+  /** Path-traced samples per pixel per frame (clamped 8..1024). Default 64. */
+  samples?: number;
   start?: number;
   end?: number;
   fps?: number;
+  /**
+   * Path-traced output width/height override. Defaults to the viewport canvas
+   * size ("current output resolution"); used by e2e to trace a tiny canvas.
+   * Ignored by the viewport engine (which always uses the GL canvas size).
+   */
+  width?: number;
+  height?: number;
 }
 
 export interface AnimRenderContext {
@@ -183,7 +256,11 @@ export class AnimRender {
 
   // Modal DOM (built lazily on first open).
   private modal: HTMLDivElement | null = null;
-  private modeSel!: HTMLSelectElement;
+  private engineSel!: HTMLSelectElement;
+  private samplesLabel!: HTMLDivElement;
+  private samplesInput!: HTMLInputElement;
+  private formatSel!: HTMLSelectElement;
+  private hintEl!: HTMLDivElement;
   private fpsInput!: HTMLInputElement;
   private startInput!: HTMLInputElement;
   private endInput!: HTMLInputElement;
@@ -192,6 +269,8 @@ export class AnimRender {
   private progressFill!: HTMLDivElement;
   private counterEl!: HTMLDivElement;
   private msgEl!: HTMLDivElement;
+  /** MP4 MIME the modal probe found supported, or null (option hidden). */
+  private mp4Mime: string | null = null;
 
   constructor(private readonly ctx: AnimRenderContext) {
     // Ctrl+F12 toggles the modal. Registered in the CAPTURE phase and
@@ -223,6 +302,9 @@ export class AnimRender {
     this.fpsInput.value = String(s.fps);
     this.startInput.value = String(s.frameStart);
     this.endInput.value = String(s.frameEnd);
+    // Probe MP4 support fresh on every open, then repopulate the format menu.
+    this.refreshFormatOptions();
+    this.updateSamplesVisibility();
     this.setMessage('');
     this.setProgress(0, 0);
     this.ctx.host.appendChild(this.modal!);
@@ -248,17 +330,40 @@ export class AnimRender {
     const grid = document.createElement('div');
     grid.className = 'anim-render-grid';
 
-    this.modeSel = document.createElement('select');
-    this.modeSel.className = 'anim-render-input';
-    for (const [val, label] of [['webm', 'WebM video'], ['png', 'PNG sequence']] as const) {
+    // Engine: Viewport (current) | Path Traced.
+    this.engineSel = document.createElement('select');
+    this.engineSel.className = 'anim-render-input';
+    this.engineSel.dataset.testid = 'anim-engine';
+    for (const [val, label] of [['viewport', 'Viewport'], ['pathtraced', 'Path Traced']] as const) {
       const opt = document.createElement('option');
       opt.value = val;
       opt.textContent = label;
-      this.modeSel.appendChild(opt);
+      this.engineSel.appendChild(opt);
     }
-    grid.append(this.label('Mode'), this.modeSel);
+    this.engineSel.addEventListener('change', () => this.updateSamplesVisibility());
+    grid.append(this.label('Engine'), this.engineSel);
+
+    // Samples (path-traced only) — spp per frame.
+    this.samplesLabel = this.label('Samples');
+    this.samplesInput = this.numberInput(8, 1024);
+    this.samplesInput.value = '64';
+    this.samplesInput.dataset.testid = 'anim-samples';
+    grid.append(this.samplesLabel, this.samplesInput);
+
+    // Format: WebM (default) | MP4 (conditional) | PNG sequence.
+    this.formatSel = document.createElement('select');
+    this.formatSel.className = 'anim-render-input';
+    this.formatSel.dataset.testid = 'anim-format';
+    this.formatSel.addEventListener('change', () => this.updateHint());
+    grid.append(this.label('Format'), this.formatSel);
+
+    // PNG assembly hint (full-width row under Format; shown only for PNG).
+    this.hintEl = document.createElement('div');
+    this.hintEl.className = 'anim-render-hint';
+    grid.append(this.hintEl);
 
     this.fpsInput = this.numberInput(1, 240);
+    this.fpsInput.addEventListener('change', () => this.updateHint());
     grid.append(this.label('FPS'), this.fpsInput);
     this.startInput = this.numberInput(-100000, 100000);
     grid.append(this.label('Start'), this.startInput);
@@ -313,20 +418,64 @@ export class AnimRender {
     return el;
   }
 
+  /** Probe MP4 support and (re)populate the Format select. Runs at modal open. */
+  private refreshFormatOptions(): void {
+    this.mp4Mime =
+      typeof MediaRecorder !== 'undefined'
+        ? probeSupportedMp4((t) => MediaRecorder.isTypeSupported(t))
+        : null;
+    const sel = this.formatSel;
+    const prev = sel.value;
+    sel.textContent = '';
+    const opts: [string, string][] = [['webm', 'WebM']];
+    if (this.mp4Mime) opts.push(['mp4', 'MP4']);
+    opts.push(['png', 'PNG sequence']);
+    for (const [val, label] of opts) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+    sel.value = opts.some(([v]) => v === prev) ? prev : 'webm';
+    this.updateHint();
+  }
+
+  /** Show the Samples row only for the path-traced engine. */
+  private updateSamplesVisibility(): void {
+    const show = this.engineSel.value === 'pathtraced';
+    this.samplesLabel.style.display = show ? '' : 'none';
+    this.samplesInput.style.display = show ? '' : 'none';
+  }
+
+  /** Show the ffmpeg assembly hint only for the PNG-sequence format. */
+  private updateHint(): void {
+    if (!this.hintEl) return;
+    if (this.formatSel.value === 'png') {
+      const fps = Math.max(1, Math.round(Number(this.fpsInput.value) || 24));
+      this.hintEl.textContent = `PNG → assemble with: ffmpeg -framerate ${fps} -i frame_%04d.png out.mp4`;
+      this.hintEl.style.display = '';
+    } else {
+      this.hintEl.textContent = '';
+      this.hintEl.style.display = 'none';
+    }
+  }
+
   private async onRenderClick(): Promise<void> {
-    const mode = this.modeSel.value as AnimRenderMode;
+    const mode = this.formatSel.value as AnimRenderMode;
+    const engine = this.engineSel.value as AnimEngine;
+    const samples = Math.round(Number(this.samplesInput.value));
     const fps = Number(this.fpsInput.value);
     const start = Math.round(Number(this.startInput.value));
     const end = Math.round(Number(this.endInput.value));
     let blob: Blob | null = null;
     try {
-      blob = await this.render({ mode, fps, start, end });
+      blob = await this.render({ mode, engine, samples, fps, start, end });
     } catch (err) {
       this.setMessage((err as Error).message);
       return;
     }
     if (!blob) return; // cancelled
-    const ext = mode === 'webm' ? 'webm' : 'zip';
+    const ext = mode === 'png' ? 'zip' : mode; // webm | mp4 | zip
     this.download(blob, `animation.${ext}`);
     this.setMessage('Saved animation.' + ext);
   }
@@ -344,17 +493,28 @@ export class AnimRender {
     if (this.msgEl) this.msgEl.textContent = text;
   }
 
-  private setProgress(done: number, total: number): void {
+  /**
+   * Progress readout. `done` drives the bar (completed frames / total). When
+   * `sample`/`sampleTotal` are given (path-traced), `done` is the 1-based index
+   * of the frame currently rendering and the counter shows the sample sub-step.
+   */
+  private setProgress(done: number, total: number, sample?: number, sampleTotal?: number): void {
     if (!this.progressFill) return;
     const pct = total > 0 ? (done / total) * 100 : 0;
     this.progressFill.style.width = `${pct}%`;
-    this.counterEl.textContent = total > 0 ? `Frame ${done} / ${total}` : '';
+    if (total <= 0) { this.counterEl.textContent = ''; return; }
+    this.counterEl.textContent =
+      sample !== undefined && sampleTotal !== undefined
+        ? `Frame ${done} / ${total} · sample ${sample} / ${sampleTotal}`
+        : `Frame ${done} / ${total}`;
   }
 
   private setBusy(busy: boolean): void {
     if (!this.modal) return;
     this.renderBtn.disabled = busy;
-    this.modeSel.disabled = busy;
+    this.engineSel.disabled = busy;
+    this.samplesInput.disabled = busy;
+    this.formatSel.disabled = busy;
     this.fpsInput.disabled = busy;
     this.startInput.disabled = busy;
     this.endInput.disabled = busy;
@@ -383,14 +543,47 @@ export class AnimRender {
    */
   async render(opts: AnimRenderOptions): Promise<Blob | null> {
     if (this.running) throw new Error('A render is already in progress');
-    const { scene, renderer } = this.ctx;
+    const { scene, renderer, canvas } = this.ctx;
     const start = Math.round(opts.start ?? scene.frameStart);
     const end = Math.round(opts.end ?? scene.frameEnd);
     const fps = Math.max(1, Math.round(opts.fps ?? scene.fps));
+    const engine: AnimEngine = opts.engine ?? 'viewport';
+    const format: AnimRenderMode = opts.mode ?? 'webm';
+    const samples = Math.max(8, Math.min(1024, Math.round(opts.samples ?? 64)));
     if (start >= end) {
       this.setMessage('Start frame must be before End frame');
       this.ctx.setStatus('Render Animation: start must be < end');
       throw new Error('start must be < end');
+    }
+
+    // Output resolution (UR5-5): the path-traced engine renders at the scene's
+    // Output resolution (scene.renderSettings) — the real render frame — unless an
+    // explicit override is passed (e2e). The viewport engine reads the live GL
+    // canvas via readPixels, so it is physically bound to the canvas size (it
+    // cannot exceed it without resizing the GL context); documented limitation.
+    const rs = scene.renderSettings;
+    const tw = engine === 'pathtraced' ? Math.round(opts.width ?? rs.width) : canvas.width;
+    const th = engine === 'pathtraced' ? Math.round(opts.height ?? rs.height) : canvas.height;
+
+    // Resolve the video MIME up front so an unsupported format fails before we
+    // touch scene state.
+    let videoMime = '';
+    let blobType = '';
+    if (format !== 'png') {
+      if (format === 'mp4') {
+        const m = probeSupportedMp4((t) => MediaRecorder.isTypeSupported(t));
+        if (!m) {
+          this.setMessage('MP4 recording is not supported in this browser');
+          throw new Error('MP4 recording not supported');
+        }
+        videoMime = m;
+        blobType = 'video/mp4';
+      } else {
+        videoMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+          ? 'video/webm;codecs=vp9'
+          : 'video/webm';
+        blobType = 'video/webm';
+      }
     }
 
     const saved = {
@@ -412,8 +605,8 @@ export class AnimRender {
     const total = frameCount(start, end);
     let blob: Blob | null = null;
     try {
-      if (opts.mode === 'webm') blob = await this.renderWebm(start, end, fps, total);
-      else blob = await this.renderPng(start, end, total);
+      if (format === 'png') blob = await this.renderPngSeq(engine, start, end, total, samples, tw, th);
+      else blob = await this.renderVideo(engine, videoMime, blobType, start, end, fps, total, samples, tw, th);
     } finally {
       renderer.shadingMode = saved.shading;
       renderer.cameraViewId = saved.cameraViewId;
@@ -429,16 +622,56 @@ export class AnimRender {
       this.setMessage('Cancelled');
       return null;
     }
-    this.ctx.setStatus(`Rendered ${total} frames`);
+    this.ctx.setStatus(`Rendered ${total} frames (${engine})`);
     return blob;
   }
 
   /** Pose + draw one frame in Rendered mode through the active camera. */
-  private drawFrame(frame: number): void {
+  private drawViewportFrame(frame: number): void {
     const { scene, renderer, camera } = this.ctx;
     scene.frameCurrent = frame;
     applyAnimation(scene, frame);
     renderer.render(scene, camera);
+  }
+
+  /**
+   * Pose + path-trace one frame headlessly to `samples` spp, reusing the F12
+   * tracer (buildSnapshot + prepareScene + renderSample) WITHOUT opening the
+   * Render Result window. Returns a top-left-origin RGBA byte buffer (w*h*4), or
+   * null if cancelled mid-frame. The sample loop checks the cancel flag between
+   * passes and yields on a time budget so Cancel + progress stay live.
+   */
+  private async tracePathFrame(
+    frame: number,
+    w: number,
+    h: number,
+    samples: number,
+    onSample: (s: number, total: number) => void,
+  ): Promise<Uint8ClampedArray | null> {
+    const { scene, camera } = this.ctx;
+    scene.frameCurrent = frame;
+    applyAnimation(scene, frame);
+    const traceScene = prepareScene(buildSnapshot(scene, camera));
+    const accum = new Float32Array(w * h * 3);
+    const seed = seedForFrame(frame);
+    let lastYield = performance.now();
+    for (let s = 0; s < samples; s++) {
+      if (this.cancelled) return null;
+      renderSample(traceScene, accum, w, h, s, seed);
+      const now = performance.now();
+      // Yield (and refresh progress) on a ~30ms cadence so the click/timeout
+      // that sets `cancelled` can run and the counter updates; always report the
+      // final pass. renderSample is a full-frame pass, so this aborts mid-frame.
+      if (now - lastYield > 30 || s === samples - 1) {
+        onSample(s + 1, samples);
+        await raf();
+        lastYield = performance.now();
+      }
+    }
+    if (this.cancelled) return null;
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    tonemapAccumToRgba(accum, samples, rgba);
+    return rgba;
   }
 
   /**
@@ -450,10 +683,7 @@ export class AnimRender {
     const { gl, canvas } = this.ctx;
     const w = canvas.width;
     const h = canvas.height;
-    if (!this.scratch) this.scratch = document.createElement('canvas');
-    if (this.scratch.width !== w) this.scratch.width = w;
-    if (this.scratch.height !== h) this.scratch.height = h;
-    const c2d = this.scratch.getContext('2d')!;
+    const c2d = this.scratchCanvas(w, h);
     const pixels = new Uint8ClampedArray(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     // GL origin is bottom-left; flip rows into an ImageData (top-left origin).
@@ -465,17 +695,51 @@ export class AnimRender {
       img.data.set(pixels.subarray(src, src + rowBytes), dst);
     }
     c2d.putImageData(img, 0, 0);
-    return this.scratch;
+    return this.scratch!;
   }
 
-  private async renderPng(start: number, end: number, total: number): Promise<Blob | null> {
+  /** Put a top-left-origin RGBA buffer onto the reused scratch canvas. */
+  private putRgbaToScratch(rgba: Uint8ClampedArray, w: number, h: number): HTMLCanvasElement {
+    const c2d = this.scratchCanvas(w, h);
+    const img = c2d.createImageData(w, h);
+    img.data.set(rgba);
+    c2d.putImageData(img, 0, 0);
+    return this.scratch!;
+  }
+
+  /** The reused scratch 2D canvas, sized to w×h. */
+  private scratchCanvas(w: number, h: number): CanvasRenderingContext2D {
+    if (!this.scratch) this.scratch = document.createElement('canvas');
+    if (this.scratch.width !== w) this.scratch.width = w;
+    if (this.scratch.height !== h) this.scratch.height = h;
+    return this.scratch.getContext('2d')!;
+  }
+
+  /** PNG-sequence sink — the "exact pixels" path for both engines. */
+  private async renderPngSeq(
+    engine: AnimEngine,
+    start: number,
+    end: number,
+    total: number,
+    samples: number,
+    tw: number,
+    th: number,
+  ): Promise<Blob | null> {
     const entries: ZipEntry[] = [];
     let done = 0;
     for (let f = start; f <= end; f++) {
       if (this.cancelled) break;
-      this.drawFrame(f);
-      const scratch = this.captureToScratch();
-      const png = await new Promise<Blob | null>((res) => scratch.toBlob((b) => res(b), 'image/png'));
+      let source: HTMLCanvasElement;
+      if (engine === 'viewport') {
+        this.drawViewportFrame(f);
+        source = this.captureToScratch();
+      } else {
+        const rgba = await this.tracePathFrame(f, tw, th, samples, (s, n) =>
+          this.setProgress(done + 1, total, s, n));
+        if (this.cancelled || !rgba) break;
+        source = this.putRgbaToScratch(rgba, tw, th);
+      }
+      const png = await new Promise<Blob | null>((res) => source.toBlob((b) => res(b), 'image/png'));
       if (this.cancelled) break;
       if (png) {
         const buf = new Uint8Array(await png.arrayBuffer());
@@ -489,35 +753,82 @@ export class AnimRender {
     return new Blob([buildStoreZip(entries) as unknown as BlobPart], { type: 'application/zip' });
   }
 
-  private async renderWebm(start: number, end: number, fps: number, total: number): Promise<Blob | null> {
-    const { canvas } = this.ctx;
-    const stream = canvas.captureStream(0);
+  /**
+   * Video sink (WebM / MP4). A single 2D "recording canvas" is the captureStream
+   * source; both engines feed it. The viewport engine draws live (fast) and
+   * spaces requestFrame by 1/fps. The tracer engine is two-phase: trace every
+   * frame first (each takes far longer than 1/fps), then replay them onto the
+   * recording canvas at 1/fps so the recorder timestamps at the target rate
+   * instead of at trace speed.
+   */
+  private async renderVideo(
+    engine: AnimEngine,
+    videoMime: string,
+    blobType: string,
+    start: number,
+    end: number,
+    fps: number,
+    total: number,
+    samples: number,
+    tw: number,
+    th: number,
+  ): Promise<Blob | null> {
+    const recCanvas = document.createElement('canvas');
+    recCanvas.width = tw;
+    recCanvas.height = th;
+    const recCtx = recCanvas.getContext('2d')!;
+    const stream = recCanvas.captureStream(0);
     const track = stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack;
-    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-      ? 'video/webm;codecs=vp9'
-      : 'video/webm';
     const chunks: Blob[] = [];
-    const recorder = new MediaRecorder(stream, { mimeType: mime });
+    const recorder = new MediaRecorder(stream, { mimeType: videoMime });
     recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
     const stopped = new Promise<void>((res) => { recorder.onstop = () => res(); });
     recorder.start();
-
-    let done = 0;
     const frameMs = 1000 / fps;
-    for (let f = start; f <= end; f++) {
-      if (this.cancelled) break;
-      this.drawFrame(f);
-      // requestFrame captures the current drawing buffer synchronously.
-      track.requestFrame();
-      done++;
-      this.setProgress(done, total);
-      await delay(frameMs);
+
+    if (engine === 'viewport') {
+      let done = 0;
+      for (let f = start; f <= end; f++) {
+        if (this.cancelled) break;
+        this.drawViewportFrame(f);
+        // Copy the viewport canvas into the recording canvas (drawImage keeps
+        // the correct top-left orientation — no manual flip needed).
+        recCtx.drawImage(this.ctx.canvas, 0, 0);
+        track.requestFrame();
+        done++;
+        this.setProgress(done, total);
+        await delay(frameMs);
+      }
+    } else {
+      // Phase 1: trace every frame into memory.
+      const frames: Uint8ClampedArray[] = [];
+      let done = 0;
+      for (let f = start; f <= end; f++) {
+        if (this.cancelled) break;
+        const rgba = await this.tracePathFrame(f, tw, th, samples, (s, n) =>
+          this.setProgress(done + 1, total, s, n));
+        if (this.cancelled || !rgba) break;
+        frames.push(rgba);
+        done++;
+        this.setProgress(done, total);
+      }
+      // Phase 2: replay at the target fps.
+      if (!this.cancelled) {
+        const replayImg = recCtx.createImageData(tw, th);
+        for (let i = 0; i < frames.length; i++) {
+          if (this.cancelled) break;
+          replayImg.data.set(frames[i]);
+          recCtx.putImageData(replayImg, 0, 0);
+          track.requestFrame();
+          await delay(frameMs);
+        }
+      }
     }
 
     recorder.stop();
     await stopped;
     track.stop();
     if (this.cancelled) return null;
-    return new Blob(chunks, { type: 'video/webm' });
+    return new Blob(chunks, { type: blobType });
   }
 }

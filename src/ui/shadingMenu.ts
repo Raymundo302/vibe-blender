@@ -73,6 +73,7 @@ export class ShadingMenu {
     heading.textContent = 'Viewport Shading';
     root.appendChild(heading);
 
+    const modeRows: { mode: ShadingMode; row: HTMLButtonElement; icon: string; label: string }[] = [];
     for (const m of MODES) {
       const row = document.createElement('button');
       row.className = `topbar-menu-row shading-menu-mode${this.renderer.shadingMode === m.mode ? " topbar-menu-active" : ""}`;
@@ -81,8 +82,16 @@ export class ShadingMenu {
       row.addEventListener('click', () => {
         this.renderer.shadingMode = m.mode;
         this.update();
-        this.close();
+        // Keep the popover open so the options (esp. the per-mode Hidden Line
+        // checkbox) can be seen updating for the newly selected mode.
+        for (const r of modeRows) {
+          const on = r.mode === m.mode;
+          r.row.classList.toggle('topbar-menu-active', on);
+          r.row.textContent = `${on ? '●' : '○'}  ${r.icon} ${r.label}`;
+        }
+        resyncHiddenLine();
       });
+      modeRows.push({ mode: m.mode, row, icon: m.icon, label: m.label });
       root.appendChild(row);
     }
 
@@ -95,8 +104,14 @@ export class ShadingMenu {
       { key: 'ao', label: 'Ambient Occlusion', title: 'Screen-space AO in the shaded modes' },
       { key: 'wireOverlay', label: 'Wireframe', title: 'Draw the edge wireframe over the shaded modes' },
       { key: 'intersections', label: 'Intersections', title: 'Draw light grey lines where meshes intersect each other' },
-      { key: 'wireHiddenLine', label: 'Hidden Line (wireframe)', title: 'In Wireframe mode: hide backfacing wires and wires behind geometry' },
+      { key: 'hiddenLine', label: 'Hidden Line', title: 'Hide wires + cage behind geometry (off = see the full mesh through it). Per shading mode.' },
     ];
+    // The Hidden Line checkbox is PER shading mode: it shows/sets the CURRENT
+    // mode's entry and is re-synced when the mode changes (mode-row clicks).
+    let hiddenLineBox: HTMLInputElement | null = null;
+    const resyncHiddenLine = (): void => {
+      if (hiddenLineBox) hiddenLineBox.checked = shadePrefs.hiddenLine[this.renderer.shadingMode];
+    };
     // AO's tuner sliders + selects live right under its checkbox and grey out with it.
     const aoSliders: HTMLInputElement[] = [];
     const aoSelects: { el: HTMLSelectElement; row: HTMLElement }[] = [];
@@ -148,12 +163,22 @@ export class ShadingMenu {
       row.title = c.title;
       const box = document.createElement('input');
       box.type = 'checkbox';
-      box.checked = shadePrefs[c.key] as boolean;
-      box.addEventListener('change', () => {
-        (shadePrefs[c.key] as boolean) = box.checked;
-        saveShadePrefs();
-        if (c.key === 'ao') syncSliderState();
-      });
+      if (c.key === 'hiddenLine') {
+        // Per-mode: reflect + write the CURRENT shading mode's entry.
+        hiddenLineBox = box;
+        box.checked = shadePrefs.hiddenLine[this.renderer.shadingMode];
+        box.addEventListener('change', () => {
+          shadePrefs.hiddenLine[this.renderer.shadingMode] = box.checked;
+          saveShadePrefs();
+        });
+      } else {
+        box.checked = shadePrefs[c.key] as boolean;
+        box.addEventListener('change', () => {
+          (shadePrefs[c.key] as boolean) = box.checked;
+          saveShadePrefs();
+          if (c.key === 'ao') syncSliderState();
+        });
+      }
       const text = document.createElement('span');
       text.textContent = c.label;
       row.append(box, text);

@@ -98,6 +98,11 @@ export interface SnapCamera {
    * center distance; the render window UI can override it.
    */
   focusDistance?: number;
+  /**
+   * True when focusDistance was locked by the active camera's Focus Object
+   * (UR5-7): the manual render-window focus field must NOT override it.
+   */
+  focusFromObject?: boolean;
 }
 
 /**
@@ -342,6 +347,21 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   // opened aperture focuses on the subject by default (aperture stays 0/pinhole
   // until the user opens it in the render window).
   camera.focusDistance = focusDistanceForBounds(tris, camera);
+  // Focus Object override (UR5-7): when the active camera targets an object, the
+  // focus distance is the camera→target world-origin distance, evaluated per
+  // render/frame (buildSnapshot is called per frame by Ctrl+F12), so an animated
+  // target refocuses. Stale/deleted targets fall back to the bounds seed.
+  const activeCam = scene.activeCamera;
+  const focusId = activeCam?.camera?.focusObjectId;
+  if (activeCam && focusId !== undefined && focusId !== null) {
+    const target = scene.get(focusId);
+    if (target) {
+      const camPos = scene.worldTransformOf(activeCam).position;
+      const targetPos = scene.worldTransformOf(target).position;
+      camera.focusDistance = camPos.distanceTo(targetPos);
+      camera.focusFromObject = true;
+    }
+  }
 
   const w = scene.world;
   const world: SnapWorld = {
@@ -391,16 +411,19 @@ function focusDistanceForBounds(tris: Float32Array, cam: SnapCamera): number {
 function buildCamera(scene: Scene, orbit: OrbitCamera): SnapCamera {
   const active = scene.activeCamera;
   if (active && active.camera) {
-    const t = scene.worldTransformOf(active);
-    const fwd = objectForward(t); // local -Z
-    const up = t.rotation.rotate(Vec3.Y);
-    const right = t.rotation.rotate(Vec3.X);
-    const p = t.position;
+    // Central world matrix (UR5-7): applies the Look At orientation when set, so
+    // the tracer aims exactly like the through-camera viewport view. Basis =
+    // matrix columns (col-major): right/up/back; forward = -back.
+    const m = scene.cameraWorldMatrix(active).m;
+    const right = [m[0], m[1], m[2]] as [number, number, number];
+    const up = [m[4], m[5], m[6]] as [number, number, number];
+    const forward = [-m[8], -m[9], -m[10]] as [number, number, number];
+    const position = [m[12], m[13], m[14]] as [number, number, number];
     return {
-      position: [p.x, p.y, p.z],
-      forward: [fwd.x, fwd.y, fwd.z],
-      right: [right.x, right.y, right.z],
-      up: [up.x, up.y, up.z],
+      position,
+      forward,
+      right,
+      up,
       fovY: cameraFovY(active.camera),
     };
   }

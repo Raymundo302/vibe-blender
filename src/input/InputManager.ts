@@ -11,6 +11,9 @@ import { NormalMoveOperator } from '../tools/normalMove';
 import { ExtrudeOperator } from '../tools/extrude';
 import { InsetOperator } from '../tools/inset';
 import { BoxSelectOperator, invertSelection } from '../tools/boxSelect';
+import { CircleSelectOperator, circleSelectState } from '../tools/circleSelect';
+import { LassoSelectOperator } from '../tools/lassoSelect';
+import { selectModeState, cycleSelectMode, selectModeLabel, type SelectMode } from '../tools/circleSelect';
 import { LoopCutOperator } from '../tools/loopCut';
 import { KnifeOperator } from '../tools/knife';
 import { BevelOperator } from '../tools/bevel';
@@ -341,6 +344,12 @@ export class InputManager {
   /** Non-null while a box-select operator is active; its LMB drag defines the
    *  rect, so pointerdown anchors (not confirms) and pointerup confirms. */
   private boxSelectOp: BoxSelectOperator | null = null;
+  /** Non-null while a circle-select operator is active; LMB press starts a paint
+   *  stroke and release ends the stroke (the tool stays modal until Esc/Enter/RMB). */
+  private circleSelectOp: CircleSelectOperator | null = null;
+  /** Non-null while a lasso-select operator is active; its LMB drag draws the
+   *  freehand loop and release applies + commits one undo entry. */
+  private lassoSelectOp: LassoSelectOperator | null = null;
   /** Non-null while the knife operator is active; its LMB clicks add polyline
    *  points (rather than confirming), and a double-click / Enter confirms. */
   private knifeOp: KnifeOperator | null = null;
@@ -649,6 +658,39 @@ export class InputManager {
     this.startOperator(new LoopCutOperator(this.renderer));
   }
 
+  /**
+   * B — "start area select". The persistent select mode (Box / Circle / Lasso,
+   * cycled by W) decides the SHAPE: B always starts an area select, the mode
+   * picks which one. Also invoked by the toolbar Select button. Edit mode only.
+   */
+  startAreaSelect(): void {
+    if (!this.ctx.scene.editMode) return;
+    const parent = this.canvas.parentElement as HTMLElement;
+    if (selectModeState.mode === 'circle') {
+      const op = new CircleSelectOperator(parent);
+      this.startOperator(op, false);
+      if (this.activeOp === op) this.circleSelectOp = op;
+    } else if (selectModeState.mode === 'lasso') {
+      const op = new LassoSelectOperator(parent);
+      this.startOperator(op, false);
+      if (this.activeOp === op) this.lassoSelectOp = op;
+    } else {
+      const op = new BoxSelectOperator(parent);
+      this.startOperator(op, false);
+      if (this.activeOp === op) this.boxSelectOp = op;
+    }
+  }
+
+  /** The current app-level select mode (for the toolbar Select button poll). */
+  get selectMode(): SelectMode {
+    return selectModeState.mode;
+  }
+
+  /** Circle-select brush radius in CSS px (for e2e state checks). */
+  get circleSelectRadius(): number {
+    return circleSelectState.radius;
+  }
+
   /** Edit-mode K: knife (with the same double-click-tracking setup the key does). */
   startKnife(): void {
     const op = new KnifeOperator(this.canvas.parentElement as HTMLElement);
@@ -698,6 +740,8 @@ export class InputManager {
     else this.activeOp.cancel(this.ctx);
     this.activeOp = null;
     this.boxSelectOp = null;
+    this.circleSelectOp = null;
+    this.lassoSelectOp = null;
     this.knifeOp = null;
     this.renderer.gizmoVisible = true;
     this.renderer.axisIndicator = null;
@@ -720,6 +764,22 @@ export class InputManager {
           this.knifeOp.addPoint(this.pointer);
           this.lastKnifeClick = now;
         }
+        e.preventDefault();
+        return;
+      }
+      // Circle select's LMB press starts a paint stroke (Ctrl → deselect); the
+      // tool stays modal after release, so this never confirms.
+      if (this.circleSelectOp && e.button === 0) {
+        this.circleSelectOp.beginPaint(e.ctrlKey);
+        this.circleSelectOp.onPointerMove(this.ctx, this.pointer); // paint immediately
+        this.canvas.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        return;
+      }
+      // Lasso select's LMB press starts the freehand loop; release applies it.
+      if (this.lassoSelectOp && e.button === 0) {
+        this.lassoSelectOp.begin(this.pointer);
+        this.canvas.setPointerCapture(e.pointerId);
         e.preventDefault();
         return;
       }
@@ -916,6 +976,14 @@ export class InputManager {
         // Releasing a sculpt stroke confirms it (one undo entry per stroke).
         this.sculptStroke = false;
         this.endOperator(true);
+      } else if (this.circleSelectOp) {
+        // Releasing a circle paint stroke ends the stroke only — the tool stays
+        // modal for more strokes (Esc/Enter/RMB ends + commits it).
+        this.circleSelectOp.endPaint();
+      } else if (this.lassoSelectOp && this.lassoSelectOp.drawing) {
+        // Releasing the lasso drag closes the loop and applies it (Shift → extend).
+        this.lassoSelectOp.setExtend(e.shiftKey);
+        this.endOperator(true);
       } else if (this.boxSelectOp && this.boxSelectOp.anchored) {
         // Releasing the box-select drag applies the selection (Shift → remove).
         this.boxSelectOp.setSubtract(e.shiftKey);
@@ -927,6 +995,12 @@ export class InputManager {
 
   private onWheel(e: WheelEvent): void {
     e.preventDefault();
+    // Circle select: the wheel grows/shrinks the brush radius (5–200) instead of
+    // zooming the camera.
+    if (this.circleSelectOp) {
+      this.circleSelectOp.adjustRadius(e.deltaY);
+      return;
+    }
     // While a proportional-editing G/R/S modal is running, the wheel adjusts the
     // falloff radius instead of zooming the camera (narrow, guarded hook — any
     // other state falls through to the normal camera zoom).
@@ -1314,6 +1388,23 @@ export class InputManager {
   private pickElementAt(shift: boolean): void {
     const sel = this.ctx.scene.editMode;
     if (!sel || !this.ctx.scene.editObject) return;
+
+    // Proximity face picking: when Hidden Line is off for the current shading
+    // mode and we're in face mode, pick the face whose projected centroid dot
+    // is nearest the click (through geometry, 40 CSS px radius). Shift toggles.
+    if (sel.elementMode === 'face' && this.renderer.faceProximityPickActive()) {
+      const fid = this.renderer.pickFaceByProximity(
+        this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
+      if (fid === null) {
+        if (!shift) sel.clearSelection();
+        return;
+      }
+      if (shift) { if (!sel.faces.delete(fid)) sel.faces.add(fid); }
+      else { sel.faces.clear(); sel.faces.add(fid); }
+      sel.touch();
+      return;
+    }
+
     const hit = this.renderer.pickElement(this.ctx.scene, this.ctx.camera, this.pointer.x, this.pointer.y);
     if (hit === null) {
       if (!shift) sel.clearSelection();
@@ -1533,13 +1624,21 @@ export class InputManager {
       this.startBevel();
       return;
     }
-    // B: box select. Starts a modal operator whose next LMB drag draws the rect;
-    // inside elements are added to (Shift at release: removed from) the selection.
+    // W: cycle the app-level select mode (Box → Circle → Lasso → Box). B then
+    // starts whatever kind of area select the mode names.
+    if (key === 'w' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      const mode = cycleSelectMode();
+      this.ctx.setStatus(`Select: ${selectModeLabel(mode)}`);
+      return;
+    }
+    // B: start area select. The shape (box / circle / lasso) is decided by the
+    // current select mode (W cycles it). Box adds inside elements to (Shift at
+    // release: removes from) the selection; circle paints; lasso replaces
+    // (Shift: extends).
     if (key === 'b' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
-      const op = new BoxSelectOperator(this.canvas.parentElement as HTMLElement);
-      this.startOperator(op, false);
-      if (this.activeOp === op) this.boxSelectOp = op;
+      this.startAreaSelect();
       return;
     }
     // Ctrl+I: invert the current-mode selection.

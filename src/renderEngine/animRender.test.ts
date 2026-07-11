@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { crc32, frameCount, buildStoreZip } from './animRender';
+import {
+  crc32,
+  frameCount,
+  buildStoreZip,
+  seedForFrame,
+  ANIM_SEED_BASE,
+  probeSupportedMp4,
+  MP4_MIME_CANDIDATES,
+} from './animRender';
 
 describe('frameCount (inclusive range)', () => {
   it('counts both endpoints', () => {
@@ -73,5 +81,46 @@ describe('buildStoreZip', () => {
   it('is deterministic (same input → identical bytes)', () => {
     const e = [{ name: 'x', data: enc.encode('same') }];
     expect(Array.from(buildStoreZip(e))).toEqual(Array.from(buildStoreZip(e)));
+  });
+});
+
+describe('seedForFrame (per-frame tracer seed)', () => {
+  it('is deterministic (same frame → same seed)', () => {
+    expect(seedForFrame(7)).toBe(seedForFrame(7));
+    expect(seedForFrame(7.9)).toBe(seedForFrame(7)); // floors the frame
+  });
+  it('differs between adjacent frames (static shots decorrelate)', () => {
+    expect(seedForFrame(1)).not.toBe(seedForFrame(2));
+    expect(seedForFrame(0)).not.toBe(seedForFrame(1));
+    expect(seedForFrame(100)).not.toBe(seedForFrame(101));
+  });
+  it('returns an unsigned 32-bit integer', () => {
+    for (const f of [0, 1, 42, 250, 9999]) {
+      const s = seedForFrame(f);
+      expect(s).toBe(s >>> 0);
+      expect(Number.isInteger(s)).toBe(true);
+    }
+  });
+  it('is anchored to the F12 base seed (frame 0 = base)', () => {
+    // frame 0 → base ^ 0 = base, so the first frame matches the live F12 look.
+    expect(seedForFrame(0)).toBe(ANIM_SEED_BASE >>> 0);
+  });
+});
+
+describe('probeSupportedMp4 (format shortlist)', () => {
+  it('returns the first supported candidate', () => {
+    const supported = new Set([MP4_MIME_CANDIDATES[2], MP4_MIME_CANDIDATES[3]]);
+    expect(probeSupportedMp4((t) => supported.has(t))).toBe(MP4_MIME_CANDIDATES[2]);
+  });
+  it('prefers the most-specific candidate when several are supported', () => {
+    expect(probeSupportedMp4(() => true)).toBe(MP4_MIME_CANDIDATES[0]);
+  });
+  it('returns null when nothing is supported (option hidden)', () => {
+    expect(probeSupportedMp4(() => false)).toBeNull();
+  });
+  it('probes the candidates in order, stopping at the first hit', () => {
+    const seen: string[] = [];
+    probeSupportedMp4((t) => { seen.push(t); return t === MP4_MIME_CANDIDATES[1]; });
+    expect(seen).toEqual([MP4_MIME_CANDIDATES[0], MP4_MIME_CANDIDATES[1]]);
   });
 });

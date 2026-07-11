@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Scene } from './Scene';
 import {
+  CAMERA_SPAWN_ROTATION,
   DEFAULT_MATERIAL,
   cameraFovY,
   defaultCamera,
@@ -25,6 +26,10 @@ describe('object kinds', () => {
     expect(light.mesh.verts.size).toBe(0);
     expect(cam.kind).toBe('camera');
     expect(cam.camera?.focalLength).toBe(50);
+    const empty = scene.addEmpty('Empty');
+    expect(empty.kind).toBe('empty');
+    expect(empty.empty?.displaySize).toBe(1);
+    expect(empty.mesh.verts.size).toBe(0);
   });
 
   it('refuses edit mode on lights and cameras', () => {
@@ -134,5 +139,23 @@ describe('camera math', () => {
   it('cameraFovY: 50mm on a 24mm-tall sensor ≈ 27°', () => {
     const fov = cameraFovY(defaultCamera());
     expect((fov * 180) / Math.PI).toBeCloseTo(27, 0);
+  });
+});
+
+describe('CAMERA_SPAWN_ROTATION (UR5-5 Part B)', () => {
+  it('re-aims local -Z toward world +Y (the horizon), not the floor', () => {
+    const localForward = new Vec3(0, 0, -1); // camera looks along local -Z
+    const aimed = CAMERA_SPAWN_ROTATION.rotate(localForward);
+    expect(aimed.equalsApprox(new Vec3(0, 1, 0))).toBe(true);
+  });
+
+  it('keeps local +Y along world +Z (up stays up)', () => {
+    const up = CAMERA_SPAWN_ROTATION.rotate(new Vec3(0, 1, 0));
+    expect(up.equalsApprox(new Vec3(0, 0, 1))).toBe(true);
+  });
+
+  it('objectForward of a spawn-rotated transform points at +Y', () => {
+    const t = new Transform(Vec3.ZERO, CAMERA_SPAWN_ROTATION);
+    expect(objectForward(t).equalsApprox(new Vec3(0, 1, 0))).toBe(true);
   });
 });

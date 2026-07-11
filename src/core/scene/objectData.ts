@@ -1,4 +1,5 @@
 import { Vec3 } from '../math/vec3';
+import { Quat } from '../math/quat';
 import type { Transform } from '../math/transform';
 
 /**
@@ -7,7 +8,7 @@ import type { Transform } from '../math/transform';
  * and the path tracer (P8-4) can consume these without touching the renderer.
  */
 
-export type ObjectKind = 'mesh' | 'light' | 'camera';
+export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty';
 
 export type LightType = 'point' | 'sun' | 'spot';
 
@@ -56,15 +57,73 @@ export interface CameraData {
    * view. Optional so pre-lock scenes/tests still parse (default false).
    */
   lockToView?: boolean;
+  /**
+   * Focus Object for depth-of-field (UR5-7). When set to a scene object id, the
+   * tracer's focus distance is overridden per render/frame by the distance from
+   * the camera's world position to the target's world origin (an animated target
+   * refocuses per frame). Manual focus distance applies when unset. Optional so
+   * old scenes/tests parse unchanged. Serialized as an OBJECT INDEX, not an id
+   * (the P8 rule): the field briefly HOLDS an index during load, then the loader
+   * remaps it to the rebuilt object's fresh id.
+   */
+  focusObjectId?: number;
+  /**
+   * Look At target (UR5-7). When set, the camera's world ORIENTATION is replaced
+   * by an aim-at-target basis (local -Z toward the target's world origin, up =
+   * world +Z), computed centrally in Scene.cameraWorldMatrix so every consumer
+   * agrees. Position still comes from the transform/parenting. Optional; absent
+   * → the camera uses its own rotation. Serialized as an OBJECT INDEX like
+   * focusObjectId.
+   */
+  lookAtId?: number;
 }
 
 export function defaultCamera(): CameraData {
   return { focalLength: 50, near: 0.1, far: 500, lockToView: false };
 }
 
+/**
+ * The rotation a fresh Shift+A camera spawns with (UR5-5, Part B). With identity
+ * rotation a camera looks along local -Z — in our Z-up world that points at the
+ * floor. This +90° about world X re-aims local -Z toward world +Y (the horizon)
+ * while keeping local +Y along world +Z (up), so Numpad0 through a new camera
+ * shows the horizon, not the ground. Applied where the add menu creates the
+ * object (addMenu.commitAdd), NOT inside Scene.addCamera — scene loads restore a
+ * saved transform and must not be double-rotated.
+ */
+export const CAMERA_SPAWN_ROTATION: Quat = Quat.fromAxisAngle(Vec3.X, Math.PI / 2);
+
+/** Empty object payload (UR5-7): a null object (rig/target helper) drawn as
+ *  plain axes. `displaySize` is the half-extent of the world-axis cross. */
+export interface EmptyData {
+  displaySize: number;
+}
+
+export function defaultEmpty(): EmptyData {
+  return { displaySize: 1 };
+}
+
+/**
+ * The single mm↔FOV convention for the whole app: a 36×24mm sensor, so the
+ * vertical half-height is 12mm. Both the through-camera projection (via
+ * `cameraFovY`) and the viewport-lens field (UR5-6, N-panel View tab) go through
+ * these two helpers so there is exactly ONE formula and ONE sensor constant.
+ */
+const SENSOR_HALF_HEIGHT_MM = 12;
+
+/** Vertical FOV (radians) from a focal length in mm. */
+export function focalLengthToFovY(focalMm: number): number {
+  return 2 * Math.atan(SENSOR_HALF_HEIGHT_MM / focalMm);
+}
+
+/** Focal length in mm from a vertical FOV (radians) — the exact inverse. */
+export function fovYToFocalLength(fovY: number): number {
+  return SENSOR_HALF_HEIGHT_MM / Math.tan(fovY / 2);
+}
+
 /** Vertical FOV (radians) from focal length: 24mm-tall sensor → half-height 12. */
 export function cameraFovY(cam: CameraData): number {
-  return 2 * Math.atan(12 / cam.focalLength);
+  return focalLengthToFovY(cam.focalLength);
 }
 
 /**
