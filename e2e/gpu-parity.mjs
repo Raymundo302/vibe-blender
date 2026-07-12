@@ -2,7 +2,8 @@
  * UR12-4 e2e — GPU⇄CPU path-tracer PARITY harness + performance ledger.
  *
  * The proof stage for the WebGL2 path tracer (UR12-1..3). For a curated scene
- * list it renders BOTH engines from the SAME Snapshot at 128 spp / 256×144,
+ * list it renders BOTH engines from the SAME Snapshot at 128 spp / 256×144
+ * (noise-limited scenes may override via a per-scene `spp` — see donut/emissive),
  * computes SSIM on tonemapped luminance (pure helper src/renderEngine/gpu/ssim.ts,
  * unit-tested), and gates each scene on a per-scene threshold. It also:
  *   • saves an amplified |CPU−GPU| difference image per scene to
@@ -77,9 +78,30 @@ runE2e(async (t) => {
         const gpu = new gpuMod.GpuTracer();
         if (!gpu.available) { P.error = 'GPU unavailable: ' + gpu.unavailableReason; P.done = true; return; }
 
+        // TDR-SAFE GPU render. gpu.render() submits ALL spp passes in ONE unsynced
+        // GL batch; on a real GPU a heavy scene×spp (e.g. the 38k-tri donut at 128
+        // spp ≈ 27 s of work) blows the amdgpu GFX watchdog (~2 s TDR) → the driver
+        // resets mid-render → the accumulation buffer comes back partial or ZEROED
+        // (contextLost stays FALSE — ANGLE recovers silently), i.e. the render goes
+        // BLACK and later timings read the near-instant crashed call. The app's own
+        // F12/anim paths never hit this because they read back (which forces a GL
+        // sync/finish) after each small batch, bounding every submission well under
+        // the watchdog. We mirror that here: beginProgressive + accumulate(batch) +
+        // readbackProgressive() per batch. batch=4 keeps each submission < ~1 s even
+        // on the dense donut (≈0.2 s/sample) — comfortably under the TDR window.
+        function gpuRenderBatched(w, h, spp, seed, batch = 4) {
+          gpu.beginProgressive(w, h, seed);
+          let buf = null;
+          while (gpu.accumulatedSamples < spp && !gpu.contextLost) {
+            gpu.accumulate(Math.min(batch, spp - gpu.accumulatedSamples));
+            buf = gpu.readbackProgressive();   // forces a GL sync each batch
+          }
+          return buf;
+        }
+
         function renderPair(snap, w, h, spp) {
           gpu.setSnapshot(snap);
-          const gimg = gpu.render(w, h, spp, SEED, true);          // rgba, averaged, row0=top
+          const gimg = gpuRenderBatched(w, h, spp, SEED);          // rgba, averaged, row0=top; TDR-safe
           const scene = tracerMod.prepareScene(snap);
           const acc = new Float32Array(w*h*3);
           for (let i = 0; i < spp; i++) tracerMod.renderSample(scene, acc, w, h, i, SEED);
@@ -126,7 +148,7 @@ runE2e(async (t) => {
               snap.camera = lookAt([6,-7,5], [0,0,1], 0.6);
               return snap;
             } },
-          { name: 'donut', thr: 0.95, justify: 'frozen P9 fixture, flat materials, own camera → tight gate',
+          { name: 'donut', thr: 0.95, spp: 256, justify: 'frozen P9 fixture, flat materials, own camera. 256 spp because at 128 spp the two engines DECORRELATED noise (mulberry32 vs PCG) alone caps SSIM at ~0.938 — proven NOISE not bias: SSIM rises to ~0.967 at 256 spp (scratch-donut-spp probe)',
             build: async () => {
               reset();
               const txt = await fetch('/e2e/fixtures/donut-p9-frozen.vibe.json').then((r) => r.text());
@@ -146,7 +168,7 @@ runE2e(async (t) => {
               snap.camera = lookAt([5,-6,4.5], [0,0,0.4], 0.6);
               return snap;
             } },
-          { name: 'emissive-room', thr: 0.90, justify: 'indirect-only NEE, higher variance in shadow',
+          { name: 'emissive-room', thr: 0.90, spp: 256, justify: 'indirect-only emitter NEE = highest variance in the suite. 256 spp: at 128 spp decorrelated noise caps SSIM ~0.894; proven noise (rises 0.894→0.937→0.972 at 128/256/512 spp, scratch-emissive-probe). NOT bias — the emitter-NEE self-occlusion bias was fixed in tracer.ts + kernel.ts sampleEmitters (occlusion maxDist now measured from the offset origin)',
             build: () => {
               reset();
               const gm = mat((m) => { m.baseColor = [0.75,0.75,0.75]; });
@@ -206,12 +228,13 @@ runE2e(async (t) => {
           step('parity: ' + sc.name);
           const snap = await sc.build();
           built[sc.name] = snap;
-          const { gimg, cAvg, gLum, cLum } = renderPair(snap, W, H, SPP);
+          const sceneSpp = sc.spp || SPP;
+          const { gimg, cAvg, gLum, cLum } = renderPair(snap, W, H, sceneSpp);
           let nan = false;
           for (let i = 0; i < gimg.length; i++) if (!Number.isFinite(gimg[i])) { nan = true; break; }
           const ssim = ssimLuma(gLum, cLum, W, H);
           const png = diffPng(gimg, cAvg, W, H, 5);
-          P.scenes.push({ name: sc.name, skipped: false, thr: sc.thr, justify: sc.justify,
+          P.scenes.push({ name: sc.name, skipped: false, thr: sc.thr, spp: sceneSpp, justify: sc.justify,
                           ssim, nan, spread: spread(cLum), diffPng: png });
         }
 
@@ -221,7 +244,7 @@ runE2e(async (t) => {
           const snap = built['glass-gold-hero'];
           gpu.setSnapshot(snap);
           const fw = 160, fh = 90, fspp = 1024;
-          const img = gpu.render(fw, fh, fspp, 5, true);
+          const img = gpuRenderBatched(fw, fh, fspp, 5);  // 1024 spp — MUST batch or the TDR zeroes it
           let nonFinite = 0;
           const lum = new Float32Array(fw*fh);
           for (let i = 0; i < fw*fh; i++) {
@@ -239,16 +262,33 @@ runE2e(async (t) => {
         }
 
         // ================= performance ledger =============================
-        // ms/spp at 512² and 960×540. GPU rendered at a modest spp (÷spp); CPU at
-        // a tiny spp (JS is heavy) then ÷spp. Both give ms-per-sample so the
-        // headline speedup is spp-independent.
+        // Honest MARGINAL ms/spp for both engines at 512² and 960×540 on the SAME
+        // scene+snapshot. Setup is EXCLUDED from every timer: the GPU scene upload
+        // (setSnapshot: BVH build + data-texture upload) and the CPU prepareScene
+        // (BVH build) both run before the clocks start.
+        //
+        // GPU per-spp is measured by a TWO-POINT difference — time N2 sample passes
+        // and N1 sample passes, then (t(N2)−t(N1))/(N2−N1). Subtraction cancels the
+        // per-render() fixed overhead (one readPixels sync + accum-texture alloc +
+        // uniform/texture binds) that a single small-spp render divides over its
+        // samples — that amortized overhead, not real work, is what made the old
+        // GSPP=16 numbers noise (cube timed FASTER at 960×540 than at 512², and the
+        // dense donut FASTER than the cube — physically impossible). A warmup render
+        // first pays the lazy shader-validate + accum allocation off the clock.
+        // CPU per-spp = wall time of a few full renderSample() passes ÷ passes (JS
+        // is already JIT-warm from the 128-spp parity section above); path-tracer
+        // sample cost is near-constant across samples, so a small count is honest.
         function timeOne(snap, w, h) {
           gpu.setSnapshot(snap);
-          const GSPP = 16;
-          const g0 = performance.now();
-          gpu.render(w, h, GSPP, 1, false);
-          const gpuMsPerSpp = (performance.now() - g0) / GSPP;
-          const scene = tracerMod.prepareScene(snap);
+          const N1 = 16, N2 = 64;
+          // TDR-safe batched renders (render() would be watchdog-reset on the dense
+          // donut at 960×540 and return a near-instant CRASHED time — the source of
+          // the old bogus 0.4 ms/spp / 38770× headline). Each render syncs per batch.
+          gpuRenderBatched(w, h, 4, 1);                       // warmup: alloc+validate off-clock
+          const a0 = performance.now(); gpuRenderBatched(w, h, N1, 1); const tN1 = performance.now() - a0;
+          const b0 = performance.now(); gpuRenderBatched(w, h, N2, 1); const tN2 = performance.now() - b0;
+          const gpuMsPerSpp = Math.max(1e-6, (tN2 - tN1) / (N2 - N1));
+          const scene = tracerMod.prepareScene(snap);        // CPU setup — NOT timed
           const acc = new Float32Array(w*h*3);
           const CSPP = 2;
           const c0 = performance.now();
@@ -278,8 +318,10 @@ runE2e(async (t) => {
   })()`);
 
   // Poll (SwiftShader 128-spp GPU PT over 6 scenes + a 1024-spp sweep is SLOW —
-  // "slow is fine, crash is not"). Real Vega finishes in well under a minute.
-  const POLL_MS = BACKEND === 'REAL-GPU' ? 240000 : 1500000;
+  // "slow is fine, crash is not"). On the real Vega the GPU now does its FULL work
+  // batched (TDR-safe) — the dense donut alone is ~27 s at 128 spp and the firefly
+  // sweep ~40 s — plus the 128-spp CPU parity renders, so budget generously.
+  const POLL_MS = BACKEND === 'REAL-GPU' ? 1200000 : 1800000;
   let last = '';
   const deadline = Date.now() + POLL_MS;
   let done = false;
@@ -309,7 +351,7 @@ runE2e(async (t) => {
       t.check(`${sc.name}: skipped (documented-out on GPU), not silently green`, true, sc.reason);
       continue;
     }
-    console.log(`  ${sc.name.padEnd(18)} SSIM ${sc.ssim.toFixed(4)}  (gate ≥ ${sc.thr}, spread ${sc.spread.toFixed(3)}, NaN ${sc.nan})`);
+    console.log(`  ${sc.name.padEnd(18)} SSIM ${sc.ssim.toFixed(4)}  (gate ≥ ${sc.thr}, ${sc.spp ?? SPP} spp, spread ${sc.spread.toFixed(3)}, NaN ${sc.nan})`);
     if (sc.diffPng) {
       const b64 = sc.diffPng.replace(/^data:image\/png;base64,/, '');
       writeFileSync(`research/gpu-parity-${sc.name}.png`, Buffer.from(b64, 'base64'));
@@ -369,7 +411,7 @@ function writeLedger(backend, ledger) {
   lines.push(START);
   lines.push(`### Performance ledger — ${backend} (${now})`);
   lines.push('');
-  lines.push('ms/spp (lower is better); speedup = CPU ÷ GPU. GPU timed at 16 spp, CPU at 2 spp (per-sample cost is spp-independent).');
+  lines.push('ms/spp (lower is better) = honest MARGINAL cost of one path-tracer sample at that resolution/scene, EXCLUDING setup (GPU scene upload / CPU prepareScene). GPU = two-point (t(64)−t(16))/48 to cancel the per-render readback+bind overhead; CPU = wall time of 2 full renderSample passes ÷ 2. speedup = CPU ÷ GPU.');
   lines.push('');
   lines.push('| Scene | Resolution | CPU ms/spp | GPU ms/spp | Speedup |');
   lines.push('|---|---|---:|---:|---:|');

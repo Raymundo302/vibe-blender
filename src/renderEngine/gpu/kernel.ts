@@ -385,8 +385,13 @@ vec3 sampleEmitters(vec3 P, vec3 N, vec3 albedo, vec3 offN) {
   if (cosSurf <= 0.0) return vec3(0.0);
   float cosLight = abs(-dot(L, en));
   if (cosLight <= 0.0) return vec3(0.0);
+  // maxDist measured FROM the offset origin so the emitter triangle sits exactly
+  // at t = occDist and is excluded by traceAny()'s (maxDist − EPS) margin — never
+  // self-shadowing. Mirrors tracer.ts sampleEmitters (the offset-vs-un-offset
+  // maxDist bug that zeroed direct emitter NEE). Estimator uses P-based dist/d2.
   vec3 so = P + offN * EPS;
-  if (traceAny(so, L, dist)) return vec3(0.0);
+  float occDist = length(sp - so);
+  if (traceAny(so, L, occDist)) return vec3(0.0);
   float G = (cosSurf * cosLight) / max(d2, 1e-6);
   float k = (G * uEmitTotalArea) / PI;
   return albedo * radiance * k;

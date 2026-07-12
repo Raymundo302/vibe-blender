@@ -881,9 +881,18 @@ export function sampleEmitters(
   const onx = offN ? offN[0] : nx;
   const ony = offN ? offN[1] : ny;
   const onz = offN ? offN[2] : nz;
-  // Shadow ray toward the point; the emitter triangle itself sits at t≈dist and
-  // is excluded by occluded()'s (maxDist - EPS) margin, so it never self-shadows.
-  if (root && occluded(root, tris, px + onx * EPS, py + ony * EPS, pz + onz * EPS, lx, ly, lz, dist)) {
+  // Shadow ray toward the point. The ray ORIGIN is offset by EPS along the
+  // normal, so its maxDist must be measured FROM THAT OFFSET ORIGIN — using the
+  // un-offset `dist` puts the emitter triangle at t ≈ dist − offset·L, which
+  // (amplified by 1/cosθ at grazing) drops just inside occluded()'s (maxDist −
+  // EPS) margin and falsely self-shadows EVERY emitter-NEE sample (killed all
+  // direct emitter lighting). Measuring from the offset origin keeps the emitter
+  // exactly at t = occDist so the −EPS margin excludes it, while real occluders
+  // in between are still caught. The ESTIMATOR (dist, d2, cosSurf, k) is left
+  // computed from the true point P, so lit samples are numerically unchanged.
+  const sox = px + onx * EPS, soy = py + ony * EPS, soz = pz + onz * EPS;
+  const occDist = Math.hypot(sx - sox, sy - soy, sz - soz);
+  if (root && occluded(root, tris, sox, soy, soz, lx, ly, lz, occDist)) {
     return;
   }
   const ro = e * 3;
