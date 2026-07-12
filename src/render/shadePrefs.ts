@@ -21,7 +21,26 @@ export const AO_METHODS: { label: string; desc: string }[] = [
   { label: 'Exp-weighted', desc: 'Taps packed near the surface with exponential weights — soft contact falloff' },
 ];
 
+/** Rendered-mode sub-choice (UR15-1). */
+export type RenderedMode = 'live' | 'ray';
+/** Viewport raytraced engine (UR15-1). */
+export type RayEngine = 'gpu' | 'cpu';
+
 export interface ShadePrefs {
+  /**
+   * Rendered-mode sub-choice (UR15-1, Blender-Cycles-style viewport render):
+   * 'live' = the current rasterized RenderedPass (Cook-Torrance, unchanged);
+   * 'ray' = the REAL path tracer progressively accumulating in the viewport.
+   * Only meaningful when shadingMode === 'rendered'. Default 'live' (so every
+   * existing behavior / screenshot is bit-identical out of the box).
+   */
+  renderedMode: RenderedMode;
+  /**
+   * Raytraced-viewport engine (UR15-1): 'gpu' = the WebGL2 fragment-shader tracer
+   * (UR12), 'cpu' = the main-thread tracer. Default 'gpu'; the viewport ray driver
+   * auto-downgrades to 'cpu' when the GPU probe fails (tooltip reason in the menu).
+   */
+  rayEngine: RayEngine;
   /** Screen-space ambient occlusion in the solid shaded modes (not wireframe). */
   ao: boolean;
   /** Which AO estimator drives the pass. */
@@ -95,13 +114,19 @@ export const WIRE_MAX_PX_RANGE = { min: 1, max: 8, default: 3.5 };
 // (v5: wireColor/proximity/ribbon-width/intersectColor + disclosure state.
 // v4: Hidden Line per shading mode. v3: Object SDF AO default. v2: half-res
 // GTAO rebuild, 2026-07-08.)
-const STORAGE_KEY = 'vibe-shading-v6';
+// v7: added renderedMode / rayEngine (the Rendered → Live | Raytraced sub-choice,
+// UR15-1). New key so a stored v6 blob loads its values plus the new ray defaults
+// (and the v6→v5→v4→v3 chain still applies when only an older blob exists).
+const STORAGE_KEY = 'vibe-shading-v7';
+const LEGACY_V6_KEY = 'vibe-shading-v6';
 const LEGACY_V5_KEY = 'vibe-shading-v5';
 const LEGACY_V4_KEY = 'vibe-shading-v4';
 const LEGACY_V3_KEY = 'vibe-shading-v3';
 
 export function defaultShadePrefs(): ShadePrefs {
   return {
+    renderedMode: 'live',   // the rasterized rendered pass — bit-identical default
+    rayEngine: 'gpu',       // prefer the GPU tracer; downgrades to cpu when probed unavailable
     ao: false,
     aoMode: 'object',   // Ray's SDF technique is the house default (2026-07-09)
     aoMethod: 0,        // Baseline — his preferred estimator from the prototype
@@ -149,11 +174,16 @@ export function loadShadePrefs(): ShadePrefs {
   let src: Record<string, unknown> = {};
   let fromV3 = false;
   try {
-    const rawV6 = localStorage.getItem(STORAGE_KEY);
+    const rawV7 = localStorage.getItem(STORAGE_KEY);
+    const rawV6 = localStorage.getItem(LEGACY_V6_KEY);
     const rawV5 = localStorage.getItem(LEGACY_V5_KEY);
     const rawV4 = localStorage.getItem(LEGACY_V4_KEY);
     const rawV3 = localStorage.getItem(LEGACY_V3_KEY);
-    if (rawV6 !== null) {
+    if (rawV7 !== null) {
+      const p = JSON.parse(rawV7);
+      if (p && typeof p === 'object') src = p as Record<string, unknown>;
+    } else if (rawV6 !== null) {
+      // v6 blob: its values load directly; the new v7 ray fields take defaults.
       const p = JSON.parse(rawV6);
       if (p && typeof p === 'object') src = p as Record<string, unknown>;
     } else if (rawV5 !== null) {
@@ -207,6 +237,9 @@ export function loadShadePrefs(): ShadePrefs {
   }
   if (fromV3 && typeof src.wireHiddenLine === 'boolean') hl.wireframe = src.wireHiddenLine;
   shadePrefs.hiddenLine = hl;
+  // UR15-1 string unions — reject anything that isn't a known value.
+  if (shadePrefs.renderedMode !== 'live' && shadePrefs.renderedMode !== 'ray') shadePrefs.renderedMode = 'live';
+  if (shadePrefs.rayEngine !== 'gpu' && shadePrefs.rayEngine !== 'cpu') shadePrefs.rayEngine = 'gpu';
   // Clamp the numeric prefs into their slider ranges (stale/hand-edited storage).
   if (shadePrefs.aoMode !== 'screen' && shadePrefs.aoMode !== 'object') shadePrefs.aoMode = 'object';
   shadePrefs.aoMethod = Math.min(AO_METHODS.length - 1, Math.max(0, Math.round(shadePrefs.aoMethod)));

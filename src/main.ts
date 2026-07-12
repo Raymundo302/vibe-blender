@@ -427,6 +427,14 @@ topbar.mountTabs(workspaces.createTabs());
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
   input: inputManager,
   htmlDriver,
+  // UR15-1 viewport raytraced-mode handle for e2e: sample count + engine + probe.
+  viewportRay: {
+    spp: () => renderer.viewportRay.spp,
+    engine: () => renderer.viewportRay.engine,
+    converged: () => renderer.viewportRay.converged,
+    gpuAvailable: () => renderer.viewportRay.gpuAvailable,
+    gpuReason: () => renderer.viewportRay.gpuReason,
+  },
   // UR8-2 text handle for e2e: force a synchronous mesh rebuild (no RAF wait)
   // and apply-a-frame-then-sync (for keyed text.thickness scrub checks).
   text: {

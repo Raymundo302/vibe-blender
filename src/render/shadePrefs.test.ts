@@ -12,6 +12,7 @@ class MemoryStorage {
 }
 (globalThis as unknown as { localStorage: MemoryStorage }).localStorage = new MemoryStorage();
 
+const V7 = 'vibe-shading-v7';
 const V6 = 'vibe-shading-v6';
 const V5 = 'vibe-shading-v5';
 const V4 = 'vibe-shading-v4';
@@ -19,6 +20,7 @@ const V3 = 'vibe-shading-v3';
 
 // The full default shape (kept in one place so the shape assertions stay short).
 const DEFAULTS = {
+  renderedMode: 'live', rayEngine: 'gpu',
   ao: false, aoMode: 'object', aoMethod: 0, aoRadius: 0.3, aoStrength: 1, aoSamples: 48,
   cavity: false, cavityRidge: 1, cavityValley: 1,
   wireOverlay: false, wireColor: [0.05, 0.05, 0.06], wireProximity: true, wireMinPx: 0.6, wireMaxPx: 3.5,
@@ -225,6 +227,30 @@ describe('shadePrefs persistence', () => {
     expect(shadePrefs.cavity).toBe(false);
     expect(shadePrefs.cavityRidge).toBe(1);
     expect(shadePrefs.cavityValley).toBe(1);
+  });
+
+  it('MIGRATES a v6 blob → its values load + the new v7 ray fields take defaults', () => {
+    localStorage.setItem(V6, JSON.stringify({ cavity: true, cavityRidge: 2.1 }));
+    loadShadePrefs();
+    expect(shadePrefs.cavity).toBe(true);
+    expect(shadePrefs.cavityRidge).toBe(2.1);
+    // The new UR15-1 ray fields default (a v6 blob never had them).
+    expect(shadePrefs.renderedMode).toBe('live');
+    expect(shadePrefs.rayEngine).toBe('gpu');
+  });
+
+  it('round-trips renderedMode / rayEngine through a v7 blob', () => {
+    localStorage.setItem(V7, JSON.stringify({ renderedMode: 'ray', rayEngine: 'cpu' }));
+    loadShadePrefs();
+    expect(shadePrefs.renderedMode).toBe('ray');
+    expect(shadePrefs.rayEngine).toBe('cpu');
+  });
+
+  it('sanitizes an invalid stored renderedMode / rayEngine', () => {
+    localStorage.setItem(V7, JSON.stringify({ renderedMode: 'sideways', rayEngine: 'tpu' }));
+    loadShadePrefs();
+    expect(shadePrefs.renderedMode).toBe('live');
+    expect(shadePrefs.rayEngine).toBe('gpu');
   });
 
   it('round-trips cavity through a v6 blob', () => {

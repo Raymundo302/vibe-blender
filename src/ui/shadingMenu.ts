@@ -21,27 +21,43 @@ const MODES: { mode: ShadingMode; label: string; icon: string }[] = [
 export class ShadingMenu {
   readonly element: HTMLElement;
   private readonly button: HTMLButtonElement;
+  /** Viewport status chip — "Raytraced · GPU · 37 spp" while in Rendered → Ray. */
+  private readonly chip: HTMLSpanElement;
   private openRoot: HTMLDivElement | null = null;
   private lastLabel = '';
+  private lastChip = '';
 
   constructor(private readonly renderer: Renderer) {
     this.element = document.createElement('div');
     this.element.className = 'shading-menu';
+    this.chip = document.createElement('span');
+    this.chip.className = 'shading-ray-chip';
+    this.chip.dataset.testid = 'ray-chip';
+    this.chip.style.display = 'none';
     this.button = document.createElement('button');
     this.button.className = 'shading-menu-btn';
     this.button.title = 'Viewport shading (Z cycles)';
     this.button.addEventListener('click', () => this.toggle());
-    this.element.append(this.button);
+    this.element.append(this.chip, this.button);
     this.update();
   }
 
-  /** Called every frame by the app loop: keep the label on the current mode. */
+  /** Called every frame by the app loop: keep the label on the current mode and
+   *  refresh the raytraced status chip. */
   update(): void {
     const m = MODES.find((x) => x.mode === this.renderer.shadingMode) ?? MODES[0];
     const label = `${m.icon} ${m.label} ▾`;
     if (label !== this.lastLabel) {
       this.lastLabel = label;
       this.button.textContent = label;
+    }
+    const ray = this.renderer.viewportRay;
+    if (this.renderer.shadingMode === 'rendered' && shadePrefs.renderedMode === 'ray') {
+      const txt = `Raytraced · ${ray.engineLabel} · ${ray.spp} spp`;
+      if (txt !== this.lastChip) { this.lastChip = txt; this.chip.textContent = txt; }
+      if (this.chip.style.display === 'none') this.chip.style.display = '';
+    } else if (this.chip.style.display !== 'none') {
+      this.chip.style.display = 'none';
     }
   }
 
@@ -90,10 +106,88 @@ export class ShadingMenu {
           r.row.textContent = `${on ? '●' : '○'}  ${r.icon} ${r.label}`;
         }
         resyncHiddenLine();
+        resyncRenderedSub();
       });
       modeRows.push({ mode: m.mode, row, icon: m.icon, label: m.label });
       root.appendChild(row);
     }
+
+    // --- Rendered sub-choice (UR15-1): Mode Live|Raytraced + Engine GPU|CPU ---
+    // Shown beneath the mode rows only while Rendered is the active mode. A small
+    // select-row family matching the AO section bodies' indent.
+    const renderedSub = document.createElement('div');
+    renderedSub.className = 'shading-section-body shading-rendered-sub';
+    renderedSub.dataset.renderedSub = '';
+
+    const subSelectRow = (
+      label: string, dataAttr: string, title: string,
+      fill: (sel: HTMLSelectElement) => void, onChange: (sel: HTMLSelectElement) => void,
+    ): { row: HTMLElement; select: HTMLSelectElement } => {
+      const row = document.createElement('label');
+      row.className = 'shading-menu-select-row';
+      row.title = title;
+      const text = document.createElement('span');
+      text.className = 'shading-menu-slider-label';
+      text.textContent = label;
+      const select = document.createElement('select');
+      select.className = 'shading-menu-select';
+      select.dataset[dataAttr] = '';
+      fill(select);
+      select.addEventListener('change', () => { onChange(select); saveShadePrefs(); });
+      row.append(text, select);
+      return { row, select };
+    };
+
+    const modeChoice = subSelectRow('Mode', 'renderedMode',
+      'Rendered viewport: Live rasterized shading, or the real path tracer accumulating live',
+      (sel) => {
+        for (const [value, txt] of [['live', 'Live'], ['ray', 'Raytraced']]) {
+          const o = document.createElement('option');
+          o.value = value; o.textContent = txt;
+          sel.appendChild(o);
+        }
+        sel.value = shadePrefs.renderedMode;
+      },
+      (sel) => { shadePrefs.renderedMode = sel.value === 'ray' ? 'ray' : 'live'; resyncRenderedSub(); },
+    );
+    renderedSub.appendChild(modeChoice.row);
+
+    const engineChoice = subSelectRow('Engine', 'rayEngine',
+      'Path-tracer backend: GPU (WebGL2) or CPU (main thread)',
+      (sel) => {
+        // GPU listed first + default; CPU is the fallback.
+        for (const [value, txt] of [['gpu', 'GPU'], ['cpu', 'CPU']]) {
+          const o = document.createElement('option');
+          o.value = value; o.textContent = txt;
+          sel.appendChild(o);
+        }
+      },
+      (sel) => { shadePrefs.rayEngine = sel.value === 'cpu' ? 'cpu' : 'gpu'; },
+    );
+    renderedSub.appendChild(engineChoice.row);
+
+    const resyncRenderedSub = (): void => {
+      const isRendered = this.renderer.shadingMode === 'rendered';
+      renderedSub.style.display = isRendered ? '' : 'none';
+      if (!isRendered) return;
+      modeChoice.select.value = shadePrefs.renderedMode;
+      const isRay = shadePrefs.renderedMode === 'ray';
+      engineChoice.row.style.display = isRay ? '' : 'none';
+      // Reflect GPU availability: disable the GPU option with the probe reason,
+      // and auto-select CPU when the GPU probe fails (pref preserved).
+      const gpuAvail = this.renderer.viewportRay.gpuAvailable;
+      const gpuOpt = engineChoice.select.querySelector('option[value="gpu"]') as HTMLOptionElement | null;
+      if (gpuOpt) {
+        gpuOpt.disabled = !gpuAvail;
+        gpuOpt.title = gpuAvail ? '' : (this.renderer.viewportRay.gpuReason ?? 'GPU tracer unavailable');
+      }
+      engineChoice.select.title = gpuAvail
+        ? 'Path-tracer backend: GPU (WebGL2) or CPU (main thread)'
+        : `GPU tracer unavailable: ${this.renderer.viewportRay.gpuReason ?? 'unknown'} — using CPU`;
+      engineChoice.select.value = (!gpuAvail && shadePrefs.rayEngine === 'gpu') ? 'cpu' : shadePrefs.rayEngine;
+    };
+    root.appendChild(renderedSub);
+    resyncRenderedSub();
 
     const optHeading = document.createElement('div');
     optHeading.className = 'topbar-menu-heading';

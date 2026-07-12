@@ -676,7 +676,7 @@ runE2e(async (t) => {
   }
 
   // (5) Persistence — driving the selects (object, method 4) fires their change
-  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v6' (UR13-1
+  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v7' (UR13-1
   // bumped the storage key from v5).
   const persisted = await t.evaluate(`(() => {
     const modeSel = document.querySelector('select[data-shade-mode]');
@@ -685,9 +685,9 @@ runE2e(async (t) => {
       modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
       methodSel.value = '2'; methodSel.dispatchEvent(new Event('change'));
     }
-    return localStorage.getItem('vibe-shading-v6') || '';
+    return localStorage.getItem('vibe-shading-v7') || '';
   })()`);
-  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v6)',
+  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v7)',
     persisted.includes('"aoMode":"object"'), `stored=${persisted.slice(0, 90)}`);
 
   // Restore global state: close menu, revert selects to screen (re-persists),

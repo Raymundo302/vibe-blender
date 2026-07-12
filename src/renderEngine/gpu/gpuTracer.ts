@@ -37,8 +37,10 @@ import { VERTEX_SRC, fragmentSource } from './kernel';
 const FNV_OFFSET = 2166136261;
 const FNV_PRIME = 16777619;
 
-/** FNV-1a over the raw 32-bit words of a typed array (bit-exact, order-sensitive). */
-function hashBits(a: Float32Array | Int32Array): number {
+/** FNV-1a over the raw 32-bit words of a typed array (bit-exact, order-sensitive).
+ *  Exported so the viewport raytraced mode (UR15-1) can reuse EXACTLY the same
+ *  change-detection granularity for its accumulation-reset triggers. */
+export function hashBits(a: Float32Array | Int32Array): number {
   const u = new Uint32Array(a.buffer, a.byteOffset, a.length);
   let h = FNV_OFFSET >>> 0;
   for (let i = 0; i < u.length; i++) {
@@ -48,20 +50,20 @@ function hashBits(a: Float32Array | Int32Array): number {
   return h >>> 0;
 }
 
-function combine(h1: number, h2: number): number {
+export function combine(h1: number, h2: number): number {
   return (Math.imul(h1 ^ h2, FNV_PRIME) + 0x9e3779b1) >>> 0;
 }
 
 /** Geometry key: baked world tris + material assignment + UVs (drives BVH rebuild). */
-function geometrySignature(snap: Snapshot): number {
+export function geometrySignature(snap: Snapshot): number {
   let h = combine(hashBits(snap.tris), hashBits(snap.triMat));
   if (snap.triUV && snap.triUV.length) h = combine(h, hashBits(snap.triUV));
   return h >>> 0;
 }
-function materialsSignature(mats: SnapMaterial[]): number {
+export function materialsSignature(mats: SnapMaterial[]): number {
   return hashBits(packMaterials(mats).data);
 }
-function lightsSignature(lights: SnapLight[]): number {
+export function lightsSignature(lights: SnapLight[]): number {
   return hashBits(packLights(lights).data);
 }
 

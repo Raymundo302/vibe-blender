@@ -36,6 +36,8 @@ import { overlays } from './overlayPrefs';
 import { shadePrefs } from './shadePrefs';
 import { AoPass } from './passes/aoPass';
 import { GlarePass } from './passes/glarePass';
+import { RayPresentPass } from './passes/rayPresentPass';
+import { ViewportRay } from './viewportRay';
 import { SdfAtlas } from './sdfAtlas';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
@@ -115,6 +117,10 @@ export class Renderer {
   private readonly aoPass: AoPass;
   /** Camera Glare / bloom for the through-camera Rendered viewport (UR10-2 B). */
   private readonly glarePass: GlarePass;
+  /** Fullscreen present of the viewport raytraced accumulation (UR15-1). */
+  private readonly rayPresentPass: RayPresentPass;
+  /** Progressive path-trace driver for Rendered → Raytraced mode (UR15-1). */
+  readonly viewportRay = new ViewportRay();
   private readonly sdfAtlas: SdfAtlas;
   private readonly worldBgPass: WorldBackgroundPass;
   private readonly iconPass: IconPass;
@@ -215,6 +221,7 @@ export class Renderer {
     this.shadowPass = new ShadowPass(gl);
     this.aoPass = new AoPass(gl, canvas.width, canvas.height);
     this.glarePass = new GlarePass(gl, canvas.width, canvas.height);
+    this.rayPresentPass = new RayPresentPass(gl);
     this.sdfAtlas = new SdfAtlas(gl);
     this.worldBgPass = new WorldBackgroundPass(gl);
     this.iconPass = new IconPass(gl);
@@ -856,11 +863,19 @@ export class Renderer {
     const { view, proj, eye, fovY } = this.resolveView(scene, camera);
     const visible = scene.objects.filter((o) => scene.effectiveVisible(o));
 
-    // Camera Glare (UR10-2 Part B): in Rendered mode through a glare-enabled
+    // UR15-1: Rendered → Raytraced. The progressive path tracer accumulates into a
+    // fullscreen textured quad instead of the rasterized RenderedPass. Any other
+    // mode (or Rendered → Live, the default) keeps the driver inactive so it never
+    // ghosts on re-entry (the mode-switch reset trigger).
+    const rayMode = this.shadingMode === 'rendered' && shadePrefs.renderedMode === 'ray';
+    if (!rayMode) this.viewportRay.markInactive();
+
+    // Camera Glare (UR10-2 Part B): in Rendered LIVE mode through a glare-enabled
     // camera the whole frame is rendered into an HDR capture target (so emissive
     // surfaces keep their >1 values), then bright-pass + blurred + composited to
-    // the canvas at the end. null → straight-to-canvas (byte-identical).
-    const glare = this.shadingMode === 'rendered' ? this.viewportGlare(scene) : null;
+    // the canvas at the end. null → straight-to-canvas (byte-identical). In Ray
+    // mode glare is applied in the tracer's tonemap seam instead (like F12).
+    const glare = (this.shadingMode === 'rendered' && !rayMode) ? this.viewportGlare(scene) : null;
 
     // SSAO (shading-dropdown "Ambient Occlusion", solid modes only): depth
     // prepass of the visible meshes, then SSAO+blur into aoPass.texture. The
@@ -871,10 +886,12 @@ export class Renderer {
     // wireframe has no primed surface, so cavity is skipped there. The prepass
     // must run when EITHER AO or cavity needs it (generalized from the old
     // ao-only gate).
+    // AO/cavity are raster-solid-pass effects; the ray tracer has its own GI, so
+    // they're skipped entirely in ray mode (rayMode short-circuits the prepass).
     const solidMode = this.shadingMode !== 'wireframe';
-    const aoOn = shadePrefs.ao && solidMode;
+    const aoOn = shadePrefs.ao && solidMode && !rayMode;
     const cavityOn = shadePrefs.cavity
-      && (solidMode || shadePrefs.hiddenLine.wireframe);
+      && (solidMode || shadePrefs.hiddenLine.wireframe) && !rayMode;
     if (aoOn || cavityOn) {
       this.aoPass.beginDepth(view, proj);
       const aoMeshes: SceneObject[] = [];
@@ -936,7 +953,12 @@ export class Renderer {
       : [];
     const texturedSet = new Set(texturedObjs);
 
-    if (this.shadingMode === 'wireframe') {
+    if (rayMode) {
+      // UR15-1: advance the accumulation, present it fullscreen (LINEAR-upscaled
+      // while degraded), then prime the depth buffer with real geometry so the
+      // overlays below (grid/outline/cage/gizmo/guides) depth-test over the image.
+      this.renderRaytraced(scene, camera, view, proj, eye, fovY, visible);
+    } else if (this.shadingMode === 'wireframe') {
       // UR8-3 C: textured fill FIRST (depth on), wires drawn on top afterwards.
       this.drawTexturedObjects(scene, texturedObjs, view, proj, aoTex);
       // Hidden-line option: prime the depth buffer with the solid faces
@@ -1251,6 +1273,35 @@ export class Renderer {
     // the captured frame. Overlays (grid/gizmo) are LDR (< threshold) so they
     // don't bloom — only bright emissive surfaces do.
     if (glare) this.glarePass.composite(glare);
+  }
+
+  /**
+   * UR15-1 — Rendered → Raytraced solid pass. Ticks the progressive tracer (GPU
+   * or CPU per shadePrefs.rayEngine), draws its current accumulation as a
+   * fullscreen textured quad (LINEAR-upscaled from half-res while the camera
+   * moves), then primes the depth buffer with the real scene geometry (color mask
+   * off, reusing the wirePass prime shader) so the overlay tail in render()
+   * depth-tests correctly ON TOP of the traced image.
+   */
+  private renderRaytraced(scene: Scene, camera: OrbitCamera, view: Mat4, proj: Mat4, eye: Vec3, fovY: number, visible: SceneObject[]): void {
+    const { gl, canvas } = this.ctx;
+    const ok = this.viewportRay.tick(scene, camera, { view, eye, fovY }, canvas.width, canvas.height);
+    const img = this.viewportRay.imageBytes;
+    if (ok && img) {
+      this.rayPresentPass.draw(img, this.viewportRay.imageW, this.viewportRay.imageH, canvas.width, canvas.height);
+    }
+    // Depth prime: rasterize scene depth-only (color untouched) so overlays sit
+    // over the traced image with correct occlusion.
+    const viewProj = proj.mul(view);
+    this.wirePass.beginPrime();
+    gl.colorMask(false, false, false, false);
+    for (const obj of visible) {
+      if (obj.kind !== 'mesh'
+        && !(obj.kind === 'curve' && obj.evaluatedMesh(scene.modifierContext(obj)).faces.size > 0)) continue;
+      this.wirePass.primeObject(viewProj.mul(scene.worldMatrix(obj)));
+      this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+    }
+    gl.colorMask(true, true, true, true);
   }
 
   /** Gizmo placement (active object's position) + constant-screen-size scale (from
