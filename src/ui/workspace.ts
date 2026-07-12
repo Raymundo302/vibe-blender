@@ -12,6 +12,8 @@
  * that's how you move it around.
  */
 
+import { setTip } from './tooltip';
+
 export interface EditorInstance {
   element: HTMLElement;
   update(): void;
@@ -70,13 +72,13 @@ class Area {
     const fullBtn = document.createElement('button');
     fullBtn.className = 'wsp-area-full-btn';
     fullBtn.textContent = '⛶';
-    fullBtn.title = 'Toggle fullscreen (Ctrl+Space over the area)';
+    setTip(fullBtn, 'Toggle fullscreen', 'Ctrl+Space');
     fullBtn.addEventListener('click', () => manager.toggleFullscreen(this));
 
     const menuBtn = document.createElement('button');
     menuBtn.className = 'wsp-area-menu-btn';
     menuBtn.textContent = '⋮';
-    menuBtn.title = 'Area options';
+    setTip(menuBtn, 'Area options — split / close');
     menuBtn.addEventListener('click', (e) => { e.stopPropagation(); this.openMenu(menuBtn); });
 
     header.append(this.select, this.headerSlot, fullBtn, menuBtn);
@@ -93,7 +95,7 @@ class Area {
   private makeCorner(): HTMLElement {
     const corner = document.createElement('div');
     corner.className = 'wsp-area-corner';
-    corner.title = 'Drag to split / merge areas';
+    setTip(corner, 'Drag to split / merge areas');
     corner.addEventListener('pointerdown', (down) => {
       down.preventDefault();
       try { corner.setPointerCapture(down.pointerId); } catch { /* synthetic pointer */ }

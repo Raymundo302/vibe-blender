@@ -94,7 +94,9 @@ export class ShadingMenu {
       const row = document.createElement('button');
       row.className = `topbar-menu-row shading-menu-mode${this.renderer.shadingMode === m.mode ? " topbar-menu-active" : ""}`;
       row.dataset.mode = m.mode;
-      row.textContent = `${this.renderer.shadingMode === m.mode ? '●' : '○'}  ${m.icon} ${m.label}`;
+      // UR14-3 item 20: drop the ●/○ bullet — the icon + active-row highlight
+      // already carry the selected state (no double signifier).
+      row.textContent = `${m.icon} ${m.label}`;
       row.addEventListener('click', () => {
         this.renderer.shadingMode = m.mode;
         this.update();
@@ -103,7 +105,7 @@ export class ShadingMenu {
         for (const r of modeRows) {
           const on = r.mode === m.mode;
           r.row.classList.toggle('topbar-menu-active', on);
-          r.row.textContent = `${on ? '●' : '○'}  ${r.icon} ${r.label}`;
+          r.row.textContent = `${r.icon} ${r.label}`;
         }
         resyncHiddenLine();
         resyncRenderedSub();

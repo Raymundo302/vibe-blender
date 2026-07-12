@@ -25,6 +25,7 @@ import { recalcNormals } from '../core/mesh/ops/recalcNormals';
 import { edgeLoop, vertLoop, faceLoop } from '../core/mesh/ops/loopSelect';
 import { EditableMesh } from '../core/mesh/EditableMesh';
 import { frameSelection } from '../tools/frame';
+import { viewSnap } from '../ui/axisGizmo';
 import { cameraTransformFromView } from '../tools/cameraToView';
 import { OrbitCamera } from '../camera/OrbitCamera';
 import { objectForward } from '../core/scene/objectData';
@@ -124,6 +125,17 @@ export function poseChanged(a: Transform, b: Transform, eps = 1e-6): boolean {
   const dot = qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w;
   return Math.abs(dot) < 1 - eps;
 }
+
+/**
+ * Numpad view shortcuts (UR14-4). `axis` is the eye-side world direction for the
+ * PLAIN press (front/right/top); Ctrl negates it (back/left/bottom). Keyed by
+ * KeyboardEvent.code so the top-row digits (element/select-mode keys) are safe.
+ */
+const NUMPAD_VIEWS: Record<string, { axis: Vec3; pos: string; neg: string }> = {
+  Numpad1: { axis: new Vec3(0, -1, 0), pos: 'Front', neg: 'Back' },
+  Numpad3: { axis: new Vec3(1, 0, 0), pos: 'Right', neg: 'Left' },
+  Numpad7: { axis: new Vec3(0, 0, 1), pos: 'Top', neg: 'Bottom' },
+};
 
 /**
  * Blender-style duplicate name: strip a trailing `.NNN`, then pick the lowest
@@ -1362,6 +1374,36 @@ export class InputManager {
         this.ctx.setStatus('No active camera');
       }
       return;
+    }
+
+    // Numpad view shortcuts (UR14-4): 1 front (−Y), 3 right (+X), 7 top (+Z),
+    // Ctrl+1/3/7 = the negatives, 9 = opposite of the current view. All animate
+    // via the shared viewSnap (same tween the orientation gizmo uses). Works in
+    // both object and edit mode (placed before those branches). Uses e.code so
+    // the top-row number keys (element/select-mode toggles) are untouched.
+    // NOTE: Numpad 5 (ortho toggle) is intentionally NOT wired — this app is
+    // perspective-only (no orthographic projection mode), and adding one is
+    // explicitly out of scope for this batch (spec: "SKIP and document").
+    {
+      // Numpad digits are also how people TYPE NUMBERS — a focused DOM field
+      // owns them (same guard as the Space handler below; UR14-4 verify catch:
+      // without this, Numpad1 in the Frame field snapped the camera and ate
+      // the digit).
+      const active = document.activeElement;
+      const fieldFocused = !!active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
+      const view = NUMPAD_VIEWS[e.code];
+      if (!fieldFocused && view && !e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        viewSnap.requestAxis(this.ctx.camera, e.ctrlKey ? view.axis.negate() : view.axis);
+        this.ctx.setStatus(`View: ${e.ctrlKey ? view.neg : view.pos}`);
+        return;
+      }
+      if (!fieldFocused && e.code === 'Numpad9' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        viewSnap.requestOpposite(this.ctx.camera);
+        this.ctx.setStatus('View: Opposite');
+        return;
+      }
     }
 
     // Curve edit mode (UR11-1): its own small keymap (G / X / A / Esc). Sits

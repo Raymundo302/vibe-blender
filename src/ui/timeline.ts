@@ -167,6 +167,10 @@ export class TimelinePane {
   private readonly fpsLabel: HTMLElement;
   private readonly interpSelect: HTMLSelectElement;
   private readonly easingSelect: HTMLSelectElement;
+  /** UR14-3 item 23: the interp/easing field wrappers, hidden (progressive
+   *  disclosure) until a keyed selection makes them relevant. */
+  private readonly interpWrap: HTMLElement;
+  private readonly easingWrap: HTMLElement;
 
   private cssW = 0;
   private cssH = 0;
@@ -263,6 +267,7 @@ export class TimelinePane {
     // selected; choosing a mode applies ONE SetKeyInterpCommand.
     const interpWrap = document.createElement('label');
     interpWrap.className = 'timeline-field timeline-interp-field';
+    this.interpWrap = interpWrap;
     const interpSpan = document.createElement('span');
     interpSpan.textContent = 'Interp';
     this.interpSelect = document.createElement('select');
@@ -284,6 +289,7 @@ export class TimelinePane {
     // greyed out otherwise (same disabled mechanism as the interp select).
     const easingWrap = document.createElement('label');
     easingWrap.className = 'timeline-field timeline-easing-field';
+    this.easingWrap = easingWrap;
     const easingSpan = document.createElement('span');
     easingSpan.textContent = 'Easing';
     this.easingSelect = document.createElement('select');
@@ -932,14 +938,22 @@ export class TimelinePane {
     this.playBtn.textContent = this.scene.playing ? '⏸' : '▶';
     this.playBtn.classList.toggle('is-playing', this.scene.playing);
     this.fpsLabel.textContent = `${this.scene.fps} fps`;
-    // Interp picker is live only when keys are selected.
-    if (document.activeElement !== this.interpSelect) this.interpSelect.disabled = this.selection.size === 0;
+    // Interp picker: live only when keys are selected. UR14-3 item 23 —
+    // progressive disclosure: the whole field is HIDDEN (not just greyed) with
+    // nothing keyed, so the header isn't cluttered by an always-on control.
+    const hasSel = this.selection.size > 0;
+    if (document.activeElement !== this.interpSelect) {
+      this.interpSelect.disabled = !hasSel;
+      this.interpWrap.style.display = hasSel ? '' : 'none';
+    }
     // Easing picker: live only when keys are selected AND their interp is an
     // eased family; reflects the selection's easing when uniform, else Automatic.
+    // Hidden entirely unless it applies (progressive disclosure).
     if (document.activeElement !== this.easingSelect) {
-      const keys = this.selection.size > 0 ? this.selectedKeyframes() : [];
+      const keys = hasSel ? this.selectedKeyframes() : [];
       const eased = keys.length > 0 && keys.every((k) => EASED_INTERPS.includes(k.interp));
       this.easingSelect.disabled = !eased;
+      this.easingWrap.style.display = eased ? '' : 'none';
       let uniform: Easing = 'auto';
       if (eased) {
         const first = keys[0].easing ?? 'auto';
@@ -1070,6 +1084,15 @@ export class TimelinePane {
         this.drawDiamond(x, cy, d.filled, selected);
       }
     });
+
+    // Empty-state hint (UR14-1 item 4): nothing keyed/selected → point forward.
+    if (this.rows.length === 0) {
+      c.fillStyle = '#6f6f6f';
+      c.font = '11px sans-serif';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('Select an object and press I to key a pose', W / 2, RULER_H + (H - RULER_H) / 2);
+    }
 
     // Playhead.
     const px = this.xOf(this.scene.frameCurrent);

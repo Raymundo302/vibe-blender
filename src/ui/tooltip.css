@@ -1,0 +1,36 @@
+/*
+ * UR14-3 item 2 — shared instant styled tooltip. One document-level singleton
+ * shown ~150ms after the pointer settles on any element carrying `data-tip`
+ * (name) + optional `data-tip-key` (shortcut). Replaces the slow, tiny native
+ * `title` on toolbar / topbar icon buttons and area-header glyphs. Styled to
+ * match the app's dropdown popovers (topbar-menu / shading dropdown).
+ */
+.vb-tooltip {
+  position: fixed;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  padding: 4px 8px;
+  font: var(--vb-font, 12px/1.4 "Segoe UI", system-ui, sans-serif);
+  font-size: 11px;
+  color: var(--vb-text, #e4e4e4);
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.vb-tooltip-name { font-weight: 500; }
+.vb-tooltip-key {
+  font: inherit;
+  font-size: 10px;
+  color: var(--vb-text-dim, #b0b0b0);
+  background: var(--vb-input, #1f1f1f);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 1.4;
+}

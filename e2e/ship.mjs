@@ -84,17 +84,65 @@ runE2e(async (t) => {
   t.check('scene untouched after failed load',
     (await t.evaluate('window.__app.scene.objects.length')) === beforeBad);
 
-  // --- Topbar Save/Open buttons exist with stable data-action hooks ---
-  t.check('Save button present',
-    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="save-scene"]')`));
-  t.check('Open button present',
-    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="open-scene"]')`));
+  // --- UR14-2 item 5: File menu (Save / Open / Import OBJ / Export OBJ) ---
+  // The four file actions collapsed into one "File ▾" popover; the standalone
+  // Save/Open/Export/Import chips no longer exist.
+  const openFileMenu = async () => {
+    await t.evaluate(`document.querySelector('.topbar-btn[data-action="file-menu"]').click()`);
+    await t.sleep(40);
+  };
+  t.check('File menu button present',
+    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="file-menu"]')`));
+  await openFileMenu();
+  t.check('File menu opens a popover', await t.evaluate(`!!document.querySelector('.topbar-menu')`));
+  for (const [action, label] of [['save-scene', 'Save'], ['open-scene', 'Open'],
+                                 ['import-obj', 'Import OBJ'], ['export-obj', 'Export OBJ']]) {
+    t.check(`File menu contains ${label}`,
+      await t.evaluate(`!!document.querySelector('.topbar-menu-row[data-action="${action}"]')`));
+  }
 
-  // Clicking Save (topbar) runs the same path (no throw, status updated).
+  // Spy on file-input clicks so Open / Import (which open a native picker with no
+  // other observable effect) are provably wired; Save / Export report via status.
+  await t.evaluate(`(() => {
+    window.__fileClicks = [];
+    window.__origInputClick = HTMLInputElement.prototype.click;
+    HTMLInputElement.prototype.click = function () {
+      if (this.type === 'file') { window.__fileClicks.push(this.accept || ''); return; }
+      return window.__origInputClick.call(this);
+    };
+  })()`);
+
+  // Save fires → status "Saved scene…".
   await t.evaluate(`document.getElementById('status').textContent = ''`);
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="save-scene"]').click()`);
-  t.check('Save button triggers a save',
+  await t.evaluate(`document.querySelector('.topbar-menu-row[data-action="save-scene"]').click()`);
+  await t.sleep(40);
+  t.check('File ▸ Save triggers a save',
     (await t.evaluate(`document.getElementById('status').textContent`)).includes('Saved scene'));
+
+  // Export OBJ fires → status "Exported scene.obj".
+  await openFileMenu();
+  await t.evaluate(`document.getElementById('status').textContent = ''`);
+  await t.evaluate(`document.querySelector('.topbar-menu-row[data-action="export-obj"]').click()`);
+  await t.sleep(40);
+  t.check('File ▸ Export OBJ triggers an export',
+    (await t.evaluate(`document.getElementById('status').textContent`)).includes('Exported scene.obj'));
+
+  // Open fires → a .json file picker was clicked.
+  await openFileMenu();
+  await t.evaluate(`document.querySelector('.topbar-menu-row[data-action="open-scene"]').click()`);
+  await t.sleep(40);
+  t.check('File ▸ Open opens a .json file picker',
+    (await t.evaluate('window.__fileClicks.join("|")')).includes('json'));
+
+  // Import OBJ fires → a .obj file picker was clicked.
+  await openFileMenu();
+  await t.evaluate(`document.querySelector('.topbar-menu-row[data-action="import-obj"]').click()`);
+  await t.sleep(40);
+  t.check('File ▸ Import OBJ opens a .obj file picker',
+    (await t.evaluate('window.__fileClicks.join("|")')).includes('obj'));
+
+  // Restore the native file-input click.
+  await t.evaluate(`HTMLInputElement.prototype.click = window.__origInputClick`);
 
   // --- P3-1: OBJ export / import ---
 
@@ -107,13 +155,8 @@ runE2e(async (t) => {
   t.check('exportObj emits 8 v lines for the cube',
     objText.split('\n').filter((l) => l.startsWith('v ')).length === 8);
 
-  // Export/Import buttons exist with stable data-action hooks.
-  t.check('Export OBJ button present',
-    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="export-obj"]')`));
-  t.check('Import OBJ button present',
-    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="import-obj"]')`));
-
-  // Import a small OBJ string through the same code path the file input uses.
+  // (Export/Import button presence + firing are covered by the File-menu section
+  // above.) Import a small OBJ string through the same code path the file input uses.
   const beforeImport = await t.evaluate('window.__app.scene.objects.length');
   const imported = await t.evaluate(`(() => {
     window.__app.io.importObj('o Tri\\nv 0 0 0\\nv 1 0 0\\nv 0 1 0\\nf 1 2 3\\n');

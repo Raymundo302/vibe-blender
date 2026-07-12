@@ -6,6 +6,7 @@ import { openThemePicker } from './themePicker';
 import type { CursorOverlay } from './cursorOverlay';
 import { overlays, saveOverlayPrefs, type OverlayPrefs } from '../render/overlayPrefs';
 import { autoKeyState } from './timeline';
+import { setTip } from './tooltip';
 import './overlaysMenu.css';
 
 /**
@@ -42,11 +43,13 @@ export class Topbar {
   private readonly pivotEl: HTMLButtonElement;
   private readonly lightsEl: HTMLButtonElement;
   private readonly autoKeyEl: HTMLButtonElement;
+  private readonly fileEl: HTMLButtonElement;
   private lastSig = '';
+  private lastDirty = false;
 
   constructor(
     private readonly scene: Scene,
-    actions: TopbarActions,
+    private readonly actions: TopbarActions,
     private readonly cursorOverlay: CursorOverlay,
   ) {
     const root = document.getElementById('topbar') as HTMLElement;
@@ -66,7 +69,7 @@ export class Topbar {
       snapState.enabled = !snapState.enabled;
       this.update();
     });
-    snap.title = 'Grid snapping (Shift+Tab)';
+    setTip(snap, 'Grid snapping', 'Shift+Tab');
     this.snapEl = snap;
 
     // X-ray chip: select-through toggle (also Alt+Z). Highlighted state mirrors
@@ -75,7 +78,7 @@ export class Topbar {
       xrayState.enabled = !xrayState.enabled;
       this.update();
     });
-    xray.title = 'X-ray / select-through (Alt+Z)';
+    setTip(xray, 'X-ray / select-through', 'Alt+Z');
     this.xrayEl = xray;
 
     // Overlays dropdown (P12-2): a checkbox popover toggling viewport
@@ -83,71 +86,138 @@ export class Topbar {
     const overlaysBtn = Topbar.makeButton('⬒ Overlays', 'overlays', () => {
       this.toggleOverlaysMenu(overlaysBtn);
     });
-    overlaysBtn.title = 'Viewport overlays';
+    setTip(overlaysBtn, 'Viewport overlays');
 
     // Pivot dropdown (P12-2): median point ↔ 3D cursor. A viewport setting
     // (like shading mode) — writes scene.pivotMode, never undoable.
     const pivot = Topbar.makeButton('Pivot: Median ▾', 'pivot', () => {
       this.togglePivotMenu(pivot);
     });
-    pivot.title = 'Transform pivot point';
+    setTip(pivot, 'Transform pivot point');
     this.pivotEl = pivot;
 
     // 💡 Lights toggle (P12-2): flips visibility on ALL light objects at once.
     // Off if any light is on (turn them all off), else turn them all on. Not
     // undoable; the highlight reflects whether any light is currently visible.
-    const lights = Topbar.makeButton('💡', 'lights-toggle', () => {
+    const lights = Topbar.makeButton('💡 Lights', 'lights-toggle', () => {
       this.toggleAllLights();
       this.update();
     });
-    lights.title = 'Toggle all lights';
+    setTip(lights, 'Toggle all lights');
     this.lightsEl = lights;
 
     // ⏺ Auto-key toggle (P15-3): when on, confirming a G/R/S transform in
     // Object Mode auto-inserts LocRotScale keys (the Timeline pane polls the
     // undo stack). Runtime-only flag in the timeline module — never on Scene.
-    const autoKey = Topbar.makeButton('⏺', 'autokey', () => {
+    const autoKey = Topbar.makeButton('⏺ Auto-Key', 'autokey', () => {
       autoKeyState.enabled = !autoKeyState.enabled;
       this.update();
     });
-    autoKey.title = 'Auto-Keying: insert keyframes on transform';
+    setTip(autoKey, 'Auto-Keying: insert keyframes on transform');
     this.autoKeyEl = autoKey;
 
-    const spacer = document.createElement('div');
-    spacer.className = 'topbar-spacer';
+    // UR14-2 item 5: Save / Open / Import OBJ / Export OBJ collapse into ONE
+    // "File ▾" menu button (the topbar popover pattern, like Overlays/Pivot).
+    // The dirty dot (UR14-1 item 18) moves onto this button — it's now the home
+    // for save-state.
+    const fileBtn = Topbar.makeButton('File ▾', 'file-menu', () => this.toggleFileMenu(fileBtn));
+    setTip(fileBtn, 'File — Save / Open / Import / Export');
+    this.fileEl = fileBtn;
 
-    const saveBtn = Topbar.makeButton('Save', 'save-scene', () => actions.saveScene());
-    const openBtn = Topbar.makeButton('Open', 'open-scene', () => actions.openScene());
-    const exportObjBtn = Topbar.makeButton('Export OBJ', 'export-obj', () => actions.exportObj());
-    const importObjBtn = Topbar.makeButton('Import OBJ', 'import-obj', () => actions.importObj());
     // 🎬 opens the path-traced render window. Also bound to F12, but browsers
     // reserve F12 for devtools, so the button is the reliable entry point.
     const renderBtn = Topbar.makeButton('🎬 Render', 'render', () => actions.toggleRender());
-    renderBtn.title = 'Render image (F12)';
+    setTip(renderBtn, 'Render image', 'F12');
     // 🎞 opens the Render Animation modal (WebM video / PNG-sequence export).
     const renderAnimBtn = Topbar.makeButton('🎞', 'render-animation', () => actions.toggleRenderAnimation());
-    renderAnimBtn.title = 'Render Animation (Ctrl+F12)';
+    setTip(renderAnimBtn, 'Render Animation', 'Ctrl+F12');
     // 🎨 opens the theme picker popup, anchored under the button.
     const themeBtn = Topbar.makeButton('🎨', 'theme-picker', () => openThemePicker(themeBtn));
-    themeBtn.title = 'Theme';
+    setTip(themeBtn, 'Theme');
 
     // "?" opens the shortcut cheat-sheet (same overlay as F1).
     const helpBtn = Topbar.makeButton('?', 'help', () => actions.toggleHelp());
-    helpBtn.title = 'Keyboard shortcuts (F1)';
+    setTip(helpBtn, 'Keyboard shortcuts', 'F1');
 
     this.statusEl = document.createElement('span');
     this.statusEl.className = 'topbar-status';
 
-    // Action chips sit on the RIGHT, before the status span (P3 conventions).
-    root.append(title, chip, snap, xray, overlaysBtn, pivot, lights, autoKey, spacer, saveBtn, openBtn, exportObjBtn, importObjBtn, renderBtn, renderAnimBtn, themeBtn, helpBtn, this.statusEl);
+    const spacer = document.createElement('div');
+    spacer.className = 'topbar-spacer';
+
+    // UR14-2 item 5: four visually separated clusters (spacing + hairline).
+    //   [Workspace tabs] · [Mode + viewport toggles] · [File] · [Render]
+    //   … spacer … [status] · [theme / help]
+    // The workspace tab strip is injected into the first cluster by mountTabs().
+    const clWorkspace = Topbar.cluster('cl-workspace', title);
+    const clView = Topbar.cluster('cl-view', chip, snap, xray, overlaysBtn, pivot, lights, autoKey);
+    const clFile = Topbar.cluster('cl-file', fileBtn);
+    const clRender = Topbar.cluster('cl-render', renderBtn, renderAnimBtn);
+    const clRight = Topbar.cluster('cl-right', themeBtn, helpBtn);
+
+    root.append(
+      clWorkspace, Topbar.sep(),
+      clView, Topbar.sep(),
+      clFile, Topbar.sep(),
+      clRender,
+      spacer, this.statusEl, Topbar.sep(),
+      clRight,
+    );
     this.update();
   }
 
-  /** Insert the workspace tab strip right after the app title. */
+  /** A labelled flex cluster grouping related topbar controls. */
+  private static cluster(id: string, ...children: HTMLElement[]): HTMLDivElement {
+    const el = document.createElement('div');
+    el.className = 'topbar-cluster';
+    el.dataset.cluster = id;
+    el.append(...children);
+    return el;
+  }
+
+  /** A thin vertical hairline separating two clusters. */
+  private static sep(): HTMLDivElement {
+    const el = document.createElement('div');
+    el.className = 'topbar-sep';
+    return el;
+  }
+
+  /** Insert the workspace tab strip into the first cluster, after the title. */
   mountTabs(tabs: HTMLElement): void {
     const root = document.getElementById('topbar') as HTMLElement;
     const title = root.querySelector('.topbar-title');
     title?.after(tabs);
+  }
+
+  // --- UR14-2 File menu ------------------------------------------------------
+  /** The File popover: Save / Open / Import OBJ / Export OBJ, each firing its
+   *  action then closing. Same popover machinery as Overlays/Pivot. */
+  private toggleFileMenu(anchor: HTMLElement): void {
+    if (this.openMenu) { this.openMenu.close(); return; }
+    const root = this.popover(anchor);
+    const heading = document.createElement('div');
+    heading.className = 'topbar-menu-heading';
+    heading.textContent = 'File';
+    root.appendChild(heading);
+
+    const items: [string, string, () => void][] = [
+      ['save-scene', 'Save', () => this.actions.saveScene()],
+      ['open-scene', 'Open', () => this.actions.openScene()],
+      ['import-obj', 'Import OBJ', () => this.actions.importObj()],
+      ['export-obj', 'Export OBJ', () => this.actions.exportObj()],
+    ];
+    for (const [action, label, run] of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'topbar-menu-row';
+      btn.dataset.action = action;
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        this.openMenu?.close();
+        run();
+      });
+      root.appendChild(btn);
+    }
   }
 
   // --- P12-2 dropdowns -------------------------------------------------------
@@ -267,6 +337,22 @@ export class Topbar {
     btn.textContent = label;
     btn.addEventListener('click', onClick);
     return btn;
+  }
+
+  /**
+   * UR14-1 item 18: reflect unsaved-edits state as a dot on the Save button.
+   * Driven from main.ts's frame loop (undo position vs last save/load). Diffed
+   * so the class only toggles when the state actually flips. `title` mirrors it
+   * so the affordance is discoverable on hover.
+   */
+  setDirty(dirty: boolean): void {
+    if (dirty === this.lastDirty) return;
+    this.lastDirty = dirty;
+    // The dirty dot lives on the File menu button (Save now lives inside it).
+    this.fileEl.classList.toggle('topbar-dirty', dirty);
+    setTip(this.fileEl, dirty
+      ? 'Unsaved changes — File'
+      : 'File — Save / Open / Import / Export');
   }
 
   /** Called every animation frame; cheap no-op when nothing visible changed. */

@@ -3,6 +3,7 @@ import type { Scene, SceneObject, SceneCollection } from '../core/scene/Scene';
 import type { ObjectKind } from '../core/scene/objectData';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { DeleteObjectsCommand, RenameObjectCommand, SetParentCommand } from '../core/undo/objectCommands';
+import { showToast } from './toast';
 import {
   CreateCollectionCommand,
   DeleteCollectionCommand,
@@ -111,7 +112,7 @@ export class OutlinerPanel implements Panel {
     this.lastSig = this.signature();
     this.element.replaceChildren();
 
-    this.element.appendChild(this.makeNewCollectionButton());
+    this.element.appendChild(this.makeHeader());
 
     // Collections first (Blender order), each with its parent-nested members.
     for (const col of this.scene.collections) {
@@ -134,19 +135,35 @@ export class OutlinerPanel implements Panel {
     }
   }
 
-  /** The "+ New Collection" action pinned to the top of the panel. */
-  private makeNewCollectionButton(): HTMLElement {
+  /**
+   * The Outliner header row (UR14-2 item 11): a small title with a compact "+"
+   * button on the right that creates a new collection. Replaces the old
+   * full-width jumbo "+ New Collection" button; the button keeps its
+   * `.outliner-newcol` class + click behaviour so existing flows/e2e still work.
+   */
+  private makeHeader(): HTMLElement {
+    const header = document.createElement('div');
+    header.className = 'outliner-header';
+
+    const label = document.createElement('span');
+    label.className = 'outliner-header-label';
+    label.textContent = 'Scene Collection';
+    header.appendChild(label);
+
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'outliner-newcol';
-    btn.textContent = '+ New Collection';
+    btn.textContent = '+';
+    btn.title = 'New Collection';
+    btn.setAttribute('aria-label', 'New Collection');
     btn.addEventListener('click', () => {
       const col = this.scene.addCollection();
       this.undo.push(new CreateCollectionCommand(this.scene, col));
       this.lastSig = '';
       this.update();
     });
-    return btn;
+    header.appendChild(btn);
+    return header;
   }
 
   private makeCollectionHeader(col: SceneCollection): HTMLElement {
@@ -268,6 +285,18 @@ export class OutlinerPanel implements Panel {
     // 16px per hierarchy depth on top of the group's base indent.
     const base = collectionMember ? 22 : 8;
     row.style.paddingLeft = `${base + depth * 16}px`;
+    // Faint indent guides for parent chains (UR14-2 item 10): one thin vertical
+    // line per ancestor level, painted as a background image so it survives
+    // hover/selection background-color changes. Drawn over the padding zone.
+    if (depth > 0) {
+      const guide = 'color-mix(in srgb, var(--vb-text-dim, #8a8a8a) 45%, transparent)';
+      const lines: string[] = [];
+      for (let k = 1; k <= depth; k++) {
+        const x = base + (k - 1) * 16 + 6;
+        lines.push(`linear-gradient(${guide}, ${guide}) ${x}px 0 / 1px 100% no-repeat`);
+      }
+      row.style.backgroundImage = lines.join(', ');
+    }
     if (this.scene.selection.has(obj.id)) row.classList.add('outliner-selected');
     if (this.scene.activeId === obj.id) row.classList.add('outliner-active');
 
@@ -350,7 +379,9 @@ export class OutlinerPanel implements Panel {
 
     del.addEventListener('click', (e) => {
       e.stopPropagation();
+      const name = obj.name;
       this.undo.push(DeleteObjectsCommand.perform('Delete', this.scene, [obj.id]));
+      showToast(`Deleted ${name} — Ctrl+Z restores`);
     });
 
     name.addEventListener('dblclick', (e) => {

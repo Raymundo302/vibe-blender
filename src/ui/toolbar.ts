@@ -7,6 +7,7 @@ import { ScaleOperator } from '../tools/scale';
 import { runIntersectTool } from '../tools/intersectTool';
 import { selectModeState, selectModeLabel } from '../tools/circleSelect';
 import { inPageMode } from '../tools/pageMode';
+import { setTip } from './tooltip';
 
 /** Icon per select mode for the dynamic Select button. */
 const SELECT_ICONS: Record<'box' | 'circle' | 'lasso', string> = {
@@ -128,7 +129,9 @@ export class Toolbar {
       btn.className = 'viewport-tool-btn';
       btn.textContent = tool.icon;
       btn.dataset.toolId = tool.id;
-      btn.title = tool.shortcut ? `${tool.label} (${tool.shortcut})` : tool.label;
+      // UR14-3 item 2: styled instant tooltip (name + shortcut chip) instead of
+      // the slow native `title`.
+      setTip(btn, tool.label, tool.shortcut || undefined);
       btn.addEventListener('click', () => tool.run());
       this.element.appendChild(btn);
       this.buttons.push({ el: btn, tool });
@@ -155,7 +158,7 @@ export class Toolbar {
         const mode = selectModeState.mode;
         const icon = SELECT_ICONS[mode];
         if (el.textContent !== icon) el.textContent = icon;
-        el.title = `Select: ${selectModeLabel(mode)} (B; W cycles)`;
+        setTip(el, `Select: ${selectModeLabel(mode)}`, 'B · W cycles');
         el.classList.toggle('active', active !== null && SELECT_OP_NAMES.has(active));
       } else {
         el.classList.toggle('active', !!tool.opName && tool.opName === active);

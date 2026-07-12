@@ -10,23 +10,48 @@
 
 /* Collections (P10-1) --------------------------------------------------------- */
 
-/* "New Collection" action pinned to the top of the panel. */
+/* UR14-2 item 11: compact Outliner header — a label + a small "+" that creates
+ * a collection, replacing the old full-width jumbo "New Collection" button. */
+.outliner-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 8px;
+  border-bottom: 1px solid var(--vb-border, #3d3d3d);
+}
+.outliner-header-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vb-text-dim, #8a8a8a);
+  user-select: none;
+}
+/* The small "+" button (keeps its .outliner-newcol class/handler for e2e). */
 .outliner-newcol {
-  display: block;
-  width: calc(100% - 12px);
-  margin: 4px 6px;
-  padding: 3px 8px;
-  text-align: left;
+  flex: none;
+  width: 20px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   font: inherit;
-  color: var(--vb-text, #d0d0d0);
-  background: var(--vb-inset, #232323);
-  border: 1px solid var(--vb-border, #1a1a1a);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--vb-text-dim, #8a8a8a);
+  background: var(--vb-input, #232323);
+  border: 1px solid var(--vb-border, #3d3d3d);
   border-radius: 3px;
   cursor: pointer;
 }
 .outliner-newcol:hover {
-  background: var(--vb-accent, #4772b3);
-  color: #fff;
+  background: var(--vb-accent, #fe730f);
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent-contrast, #fff);
 }
 
 /* Collection header row: triangle + folder + name + eye + delete. */

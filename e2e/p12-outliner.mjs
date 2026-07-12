@@ -63,6 +63,47 @@ runE2e(async (t) => {
   t.check('A shows an expanded twisty',
     (await t.evaluate(`document.querySelector('.outliner-row[data-obj-id="${ids.a}"] .outliner-twisty').textContent`)) === '▾');
 
+  // --- UR14-2 item 10: active/selected row is CALM (accent bar + tint), not a
+  // full-saturation orange slab. ObjA is the active object. ---
+  const aBg = await t.evaluate(`(() => {
+    const r = document.querySelector('.outliner-row[data-obj-id="${ids.a}"]');
+    return r ? getComputedStyle(r).backgroundColor : null;
+  })()`);
+  // Chrome serializes a color-mix-with-transparent as either rgba(r,g,b,a) or
+  // color(srgb r g b / a); either way the alpha must be < 1 (a tint) — never the
+  // solid accent slab.
+  const alphaOf = (c) => {
+    let m;
+    if ((m = c.match(/\/\s*([0-9.]+)\s*\)/))) return parseFloat(m[1]);        // color(srgb r g b / a)
+    if ((m = c.match(/rgba\([^)]*,\s*([0-9.]+)\s*\)/))) return parseFloat(m[1]); // rgba(r,g,b,a)
+    return 1; // opaque rgb(...)
+  };
+  t.check('active row background is a translucent tint, not the solid accent',
+    typeof aBg === 'string' && alphaOf(aBg) < 0.95 && aBg !== 'rgb(254, 115, 15)', aBg);
+  t.check('active row carries an accent left bar',
+    (await t.evaluate(`getComputedStyle(document.querySelector('.outliner-row[data-obj-id="${ids.a}"]')).borderLeftColor`)) === 'rgb(254, 115, 15)');
+
+  // Nested rows carry a faint indent guide (a gradient background image).
+  t.check('nested row C shows an indent guide',
+    (await t.evaluate(`document.querySelector('.outliner-row[data-obj-id="${ids.c}"]').style.backgroundImage`)).includes('gradient'));
+
+  // --- UR14-2 item 10: eye/× revealed on hover, hidden otherwise. ObjD is a
+  // non-active root leaf, so its × starts hidden. ---
+  const delBox = await t.evaluate(`(() => {
+    const el = document.querySelector('.outliner-row[data-obj-id="${ids.d}"] .outliner-del');
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, op: getComputedStyle(el).opacity };
+  })()`);
+  t.check('row × hidden when the row is not hovered', parseFloat(delBox.op) < 0.5, delBox.op);
+  await t.mouse('mouseMoved', delBox.x, delBox.y);
+  await t.sleep(120);
+  const delOpHover = await t.evaluate(
+    `getComputedStyle(document.querySelector('.outliner-row[data-obj-id="${ids.d}"] .outliner-del')).opacity`);
+  t.check('row × revealed on hover', parseFloat(delOpHover) > 0.9, delOpHover);
+  // Move the pointer off the outliner so it doesn't taint the drag test below.
+  await t.mouse('mouseMoved', 5, 5);
+  await t.sleep(60);
+
   // --- Collapse A's twisty hides B and C rows ---
   await t.evaluate(`document.querySelector('.outliner-row[data-obj-id="${ids.a}"] .outliner-twisty').click()`);
   await t.sleep(120);

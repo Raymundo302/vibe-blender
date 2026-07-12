@@ -40,6 +40,8 @@
   padding: 4px 10px;
   border-radius: 4px;
   white-space: pre;
+  /* Raised above the hint bar (UR14-1 item 1) so the two never overlap. */
+  bottom: 34px;
 }
 #status:empty { display: none; }
 
@@ -74,6 +76,22 @@
   border-color: var(--vb-accent, #fe730f);
   color: var(--vb-accent, #fe730f);
 }
+/* UR14-2 item 5: clusters group related controls; a hairline + spacing set them
+ * apart. #topbar's flex gap provides the breathing room around each hairline. */
+.topbar-cluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.topbar-sep {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: 5px 0;
+  background: var(--vb-border, #3d3d3d);
+}
+
 /* Right-side action chips (Save / Open / …). Modeled on topbar-chip, clickable. */
 .topbar-btn {
   padding: 2px 8px;
@@ -84,6 +102,8 @@
   font: var(--vb-font);
   font-size: 11px;
   cursor: pointer;
+  /* UR14-2 item 7: buttons never wrap to a second line ("Export OBJ"). */
+  white-space: nowrap;
 }
 .topbar-btn:hover {
   border-color: var(--vb-accent, #fe730f);
@@ -96,12 +116,26 @@
   background: color-mix(in srgb, var(--vb-accent, #fe730f) 18%, var(--vb-panel, #2b2b2b));
 }
 .topbar-spacer { flex: 1; }
+/* File-menu rows (and any topbar popover row) stay on one line. */
+.topbar-menu-row { white-space: nowrap; }
 .topbar-status {
   color: var(--vb-text-dim, #8a8a8a);
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* UR14-1 item 16: show the FULL active-object name — no ellipsis clamp. */
   white-space: nowrap;
+  flex: none;
+}
+
+/* UR14-1 item 18: dirty dot on Save. A small accent dot before the label when
+ * the undo position differs from the last save/load. */
+.topbar-btn.topbar-dirty::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--vb-accent, #fe730f);
+  vertical-align: middle;
 }
 
 /* ------------------------------------------------------------- shell panels */
@@ -137,16 +171,31 @@
   font: var(--vb-font);
   color: var(--vb-text, #d0d0d0); user-select: none;
 }
+/* UR14-2 item 10: a 3px transparent left border is reserved on EVERY row so the
+ * selected/active accent bar appears without shifting the row's content. */
 .outliner-row {
   display: flex; align-items: center; gap: 6px;
-  padding: 3px 8px; cursor: pointer; border: 1px solid transparent;
+  padding: 3px 8px; cursor: pointer;
+  border: 1px solid transparent;
+  border-left: 3px solid transparent;
 }
-.outliner-row:hover { background: var(--vb-hover, #4a4a4a); }
+/* background-color (not the `background` shorthand) so it never clobbers the
+ * inline indent-guide background-image on nested rows. */
+.outliner-row:hover { background-color: var(--vb-hover, #4a4a4a); }
+/* Selected + active rows: a left accent bar + a faint tinted row — NOT the old
+ * loud full-saturation orange slab. */
 .outliner-row.outliner-selected {
-  background: color-mix(in srgb, var(--vb-accent, #fe730f) 35%, transparent);
+  background-color: color-mix(in srgb, var(--vb-accent, #fe730f) 16%, transparent);
+  border-left-color: color-mix(in srgb, var(--vb-accent, #fe730f) 55%, transparent);
 }
-.outliner-row.outliner-active { background: var(--vb-accent, #fe730f); }
-.outliner-row.outliner-active .outliner-name { color: var(--vb-accent-contrast, #fff); }
+.outliner-row.outliner-active {
+  background-color: color-mix(in srgb, var(--vb-accent, #fe730f) 24%, transparent);
+  border-left-color: var(--vb-accent, #fe730f);
+}
+.outliner-row.outliner-active .outliner-name {
+  color: var(--vb-text, #d0d0d0);
+  font-weight: 600;
+}
 .outliner-glyph { flex: none; color: var(--vb-text-dim, #8a8a8a); width: 12px; text-align: center; }
 .outliner-name {
   flex: 1; min-width: 0; overflow: hidden;
@@ -162,7 +211,19 @@
   font: inherit; cursor: pointer; padding: 0 2px; line-height: 1;
 }
 .outliner-btn:hover { color: var(--vb-text, #d0d0d0); }
-.outliner-eye.outliner-hidden { color: var(--vb-chip, #5a5a5a); }
+/* UR14-2 item 10: eye/× revealed on hover (and on the active row); a HIDDEN
+ * object keeps its eye visible so the hidden state always reads. */
+.outliner-row .outliner-eye,
+.outliner-row .outliner-del {
+  opacity: 0;
+}
+.outliner-row:hover .outliner-eye,
+.outliner-row:hover .outliner-del,
+.outliner-row.outliner-active .outliner-eye,
+.outliner-row.outliner-active .outliner-del {
+  opacity: 1;
+}
+.outliner-eye.outliner-hidden { color: var(--vb-chip, #5a5a5a); opacity: 1; }
 .outliner-empty { padding: 6px 8px; color: var(--vb-text-dim, #8a8a8a); font-style: italic; }
 
 /* ---------------------------------------------------------------- properties */
@@ -209,7 +270,54 @@
 }
 .properties-visible { flex: none; cursor: pointer; accent-color: var(--vb-accent, #fe730f); }
 .properties-group { margin-bottom: 8px; }
-.properties-group-title { color: var(--vb-text-dim, #8a8a8a); margin-bottom: 3px; }
+/* UR14-3 items 21+22 — section eyebrow: brighter contrast (#b8b8b8 vs the old
+   ~#8a8a8a), 500 weight and ALL-CAPS letterspacing so the type scale reads as a
+   hierarchy (panel title 600 · section 500 · field label 400). */
+.properties-group-title {
+  color: #b8b8b8;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+/* UR14-3 item 9 — collapsible disclosure sections (Location/Rotation/Scale/Web
+   Page …), state persisted via uiPrefs. The title becomes the click toggle. */
+.properties-section-header {
+  display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;
+}
+.properties-section-header:hover { color: var(--vb-text, #d0d0d0); }
+.properties-section-caret {
+  flex: none; width: 9px; font-size: 9px; line-height: 1;
+  color: var(--vb-text-dim, #8a8a8a);
+}
+.properties-section-body { }
+/* UR14-3 item 1 — Web Page section rows: a two-column [label | control] grid so
+   labels never overlap their inputs. The rows reused .properties-field (flex) +
+   .properties-axis (width:10px), which clipped "Page Width" etc. across the
+   field (Ray's overlap bug). Scoped fix — UR16-2's shared propRow.css hasn't
+   landed yet. */
+.web-page-section .web-page-row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.web-page-section .web-page-label {
+  width: auto; min-width: 0;
+  white-space: normal; line-height: 1.2; overflow-wrap: anywhere;
+}
+/* The Play / ● key / Re-rasterize button row (three equal columns). */
+.web-page-section .web-page-buttons { margin-top: 4px; }
+.web-page-section .web-page-buttons button {
+  font: inherit; cursor: pointer;
+  color: var(--vb-text, #d0d0d0);
+  background: var(--vb-input, #1f1f1f);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 2px; padding: 2px 4px;
+}
+.web-page-section .web-page-buttons button:hover { border-color: var(--vb-accent, #fe730f); }
 /* UR7-3: portal-limits hint under the Web Page section (URL planes only). */
 .web-page-hint {
   margin-top: 6px;
@@ -256,7 +364,10 @@
   writing-mode: vertical-rl; text-orientation: mixed;
   border: none; background: transparent; color: var(--vb-text-dim, #8a8a8a);
   font: inherit; font-size: 11px; letter-spacing: 0.03em; cursor: pointer;
-  padding: 9px 3px; border-top-left-radius: 4px; border-bottom-left-radius: 4px;
+  /* UR14-3 item 12: ≥24px touch target (was ~12px). */
+  min-width: 24px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  padding: 10px 6px; border-top-left-radius: 4px; border-bottom-left-radius: 4px;
 }
 .n-panel-tab:hover { color: var(--vb-text, #d0d0d0); }
 .n-panel-tab-active {
@@ -337,12 +448,76 @@
  * Kept separate from #status so tool status text (which e2e asserts is empty)
  * never fights it. Non-interactive. */
 #idle-hint {
-  position: absolute; right: 12px; bottom: 10px;
+  /* Raised above the hint bar (UR14-1 item 1) so the two never overlap. */
+  position: absolute; right: 12px; bottom: 34px;
   font: var(--vb-font); font-size: 11px; color: var(--vb-text-dim, #8a8a8a);
   background: rgba(24, 24, 24, 0.6);
   padding: 3px 8px; border-radius: 4px;
   pointer-events: none; user-select: none; opacity: 0.7;
 }
+
+/* --------------------------------------------------- modal-key hint bar (UR14-1) */
+/* One-line keymap strip along the viewport bottom that rewrites per context.
+ * Muted, non-interactive — it never intercepts viewport pointers. */
+#hint-bar {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: 24px; line-height: 24px;
+  padding: 0 12px;
+  text-align: center;
+  font: var(--vb-font); font-size: 11px;
+  color: var(--vb-text-dim, #8a8a8a);
+  background: rgba(20, 20, 20, 0.72);
+  border-top: 1px solid var(--vb-border, #3d3d3d);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none; user-select: none;
+  z-index: 15;
+}
+
+/* ------------------------------------------------------- one mode chip (UR14-1) */
+/* Single top-left viewport chip announcing the current special mode + exit key. */
+#mode-chip {
+  position: absolute; left: 12px; top: 10px;
+  font: var(--vb-font); font-size: 11px; font-weight: 600;
+  color: var(--vb-accent-contrast, #fff);
+  background: var(--vb-accent, #fe730f);
+  padding: 4px 10px; border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  pointer-events: none; user-select: none;
+  z-index: 20;
+}
+#mode-chip[hidden] { display: none; }
+
+/* --------------------------------------------------- orientation gizmo (UR14-4) */
+/* Mini axis widget in the top-right of the viewport. The ONLY interactive
+ * overlay in the wrap (pointer-events: auto so its balls catch clicks); it sits
+ * clear of the shading dropdown / area header in its own corner box. */
+#axis-gizmo {
+  position: absolute; right: 10px; top: 10px;
+  pointer-events: auto; cursor: pointer; user-select: none;
+  z-index: 18;
+}
+
+/* ---------------------------------------------------- transient toasts (UR14-1) */
+/* Bottom-centred stack of destructive-action toasts ("Deleted Cube — Ctrl+Z
+ * restores"). Container is non-interactive; each toast fades in/out. */
+.vb-toast-layer {
+  position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%);
+  z-index: 200;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  pointer-events: none;
+}
+.vb-toast {
+  font: var(--vb-font); font-size: 12px; color: var(--vb-text, #d0d0d0);
+  background: var(--vb-panel, #2b2b2b); border: 1px solid var(--vb-border, #3d3d3d);
+  border-left: 3px solid var(--vb-accent, #fe730f);
+  border-radius: 5px; padding: 7px 13px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  white-space: nowrap; user-select: none;
+  opacity: 0; transform: translateY(6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.vb-toast-in { opacity: 1; transform: translateY(0); }
+.vb-toast-out { opacity: 0; transform: translateY(6px); }
 
 /* --------------------------------------------------------- splash card (P3-4) */
 /* First-visit welcome. The container is pointer-events:none so a click passes

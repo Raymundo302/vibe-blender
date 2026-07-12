@@ -46,11 +46,13 @@ runE2e(async (t) => {
   t.check('panel (sidebar) bg is Claude #2b2b2b', (await bgOf('.wsp-area')) === 'rgb(43, 43, 43)');
   t.check('accent var is Claude orange #fe730f', (await cssVar('accent')) === '#fe730f');
 
-  // The active outliner row paints with the accent — a concrete accent element.
-  const activeRowBg = await t.evaluate(
-    `(() => { const r = document.querySelector('.outliner-row.outliner-active'); return r ? getComputedStyle(r).backgroundColor : null; })()`);
-  if (activeRowBg !== null) {
-    t.check('active outliner row uses accent (rgb(254, 115, 15))', activeRowBg === 'rgb(254, 115, 15)');
+  // The active outliner row's LEFT ACCENT BAR paints with the accent — a
+  // concrete accent element. (UR14-2 item 10 calmed the row: the accent is now
+  // the border-left bar, not a full-saturation background slab.)
+  const activeRowBar = await t.evaluate(
+    `(() => { const r = document.querySelector('.outliner-row.outliner-active'); return r ? getComputedStyle(r).borderLeftColor : null; })()`);
+  if (activeRowBar !== null) {
+    t.check('active outliner row accent bar is accent (rgb(254, 115, 15))', activeRowBar === 'rgb(254, 115, 15)');
   } else {
     console.log('SKIP  no active outliner row present — accent-element check skipped (var asserted)');
   }

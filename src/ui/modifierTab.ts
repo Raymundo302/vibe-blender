@@ -8,6 +8,7 @@ import {
 } from '../core/modifiers/Modifier';
 import { ModifierStackCommand, ApplyModifierCommand, ApplyCurvePipeCommand } from '../core/undo/modifierCommands';
 import { registerPropertiesTab } from './propertiesEditor';
+import { showToast } from './toast';
 
 /**
  * Modifiers tab (Phase 4, P4-4) — Blender's wrench panel. Lists the active
@@ -208,6 +209,7 @@ class ModifierTab {
       } else {
         this.undo.push(new ApplyModifierCommand(obj, mod, this.scene.modifierContext(obj)));
       }
+      showToast(`Applied ${mod.name} — Ctrl+Z restores`);
     });
     apply.classList.add('modifier-apply');
     apply.style.width = 'auto';

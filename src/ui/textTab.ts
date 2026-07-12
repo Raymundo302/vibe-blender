@@ -5,6 +5,7 @@ import { registerPropertiesTab, type PropertiesTabContext } from './propertiesEd
 import { TextCommand, ConvertTextToMeshCommand } from '../core/undo/textCommands';
 import { InsertKeysCommand } from '../core/anim/animCommands';
 import { fontAvailable } from '../core/text/raster';
+import { showToast } from './toast';
 import './textTab.css';
 
 /**
@@ -347,11 +348,13 @@ class TextTab {
   private convertToMesh(): void {
     const obj = this.activeText();
     if (!obj) return;
+    const name = obj.name;
     const cmd = ConvertTextToMeshCommand.create(this.scene, obj);
     if (!cmd) return;
     cmd.redo(); // apply, then push (the caller-applies-then-pushes convention)
     this.undo.push(cmd);
     this.setStatus?.('Converted to mesh');
+    showToast(`Converted ${name} to mesh — Ctrl+Z restores`);
   }
 
   private refresh(): void {

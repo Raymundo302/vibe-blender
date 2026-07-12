@@ -39,6 +39,9 @@ import { loadShadePrefs, shadePrefs } from './render/shadePrefs';
 import { ShadingMenu } from './ui/shadingMenu';
 import './ui/shadingMenu.css';
 import { Splash } from './ui/splash';
+import { HintBar } from './ui/hintBar';
+import { ModeChip } from './ui/modeChip';
+import { AxisGizmo, viewSnap } from './ui/axisGizmo';
 import { serializeScene, applySceneJson } from './io/sceneJson';
 import { Autosave } from './io/autosave';
 import { RestoreToast } from './ui/restoreToast';
@@ -66,6 +69,14 @@ const shadingMenu = new ShadingMenu(renderer);
 const scene = new Scene();
 const camera = new OrbitCamera();
 const undo = new UndoStack();
+
+// --- Dirty-state tracking (UR14-1 item 18) ----------------------------------
+// The Save button shows a dot whenever the undo position differs from the last
+// save/load. markClean() is called on boot (position 0), Save, and any full
+// scene replacement (load/restore) — all points where the file becomes the
+// source of truth. The frame loop compares undo.position against this snapshot.
+let savedUndoPosition = undo.position;
+function markClean(): void { savedUndoPosition = undo.position; }
 
 // The classic starting scene
 const cube = scene.add('Cube', makeCube());
@@ -99,6 +110,7 @@ function saveScene(): void {
   URL.revokeObjectURL(url);
   // The file is now the source of truth — drop the crash-restore autosave.
   autosave.clear();
+  markClean();
   opCtx.setStatus('Saved scene.vibe.json');
 }
 
@@ -109,6 +121,7 @@ function loadSceneJson(json: string): void {
   undo.clear();
   // Loading a file replaces the working scene — the stale autosave no longer applies.
   autosave.clear();
+  markClean();
   opCtx.setStatus('Loaded scene');
 }
 
@@ -220,6 +233,15 @@ const inputManager = new InputManager(canvas, opCtx, renderer, { save: saveScene
 // lives inside #viewport-wrap; updated in the frame loop below.
 const toolbar = new Toolbar(viewportWrap, scene, undo, inputManager, opCtx.setStatus);
 
+// Modal-key hint bar (UR14-1 item 1) + one mode chip (item 15). Both live inside
+// #viewport-wrap, are non-interactive, and re-read state every frame.
+const hintBar = new HintBar(viewportWrap, scene, inputManager);
+const modeChip = new ModeChip(viewportWrap, scene, renderer);
+
+// Orientation gizmo (UR14-4 item 14): top-right axis widget that tracks the
+// camera and snaps the view on click. Ticked in the frame loop below.
+const axisGizmo = new AxisGizmo(viewportWrap, camera);
+
 // F12 render engine (P8-4): owns its own keydown listener + result window.
 // Browsers reserve F12 for devtools, so the topbar Render button drives the
 // same toggle through the returned controls.
@@ -301,6 +323,7 @@ if (!sceneParam && storedAutosave && storedAutosave.scene !== pristineScene) {
         if (scene.editMode) scene.exitEditMode();
         applySceneJson(storedAutosave.scene, scene, camera);
         undo.clear();
+        markClean();
         opCtx.setStatus('Restored previous session');
       } catch (err) {
         opCtx.setStatus(`Restore failed: ${(err as Error).message}`);
@@ -344,7 +367,8 @@ const editorFactories: EditorFactory[] = [
     title: 'Properties',
     create: () => {
       const editor = new PropertiesEditor({ scene, undo, setStatus: opCtx.setStatus });
-      return wrapPanel('Properties', editor);
+      // UR14-3 item 3: the panel header names the active tab ("Properties · Material").
+      return wrapPanel(() => `Properties · ${editor.activeTitle}`, editor);
     },
   },
   {
@@ -374,15 +398,25 @@ const editorFactories: EditorFactory[] = [
   },
 ];
 
-/** Adapt a Panel (element + update) into an editor instance with a title bar. */
-function wrapPanel(title: string, panel: { element: HTMLElement; update(): void }) {
+/** Adapt a Panel (element + update) into an editor instance with a title bar.
+ *  `title` may be a live thunk (UR14-3 item 3: Properties names its active tab),
+ *  refreshed each frame in update() — cheap, only rewrites on change. */
+function wrapPanel(title: string | (() => string), panel: { element: HTMLElement; update(): void }) {
   const el = document.createElement('div');
   el.className = 'wsp-panel-host';
   const h = document.createElement('h3');
   h.className = 'panel-title';
-  h.textContent = title;
+  const readTitle = typeof title === 'function' ? title : () => title;
+  h.textContent = readTitle();
   el.append(h, panel.element);
-  return { element: el, update: () => panel.update() };
+  return {
+    element: el,
+    update: () => {
+      panel.update();
+      const t = readTitle();
+      if (h.textContent !== t) h.textContent = t;
+    },
+  };
 }
 
 const DEFAULT_WORKSPACES: WorkspaceConfig[] = [
@@ -427,6 +461,18 @@ topbar.mountTabs(workspaces.createTabs());
   scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
   input: inputManager,
   htmlDriver,
+  // UR14-1 status & hints handles for e2e (text without pixel reads).
+  hints: {
+    bar: () => hintBar.hintText(),
+    chip: () => modeChip.chipText(),
+    dirty: () => undo.position !== savedUndoPosition,
+  },
+  // UR14-4 orientation gizmo handle for e2e: client-space ball centers (for a
+  // real click on an axis) + whether a snap tween is in flight.
+  gizmo: {
+    ball: (key: string) => axisGizmo.ballClientPos(key),
+    snapping: () => viewSnap.animating,
+  },
   // UR15-1 viewport raytraced-mode handle for e2e: sample count + engine + probe.
   viewportRay: {
     spp: () => renderer.viewportRay.spp,
@@ -485,7 +531,11 @@ function frame(): void {
   renderer.render(scene, camera);
   workspaces.update();
   topbar.update();
+  topbar.setDirty(undo.position !== savedUndoPosition);
   toolbar.update();
+  hintBar.update();
+  modeChip.update();
+  axisGizmo.update();
   nPanel.update();
   passepartout.update();
   cursorOverlay.update();

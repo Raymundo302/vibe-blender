@@ -29,10 +29,14 @@ runE2e(async (t) => {
   t.check('edit-only tools absent in object mode',
     !objIds.includes('extrude') && !objIds.includes('knife'));
 
-  // The Move button's tooltip is "Name (Shortcut)".
-  const moveTitle = await t.evaluate(
-    `document.querySelector('.viewport-toolbar [data-tool-id="move"]').title`);
-  t.check('Move button tooltip is "Move (G)"', moveTitle === 'Move (G)', moveTitle);
+  // UR14-3 item 2: the Move button carries a styled tooltip via data-tip (name)
+  // + data-tip-key (shortcut); the slow native `title` is gone.
+  const moveTip = await t.evaluate(`(() => {
+    const b = document.querySelector('.viewport-toolbar [data-tool-id="move"]');
+    return { tip: b.dataset.tip, key: b.dataset.tipKey, title: b.getAttribute('title') };
+  })()`);
+  t.check('Move button tooltip is "Move" + key "G"',
+    moveTip.tip === 'Move' && moveTip.key === 'G' && moveTip.title === null, JSON.stringify(moveTip));
 
   // --- (2) click Move → modal translate; Escape cancels --------------------
   t.check('no operator active before clicking',

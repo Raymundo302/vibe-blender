@@ -87,6 +87,10 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { group: 'Camera', keys: 'Shift+MMB drag', description: 'Pan' },
   { group: 'Camera', keys: 'Mouse wheel', description: 'Zoom' },
   { group: 'Camera', keys: 'Numpad0', description: 'View through the active camera (toggle). With Camera tab › Lock to View on, navigating flies the camera' },
+  { group: 'Camera', keys: 'Numpad1 / 3 / 7', description: 'Snap to Front (−Y) / Right (+X) / Top (+Z)' },
+  { group: 'Camera', keys: 'Ctrl+Numpad1 / 3 / 7', description: 'Snap to Back (+Y) / Left (−X) / Bottom (−Z)' },
+  { group: 'Camera', keys: 'Numpad9', description: 'Snap to the opposite of the current view' },
+  { group: 'Camera', keys: 'Gizmo click', description: 'Click an axis ball (top-right) to snap the view to it' },
   { group: 'Camera', keys: '. (Period)', description: 'Frame the selection' },
 
   // File
