@@ -805,6 +805,19 @@ export class Renderer {
       && scene.materialOf(obj).alphaBlend !== true;
   }
 
+  /** UR16-1: is this a LIT mesh whose material ALPHA channel makes it partly
+   *  transparent (value < 1, or a gradient/image alpha)? Drawn lit (RenderedPass)
+   *  in the same blended pass as glass — distinct from the shadeless alphaBlend
+   *  cutout planes. Excludes glass/alphaBlend (handled by their own predicates). */
+  private isBlendedAlpha(obj: SceneObject, scene: Scene): boolean {
+    if (obj.kind !== 'mesh') return false;
+    const mat = scene.materialOf(obj);
+    if (mat.alphaBlend === true) return false;
+    if ((mat.transmission ?? 0) > 0) return false;
+    const a = mat.alpha;
+    return !!a && ((a.kind === 'value' && a.value < 1) || a.kind === 'gradient' || a.kind === 'image');
+  }
+
   /** Sort objects back-to-front by their origin's view-space depth (camera looks
    *  down -Z, so farther = more negative → ascending z draws far first). */
   private sortBackToFront(scene: Scene, objs: SceneObject[], view: Mat4): SceneObject[] {
@@ -1008,8 +1021,9 @@ export class Renderer {
       // UR10-3: glass (transmission > 0) draws in a blended pass like alphaBlend,
       // but through the RenderedPass (Cook-Torrance + Fresnel-rim glass alpha),
       // NOT the shadeless TexturedPass. It doesn't cast shadow maps either.
-      const opaqueMeshes = meshes.filter((o) => !this.isAlphaBlend(o, scene) && !this.isGlass(o, scene));
-      const glassMeshes = this.sortBackToFront(scene, meshes.filter((o) => this.isGlass(o, scene)), view);
+      const opaqueMeshes = meshes.filter((o) => !this.isAlphaBlend(o, scene) && !this.isGlass(o, scene) && !this.isBlendedAlpha(o, scene));
+      // Glass + UR16-1 half-alpha lit meshes share one back-to-front blended pass.
+      const glassMeshes = this.sortBackToFront(scene, meshes.filter((o) => this.isGlass(o, scene) || this.isBlendedAlpha(o, scene)), view);
       const alphaMeshes = meshes.filter((o) => this.isAlphaBlend(o, scene));
       const lights = collectLights(scene);
       const { casters, cubeCasters } = this.renderShadows(scene, opaqueMeshes, lights);

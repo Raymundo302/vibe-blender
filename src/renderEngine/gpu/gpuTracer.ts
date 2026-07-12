@@ -16,7 +16,7 @@ import type { Snapshot, SnapCamera, SnapWorld, SnapMaterial, SnapLight } from '.
 import { defaultSnapWorld } from '../snapshot';
 import { buildBVH, buildEmitters } from '../tracer';
 import {
-  packScene, packTriangles, packMaterials, packLights, packUVs, packEmitters,
+  packScene, packTriangles, packMaterials, packLights, packUVs, packLocals, packEmitters,
   flattenBVH, type PackedScene, type Payload,
 } from './pack';
 import { VERTEX_SRC, fragmentSource } from './kernel';
@@ -81,6 +81,8 @@ interface GpuScene {
   triIdx: DataTex;
   mats: DataTex;
   uvs: DataTex;
+  /** Per-corner object-local positions (UR16-1 gradients). */
+  locals: DataTex;
   lights: DataTex;
   numLights: number;
   emit: DataTex;
@@ -256,7 +258,7 @@ export class GpuTracer {
   private disposeScene(): void {
     const gl = this.gl;
     if (!gl || !this.scene) return;
-    for (const dt of [this.scene.tris, this.scene.nodes, this.scene.triIdx, this.scene.mats, this.scene.uvs, this.scene.lights, this.scene.emit]) {
+    for (const dt of [this.scene.tris, this.scene.nodes, this.scene.triIdx, this.scene.mats, this.scene.uvs, this.scene.locals, this.scene.lights, this.scene.emit]) {
       gl.deleteTexture(dt.tex);
     }
     this.scene = null;
@@ -295,6 +297,7 @@ export class GpuTracer {
         triIdx: this.createDataTexture(gl, packed.bvh.triIndices),
         mats: this.createDataTexture(gl, packed.materials),
         uvs: this.createDataTexture(gl, packed.uvs),
+        locals: this.createDataTexture(gl, packed.locals),
         lights: this.createDataTexture(gl, packed.lights),
         numLights: snap.lights.length,
         emit: this.createDataTexture(gl, packed.emitters.data),
@@ -329,6 +332,7 @@ export class GpuTracer {
       s.nodeCount = flat.nodeCount;
       s.triIdx = this.reupload(gl, s.triIdx, flat.triIndices);
       s.uvs = this.reupload(gl, s.uvs, packUVs(snap.triUV, triCount));
+      s.locals = this.reupload(gl, s.locals, packLocals(snap.triLocal, triCount));
     }
     if (mat) {
       s.mats = this.reupload(gl, s.mats, packMaterials(snap.materials));
@@ -427,7 +431,7 @@ export class GpuTracer {
     gl.uniform3f(this.u('uWorldZenith'), wld.zenith[0], wld.zenith[1], wld.zenith[2]);
     gl.uniform1f(this.u('uWorldStrength'), wld.strength);
 
-    // Data textures live on units 0..6; the prev-accum on unit 7.
+    // Data textures live on units 0..6; the prev-accum on unit 7; locals on 8.
     this.bindDataTex(gl, 0, this.scene.tris, 'uTris', 'uTrisW');
     this.bindDataTex(gl, 1, this.scene.nodes, 'uNodes', 'uNodesW');
     this.bindDataTex(gl, 2, this.scene.triIdx, 'uTriIdx', 'uTriIdxW');
@@ -435,6 +439,7 @@ export class GpuTracer {
     this.bindDataTex(gl, 4, this.scene.uvs, 'uUVs', 'uUVsW');
     this.bindDataTex(gl, 5, this.scene.lights, 'uLights', 'uLightsW');
     this.bindDataTex(gl, 6, this.scene.emit, 'uEmit', 'uEmitW');
+    this.bindDataTex(gl, 8, this.scene.locals, 'uLocals', 'uLocalsW');
     gl.uniform1i(this.u('uPrevAccum'), 7);
     return true;
   }

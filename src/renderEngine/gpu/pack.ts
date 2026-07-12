@@ -37,11 +37,19 @@ export const TEX_MAX_WIDTH = 2048;
 
 /** Triangle: 3 texels. t0 = a.xyz + materialIndex(w); t1 = b.xyz; t2 = c.xyz. */
 export const TRI_TEXELS = 3;
-/** Material: 4 texels (UR12-2 extended the layout). t0 = baseColor.rgb +
- *  roughness(w); t1 = metallic, transmission, ior, emissiveStrength;
- *  t2 = emissive.rgb + texKind(w: 0 none | 1 checker | 2 image);
- *  t3 = shadeless(0|1), subsurfaceWeight, subsurfaceRadius, alphaBlend(0|1). */
-export const MAT_TEXELS = 4;
+/** Material: 7 texels (UR16-1 extended for the color gradient + alpha channel).
+ *  t0 = baseColor.rgb + roughness(w); t1 = metallic, transmission, ior,
+ *  emissiveStrength; t2 = emissive.rgb + texKind(w: 0 none | 1 checker | 2 image);
+ *  t3 = shadeless(0|1), subsurfaceWeight, subsurfaceRadius, alphaBlend(0|1);
+ *  t4 = colorGradEnabled(0|1), axis(0 x|1 y|2 z), offset, scale;
+ *  t5 = colorGradA.rgb, alphaValue(w);  t6 = colorGradB.rgb, 0.
+ *  (GPU cut, documented in kernel.ts: alpha gradient/image and roughness/metallic
+ *  gradients fall back to their value — only the COLOR gradient + alpha VALUE are
+ *  ported; the CPU tracer supports all, the parity harness uses only these.) */
+export const MAT_TEXELS = 7;
+/** Object-LOCAL triangle positions (UR16-1 gradient eval): 3 texels/tri, parallel
+ *  to the triangle texture. t0 = localA.xyz; t1 = localB.xyz; t2 = localC.xyz. */
+export const LOCAL_TEXELS = 3;
 /** UV: 2 texels/tri. t0 = uv0.xy, uv1.xy; t1 = uv2.xy, 0, 0. */
 export const UV_TEXELS = 2;
 /** Emitter: 2 texels/emitter (UR10-2 mesh-light NEE). t0 = triIndex, cdf, 0, 0;
@@ -141,8 +149,28 @@ export function packMaterials(materials: SnapMaterial[]): Payload {
       m.subsurfaceRadius ?? 0.05,
       m.alphaBlend ? 1 : 0,
     ]);
+    // UR16-1 color gradient + alpha value (t4..t6).
+    const cg = m.colorGradient ?? null;
+    const axis = cg ? (cg.axis === 'x' ? 0 : cg.axis === 'y' ? 1 : 2) : 0;
+    texels.push([cg ? 1 : 0, axis, cg ? cg.offset : 0, cg ? cg.scale : 0]);
+    texels.push([cg ? cg.a[0] : 0, cg ? cg.a[1] : 0, cg ? cg.a[2] : 0, m.alpha ?? 1]);
+    texels.push([cg ? cg.b[0] : 0, cg ? cg.b[1] : 0, cg ? cg.b[2] : 0, 0]);
   }
   return buildPayload(texels, MAT_TEXELS, materials.length);
+}
+
+/** Pack per-corner OBJECT-LOCAL triangle positions (UR16-1 gradients). Missing/
+ *  short input packs (0,0,0). */
+export function packLocals(triLocal: Float32Array | null | undefined, triCount: number): Payload {
+  const texels: number[][] = [];
+  for (let i = 0; i < triCount; i++) {
+    const o = i * 9;
+    const g = (k: number) => (triLocal && o + k < triLocal.length ? triLocal[o + k] : 0);
+    texels.push([g(0), g(1), g(2), 0]);
+    texels.push([g(3), g(4), g(5), 0]);
+    texels.push([g(6), g(7), g(8), 0]);
+  }
+  return buildPayload(texels, LOCAL_TEXELS, triCount);
 }
 
 export interface MatRead {
@@ -158,11 +186,19 @@ export interface MatRead {
   subsurfaceWeight: number;
   subsurfaceRadius: number;
   alphaBlend: number;
+  /** UR16-1 color gradient + alpha value. */
+  colorGradEnabled: number;
+  gradAxis: number;
+  gradOffset: number;
+  gradScale: number;
+  gradA: [number, number, number];
+  gradB: [number, number, number];
+  alpha: number;
 }
 
 export function readMaterial(p: Payload, i: number): MatRead {
   const b0 = texelBase(p, i, 0), b1 = texelBase(p, i, 1), b2 = texelBase(p, i, 2);
-  const b3 = texelBase(p, i, 3);
+  const b3 = texelBase(p, i, 3), b4 = texelBase(p, i, 4), b5 = texelBase(p, i, 5), b6 = texelBase(p, i, 6);
   const d = p.data;
   return {
     baseColor: [d[b0], d[b0 + 1], d[b0 + 2]],
@@ -177,6 +213,13 @@ export function readMaterial(p: Payload, i: number): MatRead {
     subsurfaceWeight: d[b3 + 1],
     subsurfaceRadius: d[b3 + 2],
     alphaBlend: d[b3 + 3],
+    colorGradEnabled: d[b4],
+    gradAxis: d[b4 + 1],
+    gradOffset: d[b4 + 2],
+    gradScale: d[b4 + 3],
+    gradA: [d[b5], d[b5 + 1], d[b5 + 2]],
+    alpha: d[b5 + 3],
+    gradB: [d[b6], d[b6 + 1], d[b6 + 2]],
   };
 }
 
@@ -396,6 +439,8 @@ export interface PackedScene {
   materials: Payload;
   lights: Payload;
   uvs: Payload;
+  /** Per-corner object-local positions (UR16-1 gradients). */
+  locals: Payload;
   emitters: PackedEmitters;
   bvh: FlatBVH;
 }
@@ -411,6 +456,7 @@ export function packScene(
     materials: packMaterials(snap.materials),
     lights: packLights(snap.lights),
     uvs: packUVs(snap.triUV, triCount),
+    locals: packLocals(snap.triLocal, triCount),
     emitters: packEmitters(emitters),
     bvh: flattenBVH(bvh),
   };

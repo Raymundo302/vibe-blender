@@ -9,17 +9,20 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type {
   CameraData,
+  ChannelInput,
   CurveData,
   CurvePoint,
   EmptyData,
+  GradientInput,
   HtmlPlaneData,
   LightData,
   LightType,
   Material,
+  MaterialShader,
   ObjectKind,
   TextData,
 } from '../core/scene/objectData';
-import { clampHtmlFps, clampFStop, clampCurveResolution, AREA_MIN_SIZE, clampIor, clampTransmission, type GlareSettings } from '../core/scene/objectData';
+import { clampHtmlFps, clampFStop, clampCurveResolution, AREA_MIN_SIZE, clampIor, clampTransmission, materialShader, MATERIAL_SHADERS, type GlareSettings } from '../core/scene/objectData';
 import {
   createModifier,
   modifierTypes,
@@ -46,9 +49,14 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
  */
 
 const FORMAT = 'vibe-blender-scene';
-/** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 19;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+/** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS.
+ *  v20 (UR16-1): shader model — materials serialize as named shader + per-channel
+ *  SOCKET inputs (value/image/gradient) + an alpha channel, replacing the scattered
+ *  baseColor/texKind/roughDataUrl/… fields. Pre-v20 materials migrate to shader
+ *  'super' (or 'emit' when shadeless) with channels synthesized from the legacy
+ *  fields — they render IDENTICALLY (the runtime fields are unchanged). */
+const VERSION = 20;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -303,6 +311,78 @@ function meshAttrs(mesh: EditableMesh): Record<string, unknown> {
   return out;
 }
 
+// --- Material socket serialization (v20/UR16-1) ------------------------------
+
+/** Serialize an object-space gradient input, numbers rounded. */
+function serGradient(g: GradientInput): Record<string, unknown> {
+  return { kind: 'gradient', a: rgb(g.a), b: rgb(g.b), axis: g.axis, offset: num(g.offset), scale: num(g.scale) };
+}
+
+/** Serialize the COLOR channel socket from a material's runtime fields. Gradient
+ *  wins, then the procedural 'checker' extension, then image, then the value. */
+function serColorChannel(m: Material): Record<string, unknown> {
+  // The runtime model (and ALL THREE engines) computes value × map — a map
+  // does not REPLACE the underlying value, it multiplies it. So the image/
+  // checker sockets must CARRY the value or a save→load loses the tint
+  // (UR16-1 verify catch 2026-07-12: baseColor [0.4,0.5,0.6] under a texture
+  // came back [1,1,1]; metallic 0.9 under a metal map came back 0).
+  if (m.colorGradient) return serGradient(m.colorGradient);
+  if (m.texKind === 'checker') return { kind: 'checker', value: rgb(m.baseColor) };
+  if (m.texKind === 'image') return { kind: 'image', dataUrl: m.texDataUrl, value: rgb(m.baseColor) };
+  return { kind: 'value', value: rgb(m.baseColor) };
+}
+
+/** Serialize a SCALAR channel socket (roughness/metallic): gradient, image, value.
+ *  Image sockets carry the multiplied-in value (see serColorChannel). */
+function serScalarChannel(gradient: GradientInput | undefined, dataUrl: string | null, value: number): Record<string, unknown> {
+  if (gradient) return serGradient(gradient);
+  if (dataUrl) return { kind: 'image', dataUrl, value: num(value) };
+  return { kind: 'value', value: num(value) };
+}
+
+/** Serialize the ALPHA channel socket (absent runtime alpha → opaque value 1). */
+function serAlphaChannel(a: ChannelInput<number> | undefined): Record<string, unknown> {
+  if (!a || a.kind === 'value') return { kind: 'value', value: num(a ? a.value : 1) };
+  if (a.kind === 'gradient') return serGradient(a);
+  return { kind: 'image', dataUrl: a.dataUrl };
+}
+
+/** One material in the v20 socket format: named shader + per-channel inputs +
+ *  the super-shader extras. Deterministic key order; undefined keys dropped so
+ *  opaque/default materials stay minimal and round-trip byte-identically. */
+function serializeMaterial(m: Material): Record<string, unknown> {
+  const shader = materialShader(m);
+  const hasGlassData = shader === 'glass' || (m.transmission ?? 0) > 0;
+  return {
+    id: m.id,
+    name: m.name,
+    shader,
+    color: serColorChannel(m),
+    roughness: serScalarChannel(m.roughGradient, m.roughDataUrl, m.roughness),
+    metallic: serScalarChannel(m.metalGradient, m.metalDataUrl, m.metallic),
+    alpha: serAlphaChannel(m.alpha),
+    // Super/glass/emit extras — written only when meaningful so simple materials
+    // stay compact (JSON.stringify drops undefined keys).
+    emissive: rgb(m.emissive),
+    emissiveStrength: num(m.emissiveStrength),
+    transmission: hasGlassData ? num(clampTransmission(m.transmission ?? 0)) : undefined,
+    ior: hasGlassData ? num(clampIor(m.ior ?? 1.45)) : undefined,
+    subsurfaceWeight: num(m.subsurfaceWeight),
+    subsurfaceRadius: num(m.subsurfaceRadius),
+    shadeless: m.shadeless ? true : undefined,
+    alphaBlend: m.alphaBlend ? true : undefined,
+    alwaysTextured: m.alwaysTextured ? true : undefined,
+    // Normal/bump map (super) — written only when a map is set.
+    normalDataUrl: m.normalDataUrl ?? undefined,
+    normalIsBump: m.normalDataUrl ? m.normalIsBump : undefined,
+    normalStrength: m.normalDataUrl ? num(m.normalStrength) : undefined,
+    // Shader nodes (super).
+    nodeGraph: m.nodeGraph ?? undefined,
+    useNodes: m.useNodes ? true : undefined,
+    bakeRes: m.bakeRes,
+  };
+}
+
 /** Serialize the whole scene + camera to a deterministic JSON string. */
 export function serializeScene(scene: Scene, camera: OrbitCamera): string {
   const data = {
@@ -350,44 +430,8 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       height: scene.renderSettings.height,
     },
     collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
-    materials: scene.materials.map((m) => ({
-      id: m.id,
-      name: m.name,
-      baseColor: rgb(m.baseColor),
-      metallic: num(m.metallic),
-      roughness: num(m.roughness),
-      // Transmission / IOR (v18/UR10-3) — optional, only written when the
-      // material actually transmits (>0), so pre-UR10-3 materials serialize
-      // byte-identically (JSON drops undefined keys). IOR only matters for glass,
-      // so it too is omitted for opaque materials.
-      transmission: m.transmission ? num(m.transmission) : undefined,
-      ior: m.transmission ? num(clampIor(m.ior ?? 1.45)) : undefined,
-      emissive: rgb(m.emissive),
-      emissiveStrength: num(m.emissiveStrength),
-      subsurfaceWeight: num(m.subsurfaceWeight),
-      subsurfaceRadius: num(m.subsurfaceRadius),
-      // Shadeless (v10) — optional: only written when true, so a material that
-      // never set it (every pre-v10 material) serializes byte-identically
-      // (JSON.stringify drops undefined-valued keys).
-      shadeless: m.shadeless ? true : undefined,
-      // Alpha blend / Always Textured (v15) — optional, only written when true so
-      // pre-v15 materials serialize byte-identically (JSON drops undefined keys).
-      alphaBlend: m.alphaBlend ? true : undefined,
-      alwaysTextured: m.alwaysTextured ? true : undefined,
-      texKind: m.texKind,
-      texDataUrl: m.texDataUrl,
-      normalDataUrl: m.normalDataUrl,
-      normalIsBump: m.normalIsBump,
-      normalStrength: num(m.normalStrength),
-      roughDataUrl: m.roughDataUrl,
-      metalDataUrl: m.metalDataUrl,
-      // Shader nodes (v6/P14): the graph is JSON-pure by construction.
-      nodeGraph: m.nodeGraph,
-      useNodes: m.useNodes,
-      // Node-bake resolution — optional; omitted when default (128) so old
-      // files stay byte-identical (undefined is dropped by JSON.stringify).
-      bakeRes: m.bakeRes,
-    })),
+    // Materials in the v20 socket format (named shader + per-channel inputs).
+    materials: scene.materials.map(serializeMaterial),
     objects: scene.objects.map((o) => serializeObject(o, scene)),
   };
   return JSON.stringify(data, null, 2);
@@ -416,6 +460,14 @@ interface ModifierData {
 interface MaterialData {
   id: number;
   name: string;
+  /** Named shader (v20/UR16-1). */
+  shader: MaterialShader;
+  /** Alpha channel (v20/UR16-1). */
+  alpha: ChannelInput<number>;
+  /** Object-space gradient overrides (v20/UR16-1), absent → value/image. */
+  colorGradient?: GradientInput;
+  roughGradient?: GradientInput;
+  metalGradient?: GradientInput;
   baseColor: [number, number, number];
   metallic: number;
   roughness: number;
@@ -669,7 +721,69 @@ function parseRenderSettings(v: unknown): { width: number; height: number } {
   };
 }
 
-/** Parse the scene material library (absent in v1/v2 → empty). */
+/** Parse a v20 gradient input socket. */
+function parseGradient(v: Record<string, unknown>, where: string): GradientInput {
+  const axis = v.axis;
+  if (axis !== 'x' && axis !== 'y' && axis !== 'z') fail(`${where}.axis must be x|y|z`);
+  return {
+    kind: 'gradient',
+    a: numArray(v.a, 3, `${where}.a`) as [number, number, number],
+    b: numArray(v.b, 3, `${where}.b`) as [number, number, number],
+    axis,
+    offset: numField(v.offset, `${where}.offset`),
+    scale: numField(v.scale, `${where}.scale`),
+  };
+}
+
+/** Parsed pieces of a socket channel (v20): the source kind + its payload. */
+interface ParsedChannel {
+  kind: 'value' | 'checker' | 'image' | 'gradient';
+  value?: number | [number, number, number];
+  dataUrl?: string | null;
+  gradient?: GradientInput;
+}
+
+/** Parse a channel socket. `colorLike` (color channel) allows [r,g,b] values and
+ *  the 'checker' procedural kind; scalar channels take a number value. */
+function parseChannel(v: unknown, where: string, colorLike: boolean): ParsedChannel {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(`${where} must be a channel object`);
+  const c = v as Record<string, unknown>;
+  if (c.kind === 'value') {
+    if (colorLike) return { kind: 'value', value: numArray(c.value, 3, `${where}.value`) as [number, number, number] };
+    return { kind: 'value', value: numField(c.value, `${where}.value`) };
+  }
+  // checker/image sockets CARRY the multiplied-in value (engines compute
+  // value × map — dropping it changed renders on save→load; UR16-1 verify
+  // catch). `value` is optional for tolerance of pre-fix files.
+  if (c.kind === 'checker') {
+    if (!colorLike) fail(`${where}.kind checker is color-only`);
+    return {
+      kind: 'checker',
+      value: c.value === undefined ? undefined : numArray(c.value, 3, `${where}.value`) as [number, number, number],
+    };
+  }
+  if (c.kind === 'image') {
+    if (typeof c.dataUrl !== 'string' && c.dataUrl !== null) fail(`${where}.dataUrl must be a string`);
+    const value = c.value === undefined ? undefined
+      : colorLike ? numArray(c.value, 3, `${where}.value`) as [number, number, number]
+      : numField(c.value, `${where}.value`);
+    return { kind: 'image', dataUrl: (c.dataUrl as string | null) ?? null, value };
+  }
+  if (c.kind === 'gradient') return { kind: 'gradient', gradient: parseGradient(c, where) };
+  fail(`${where}.kind must be value|image|gradient${colorLike ? '|checker' : ''}`);
+}
+
+/** Parse the alpha channel socket into a runtime ChannelInput<number>. */
+function parseAlphaChannel(v: unknown, where: string): ChannelInput<number> {
+  const p = parseChannel(v, where, false);
+  if (p.kind === 'value') return { kind: 'value', value: p.value as number };
+  if (p.kind === 'image') return { kind: 'image', dataUrl: (p.dataUrl as string) ?? '' };
+  return p.gradient!;
+}
+
+/** Parse the scene material library (absent in v1/v2 → empty). Dispatches on
+ *  format: a `shader` string OR a `color` object → v20 socket format; otherwise
+ *  the legacy scattered-field format, migrated to shader 'super'/'emit'. */
 function parseMaterials(v: unknown): MaterialData[] {
   if (v === undefined) return [];
   if (!Array.isArray(v)) fail('materials must be an array');
@@ -678,64 +792,129 @@ function parseMaterials(v: unknown): MaterialData[] {
     const mat = m as Record<string, unknown>;
     if (typeof mat.id !== 'number' || !Number.isInteger(mat.id)) fail(`materials[${mi}].id must be an integer`);
     if (typeof mat.name !== 'string') fail(`materials[${mi}].name must be a string`);
-    return {
-      id: mat.id,
-      name: mat.name,
-      baseColor: numArray(mat.baseColor, 3, `materials[${mi}].baseColor`) as [number, number, number],
-      metallic: numField(mat.metallic, `materials[${mi}].metallic`),
-      roughness: numField(mat.roughness, `materials[${mi}].roughness`),
-      // Transmission / IOR (v18/UR10-3) — tolerant: absent → 0 / 1.45, clamped.
-      transmission: mat.transmission === undefined ? 0 : clampTransmission(numField(mat.transmission, `materials[${mi}].transmission`)),
-      ior: mat.ior === undefined ? 1.45 : clampIor(numField(mat.ior, `materials[${mi}].ior`)),
-      emissive: numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
-      emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
-      subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
-      subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
-      // Shadeless (v10) — absent in older files → false.
-      shadeless: mat.shadeless === true,
-      // Alpha blend / Always Textured (v15) — absent in older files → false.
-      alphaBlend: mat.alphaBlend === true,
-      alwaysTextured: mat.alwaysTextured === true,
-      texKind: (() => {
-        if (mat.texKind === undefined) return 'none' as const;
-        if (mat.texKind !== 'none' && mat.texKind !== 'checker' && mat.texKind !== 'image') {
-          fail(`materials[${mi}].texKind must be none|checker|image`);
-        }
-        return mat.texKind;
-      })(),
-      texDataUrl: (() => {
-        if (mat.texDataUrl === undefined || mat.texDataUrl === null) return null;
-        if (typeof mat.texDataUrl !== 'string') fail(`materials[${mi}].texDataUrl must be a string or null`);
-        return mat.texDataUrl;
-      })(),
-      // Map slots (v5/P13) — absent in older files → off/defaults.
-      normalDataUrl: optionalUrl(mat.normalDataUrl, `materials[${mi}].normalDataUrl`),
-      normalIsBump: mat.normalIsBump === true,
-      normalStrength: mat.normalStrength === undefined ? 1 : numField(mat.normalStrength, `materials[${mi}].normalStrength`),
-      roughDataUrl: optionalUrl(mat.roughDataUrl, `materials[${mi}].roughDataUrl`),
-      metalDataUrl: optionalUrl(mat.metalDataUrl, `materials[${mi}].metalDataUrl`),
-      // Node graph (v6): sanitizeGraph validates types/links/acyclicity and
-      // throws the standard readable error BEFORE any scene mutation.
-      nodeGraph:
-        mat.nodeGraph === undefined || mat.nodeGraph === null
-          ? null
-          : (() => {
-              try {
-                return sanitizeGraph(mat.nodeGraph as NodeGraph);
-              } catch (e) {
-                return fail(`materials[${mi}].nodeGraph: ${(e as Error).message}`);
-              }
-            })(),
-      useNodes: mat.useNodes === true,
-      // Bake resolution (optional, backward-compatible): only 128/256/512/1024
-      // are honored; any other/absent value → undefined (bake uses 128).
-      bakeRes: (() => {
-        if (mat.bakeRes === undefined) return undefined;
-        const r = numField(mat.bakeRes, `materials[${mi}].bakeRes`);
-        return [128, 256, 512, 1024].includes(r) ? r : undefined;
-      })(),
-    };
+    const isV20 = typeof mat.shader === 'string' || (typeof mat.color === 'object' && mat.color !== null && !Array.isArray(mat.color));
+    return isV20 ? parseMaterialV20(mat, mi) : parseMaterialLegacy(mat, mi);
   });
+}
+
+/** Parse a v20 socket-format material into runtime fields. */
+function parseMaterialV20(mat: Record<string, unknown>, mi: number): MaterialData {
+  if (mat.shader !== undefined && !(MATERIAL_SHADERS as readonly string[]).includes(mat.shader as string)) {
+    fail(`materials[${mi}].shader must be one of ${MATERIAL_SHADERS.join('|')}`);
+  }
+  const shader = (mat.shader as MaterialShader) ?? 'super';
+  const color = parseChannel(mat.color, `materials[${mi}].color`, true);
+  const rough = parseChannel(mat.roughness, `materials[${mi}].roughness`, false);
+  const metal = parseChannel(mat.metallic, `materials[${mi}].metallic`, false);
+  const alpha = mat.alpha === undefined ? ({ kind: 'value', value: 1 } as ChannelInput<number>) : parseAlphaChannel(mat.alpha, `materials[${mi}].alpha`);
+  return {
+    id: mat.id as number,
+    name: mat.name as string,
+    shader,
+    alpha,
+    colorGradient: color.kind === 'gradient' ? color.gradient : undefined,
+    roughGradient: rough.kind === 'gradient' ? rough.gradient : undefined,
+    metalGradient: metal.kind === 'gradient' ? metal.gradient : undefined,
+    // Color channel → baseColor + texKind/texDataUrl. Image/checker sockets
+    // restore their carried value (the tint the engines multiply with the
+    // map); absent (pre-fix files) → the old neutral defaults.
+    baseColor: (color.value as [number, number, number] | undefined) ?? [1, 1, 1],
+    texKind: color.kind === 'image' ? 'image' : color.kind === 'checker' ? 'checker' : 'none',
+    texDataUrl: color.kind === 'image' ? ((color.dataUrl as string | null) ?? null) : null,
+    // Scalar channels → value + map url (carried value restored likewise).
+    roughness: (rough.value as number | undefined) ?? 0.5,
+    roughDataUrl: rough.kind === 'image' ? ((rough.dataUrl as string | null) ?? null) : null,
+    metallic: (metal.value as number | undefined) ?? 0,
+    metalDataUrl: metal.kind === 'image' ? ((metal.dataUrl as string | null) ?? null) : null,
+    // Super/glass/emit extras.
+    transmission: mat.transmission === undefined ? 0 : clampTransmission(numField(mat.transmission, `materials[${mi}].transmission`)),
+    ior: mat.ior === undefined ? 1.45 : clampIor(numField(mat.ior, `materials[${mi}].ior`)),
+    emissive: mat.emissive === undefined ? [0, 0, 0] : numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
+    emissiveStrength: mat.emissiveStrength === undefined ? 0 : numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
+    subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
+    subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
+    shadeless: mat.shadeless === true,
+    alphaBlend: mat.alphaBlend === true,
+    alwaysTextured: mat.alwaysTextured === true,
+    normalDataUrl: optionalUrl(mat.normalDataUrl, `materials[${mi}].normalDataUrl`),
+    normalIsBump: mat.normalIsBump === true,
+    normalStrength: mat.normalStrength === undefined ? 1 : numField(mat.normalStrength, `materials[${mi}].normalStrength`),
+    nodeGraph: parseNodeGraphField(mat.nodeGraph, mi),
+    useNodes: mat.useNodes === true,
+    bakeRes: parseBakeRes(mat.bakeRes, mi),
+  };
+}
+
+/** Parse a legacy (pre-v20) scattered-field material and MIGRATE it to the shader
+ *  model. The runtime fields are UNCHANGED (so it renders identically); the shader
+ *  is synthesized: shadeless → 'emit'; a diffuse-mode image plane → 'diffuse';
+ *  everything else → 'super' (the everything shader honors all fields). */
+function parseMaterialLegacy(mat: Record<string, unknown>, mi: number): MaterialData {
+  const shadeless = mat.shadeless === true;
+  const alwaysTextured = mat.alwaysTextured === true;
+  const texKind = (() => {
+    if (mat.texKind === undefined) return 'none' as const;
+    if (mat.texKind !== 'none' && mat.texKind !== 'checker' && mat.texKind !== 'image') {
+      fail(`materials[${mi}].texKind must be none|checker|image`);
+    }
+    return mat.texKind;
+  })();
+  // Migration shader (RENDER-NEUTRAL — the engine resolves all shaders through the
+  // same legacy fields, so this choice only affects UR16-2's channel UI):
+  const shader: MaterialShader = shadeless
+    ? 'emit'
+    : alwaysTextured && texKind === 'image'
+    ? 'diffuse'
+    : 'super';
+  return {
+    id: mat.id as number,
+    name: mat.name as string,
+    shader,
+    alpha: { kind: 'value', value: 1 },
+    baseColor: numArray(mat.baseColor, 3, `materials[${mi}].baseColor`) as [number, number, number],
+    metallic: numField(mat.metallic, `materials[${mi}].metallic`),
+    roughness: numField(mat.roughness, `materials[${mi}].roughness`),
+    transmission: mat.transmission === undefined ? 0 : clampTransmission(numField(mat.transmission, `materials[${mi}].transmission`)),
+    ior: mat.ior === undefined ? 1.45 : clampIor(numField(mat.ior, `materials[${mi}].ior`)),
+    emissive: numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
+    emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
+    subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
+    subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
+    shadeless,
+    alphaBlend: mat.alphaBlend === true,
+    alwaysTextured,
+    texKind,
+    texDataUrl: (() => {
+      if (mat.texDataUrl === undefined || mat.texDataUrl === null) return null;
+      if (typeof mat.texDataUrl !== 'string') fail(`materials[${mi}].texDataUrl must be a string or null`);
+      return mat.texDataUrl;
+    })(),
+    normalDataUrl: optionalUrl(mat.normalDataUrl, `materials[${mi}].normalDataUrl`),
+    normalIsBump: mat.normalIsBump === true,
+    normalStrength: mat.normalStrength === undefined ? 1 : numField(mat.normalStrength, `materials[${mi}].normalStrength`),
+    roughDataUrl: optionalUrl(mat.roughDataUrl, `materials[${mi}].roughDataUrl`),
+    metalDataUrl: optionalUrl(mat.metalDataUrl, `materials[${mi}].metalDataUrl`),
+    nodeGraph: parseNodeGraphField(mat.nodeGraph, mi),
+    useNodes: mat.useNodes === true,
+    bakeRes: parseBakeRes(mat.bakeRes, mi),
+  };
+}
+
+/** Node graph field: sanitizeGraph validates BEFORE any scene mutation. */
+function parseNodeGraphField(v: unknown, mi: number): NodeGraph | null {
+  if (v === undefined || v === null) return null;
+  try {
+    return sanitizeGraph(v as NodeGraph);
+  } catch (e) {
+    return fail(`materials[${mi}].nodeGraph: ${(e as Error).message}`);
+  }
+}
+
+/** Bake resolution: only 128/256/512/1024 honored; else undefined. */
+function parseBakeRes(v: unknown, mi: number): number | undefined {
+  if (v === undefined) return undefined;
+  const r = numField(v, `materials[${mi}].bakeRes`);
+  return [128, 256, 512, 1024].includes(r) ? r : undefined;
 }
 
 /** An optional packed-image field: absent/null → null, else a string. */
@@ -1294,6 +1473,13 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
     const mat: Material = {
       id: md.id,
       name: md.name,
+      shader: md.shader,
+      alpha: md.alpha.kind === 'gradient'
+        ? { kind: 'gradient', a: [...md.alpha.a], b: [...md.alpha.b], axis: md.alpha.axis, offset: md.alpha.offset, scale: md.alpha.scale }
+        : { ...md.alpha },
+      colorGradient: md.colorGradient ? { ...md.colorGradient, a: [...md.colorGradient.a], b: [...md.colorGradient.b] } : undefined,
+      roughGradient: md.roughGradient ? { ...md.roughGradient, a: [...md.roughGradient.a], b: [...md.roughGradient.b] } : undefined,
+      metalGradient: md.metalGradient ? { ...md.metalGradient, a: [...md.metalGradient.a], b: [...md.metalGradient.b] } : undefined,
       baseColor: [...md.baseColor],
       metallic: md.metallic,
       roughness: md.roughness,

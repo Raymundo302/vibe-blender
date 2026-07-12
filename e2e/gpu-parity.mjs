@@ -148,6 +148,22 @@ runE2e(async (t) => {
               snap.camera = lookAt([6,-7,5], [0,0,1], 0.6);
               return snap;
             } },
+          { name: 'gradient-alpha', thr: 0.90, justify: 'UR16-1: object-space color GRADIENT floor + a HALF-ALPHA diffuse sphere. Stochastic alpha pass-through (prob 1−alpha) adds MC variance like the other 0.90 scenes; the gradient itself is closed-form so it contributes no noise. Both engines read snap.triLocal + the same gradientT/gradT formula, so the gradient matches; the alpha is value 0.5 in both.',
+            build: () => {
+              reset();
+              // Gradient floor: red (local -x) → blue (local +x).
+              const gm = mat((m) => {
+                m.colorGradient = { kind: 'gradient', a: [0.9, 0.1, 0.1], b: [0.1, 0.1, 0.9], axis: 'x', offset: 0.5, scale: 1 / 12 };
+              });
+              s.add('Plane', prim.makePlane(12)).materialId = gm.id;
+              // Half-alpha diffuse sphere floating over the gradient floor.
+              const half = mat((m) => { m.shader = 'diffuse'; m.baseColor = [0.85, 0.85, 0.85]; m.alpha = { kind: 'value', value: 0.5 }; });
+              const sph = s.add('Ball', prim.makeUvSphere(1.2, 32, 16)); place(sph, 0, 0, 1.4); sph.materialId = half.id;
+              const L = s.addLight('P', 'point'); L.light.power = 1500; place(L, 4, -4, 6);
+              const snap = snapMod.buildSnapshot(s, window.__app.camera);
+              snap.camera = lookAt([5, -6, 4], [0, 0, 1], 0.6);
+              return snap;
+            } },
           { name: 'donut', thr: 0.95, spp: 256, justify: 'frozen P9 fixture, flat materials, own camera. 256 spp because at 128 spp the two engines DECORRELATED noise (mulberry32 vs PCG) alone caps SSIM at ~0.938 — proven NOISE not bias: SSIM rises to ~0.967 at 256 spp (scratch-donut-spp probe)',
             build: async () => {
               reset();

@@ -5,7 +5,7 @@
 import { runE2e } from './harness.mjs';
 
 // Bumped whenever sceneJson VERSION bumps — single spot for the whole suite.
-const CURRENT_FORMAT_VERSION = 19; // v19: curve objects (UR11-1)
+const CURRENT_FORMAT_VERSION = 20; // v20: shader model v2 sockets (UR16-1)
 
 runE2e(async (t) => {
   // --- P3-2: scene save / load (JSON) ---

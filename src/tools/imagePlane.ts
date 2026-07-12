@@ -128,6 +128,10 @@ export function createImagePlane(
   // Material — added to the scene library, textured with the packed image.
   const mat = scene.addMaterial(name);
   mat.name = name;
+  // UR16-1: the image lives in the shader's COLOR socket (texKind image); the
+  // shader is 'emit' for shadeless image planes (Ray's blueprint/ref look) and
+  // 'diffuse' for lit ones. shaderOverrides folds emit → shadeless in the engines.
+  mat.shader = mode === 'emit' ? 'emit' : 'diffuse';
   mat.baseColor = [1, 1, 1]; // white base so the image shows unmodified
   mat.metallic = 0;
   mat.roughness = 1;

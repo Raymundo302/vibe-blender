@@ -1,6 +1,7 @@
 import type { Snapshot, SnapMaterial, SnapLight, SnapCamera, SnapWorld } from './snapshot';
 import { defaultSnapWorld } from './snapshot';
 import { sampleEquirect } from '../core/scene/worldData';
+import { gradientT, type GradientInput } from '../core/scene/objectData';
 import { evaluateGraph } from '../core/nodes/evaluate';
 // Register all node defs so the graph evaluates inside the tracer WORKER bundle.
 import '../core/nodes/builtins';
@@ -917,6 +918,10 @@ export interface TraceScene {
    * tris (P16-2). null → the Texture Coordinate node's generated output falls
    * back to (u, v, 0). */
   triGen: Float32Array | null;
+  /** Per-corner OBJECT-LOCAL positions (3 floats × 3 corners per tri), parallel
+   * to tris (UR16-1). null → object-space gradients fall back to the world hit
+   * position. */
+  triLocal: Float32Array | null;
   materials: SnapMaterial[];
   lights: SnapLight[];
   camera: SnapCamera;
@@ -934,6 +939,7 @@ export function prepareScene(snap: Snapshot): TraceScene {
     triMat: snap.triMat,
     triUV: snap.triUV ?? null,
     triGen: snap.triGen ?? null,
+    triLocal: snap.triLocal ?? null,
     materials: snap.materials,
     lights: snap.lights,
     camera: snap.camera,
@@ -1021,6 +1027,31 @@ export function dielectricScatter(
   return { refracted: true, tir: false };
 }
 
+/** Interpolate the OBJECT-LOCAL hit position from a scene's triLocal (barycentric
+ *  A=1−u−v, B=u, C=v). Falls back to the world hit position when the snapshot
+ *  carried no local coords. Writes [x,y,z] into `out` (UR16-1 gradient eval). */
+function localAtHit(
+  triLocal: Float32Array | null, tri: number, u: number, v: number,
+  wx: number, wy: number, wz: number, out: [number, number, number],
+): void {
+  if (!triLocal) { out[0] = wx; out[1] = wy; out[2] = wz; return; }
+  const o = tri * 9;
+  const w0 = 1 - u - v;
+  out[0] = triLocal[o] * w0 + triLocal[o + 3] * u + triLocal[o + 6] * v;
+  out[1] = triLocal[o + 1] * w0 + triLocal[o + 4] * u + triLocal[o + 7] * v;
+  out[2] = triLocal[o + 2] * w0 + triLocal[o + 5] * u + triLocal[o + 8] * v;
+}
+
+/** The material's alpha at a hit (UR16-1): the value passthrough, or the scalar
+ *  gradient evaluated at the object-local position (loc). 1 when opaque. */
+function alphaAtHit(mat: SnapMaterial, loc: [number, number, number]): number {
+  const g = mat.alphaGradient;
+  let a: number;
+  if (g) a = g.a[0] + (g.b[0] - g.a[0]) * gradientT(g as GradientInput, loc[0], loc[1], loc[2]);
+  else a = mat.alpha ?? 1;
+  return a < 0 ? 0 : a > 1 ? 1 : a;
+}
+
 /**
  * Trace a single camera ray and return its radiance. `out` receives [r,g,b].
  * Deterministic given `rng`.
@@ -1052,6 +1083,7 @@ export function traceRay(
   const uv1: [number, number] = [0, 0];
   const uv2: [number, number] = [0, 0];
   const genV: [number, number, number] = [0, 0, 0]; // interpolated GENERATED coord
+  const loc: [number, number, number] = [0, 0, 0]; // interpolated OBJECT-LOCAL pos (UR16-1 gradients)
   const emit: [number, number, number] = [0, 0, 0]; // emitter NEE contribution
   // Emission-on-hit is counted only on the camera ray or after a SPECULAR bounce
   // (NEE cannot sample a mirror direction); after a diffuse/SSS bounce the mesh
@@ -1065,17 +1097,31 @@ export function traceRay(
       : null;
     // UR8-3 B — alpha cutout: an alphaBlend hit whose texture alpha < 0.5 is
     // SKIPPED (the ray passes straight through, continuing to whatever is behind
-    // it); alpha ≥ 0.5 is opaque as usual. v1: no partial transparency — a hit is
-    // either fully passed through or fully opaque. Bounded guard against a ray
-    // grazing an endless run of near-coplanar cutouts.
+    // it); alpha ≥ 0.5 is opaque as usual. UR16-1 — the material ALPHA channel:
+    // a hit whose effective alpha < 1 passes through STOCHASTICALLY with
+    // probability (1 − alpha) (matches the raster blend + GPU kernel; opaque
+    // alpha 1 draws no rng, so pre-UR16 renders are byte-identical). Bounded guard
+    // against a ray grazing an endless run of near-coplanar cutouts.
     for (let pt = 0; hit && pt < 64; pt++) {
       const m = scene.materials[scene.triMat[hit.tri]] ?? scene.materials[0];
-      if (!m.alphaBlend || !m.texImage || !m.texImage.alpha || !scene.triUV) break;
-      const o = hit.tri * 6;
-      const w0 = 1 - hit.u - hit.v;
-      const cu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
-      const cv = scene.triUV[o + 1] * w0 + scene.triUV[o + 3] * hit.u + scene.triUV[o + 5] * hit.v;
-      if (sampleImageAlphaBilinear(m.texImage, cu, cv) >= 0.5) break;
+      let passThrough = false;
+      // Texture-alpha cutout (UR8-3): alpha < 0.5 → pass through.
+      if (m.alphaBlend && m.texImage && m.texImage.alpha && scene.triUV) {
+        const o = hit.tri * 6;
+        const w0 = 1 - hit.u - hit.v;
+        const cu = scene.triUV[o] * w0 + scene.triUV[o + 2] * hit.u + scene.triUV[o + 4] * hit.v;
+        const cv = scene.triUV[o + 1] * w0 + scene.triUV[o + 3] * hit.u + scene.triUV[o + 5] * hit.v;
+        if (sampleImageAlphaBilinear(m.texImage, cu, cv) < 0.5) passThrough = true;
+      }
+      // Material alpha channel (UR16-1): stochastic pass-through. Only draws rng
+      // when the material can be transparent (value < 1 or a gradient), so opaque
+      // materials keep the exact pre-UR16 RNG stream.
+      if (!passThrough && ((m.alpha !== undefined && m.alpha < 1) || m.alphaGradient)) {
+        const hx = ox + dx * hit.t, hy = oy + dy * hit.t, hz = oz + dz * hit.t;
+        localAtHit(scene.triLocal, hit.tri, hit.u, hit.v, hx, hy, hz, loc);
+        if (rng() >= alphaAtHit(m, loc)) passThrough = true;
+      }
+      if (!passThrough) break;
       // Pass through: advance the ray origin just past the hit and re-intersect.
       const hx = ox + dx * hit.t, hy = oy + dy * hit.t, hz = oz + dz * hit.t;
       ox = hx + dx * EPS; oy = hy + dy * EPS; oz = hz + dz * EPS;
@@ -1104,10 +1150,27 @@ export function traceRay(
     // Interpolate the hit UV once when the base-color texture OR any P13 data map
     // needs it (barycentric: A weight = 1-u-v, B = u, C = v). With no UVs OR no
     // texture/map, none of this runs and the hit stays byte-identical to pre-P13.
-    const hasTex = !useNodes && !!mat.texKind && mat.texKind !== 'none';
+    // UR16-1: object-space GRADIENT on the color channel wins over baseColor/tex.
+    // Compute the interpolated object-local hit position once when any gradient
+    // channel is active (color/rough/metal), then evaluate closed-form.
+    const hasColorGrad = !useNodes && mat.colorGradient != null;
+    const hasRoughGrad = !useNodes && mat.roughGradient != null;
+    const hasMetalGrad = !useNodes && mat.metalGradient != null;
+    if (hasColorGrad || hasRoughGrad || hasMetalGrad) {
+      const hx = ox + dx * hit.t, hy = oy + dy * hit.t, hz = oz + dz * hit.t;
+      localAtHit(scene.triLocal, hit.tri, hit.u, hit.v, hx, hy, hz, loc);
+    }
+    if (hasColorGrad) {
+      const g = mat.colorGradient!;
+      const t = gradientT(g, loc[0], loc[1], loc[2]);
+      alb[0] = g.a[0] + (g.b[0] - g.a[0]) * t;
+      alb[1] = g.a[1] + (g.b[1] - g.a[1]) * t;
+      alb[2] = g.a[2] + (g.b[2] - g.a[2]) * t;
+    }
+    const hasTex = !useNodes && !hasColorGrad && !!mat.texKind && mat.texKind !== 'none';
     const hasNormalMap = !useNodes && mat.normalImage != null;
-    const hasRoughMap = !useNodes && mat.roughImage != null;
-    const hasMetalMap = !useNodes && mat.metalImage != null;
+    const hasRoughMap = !useNodes && !hasRoughGrad && mat.roughImage != null;
+    const hasMetalMap = !useNodes && !hasMetalGrad && mat.metalImage != null;
     let uu = 0, vv = 0;
     if (scene.triUV && (useNodes || hasTex || hasNormalMap || hasRoughMap || hasMetalMap)) {
       const o = hit.tri * 6;
@@ -1132,6 +1195,16 @@ export function traceRay(
     // so the no-map bounce below is byte-identical.
     let matRough = mat.roughness;
     let matMetal = mat.metallic;
+    // UR16-1 scalar gradients override the roughness/metallic value (a/b RED comps
+    // lerped at the object-local t). loc was interpolated above when any grad set.
+    if (hasRoughGrad) {
+      const g = mat.roughGradient!;
+      matRough = g.a[0] + (g.b[0] - g.a[0]) * gradientT(g, loc[0], loc[1], loc[2]);
+    }
+    if (hasMetalGrad) {
+      const g = mat.metalGradient!;
+      matMetal = g.a[0] + (g.b[0] - g.a[0]) * gradientT(g, loc[0], loc[1], loc[2]);
+    }
     // Glass (UR10-3): transmission drives the dielectric BSDF probability below;
     // its diffuse-weight (1 − transmission) fades out the surface's diffuse
     // direct-light + emitter NEE so full glass shows no milky sheen. Nodes don't

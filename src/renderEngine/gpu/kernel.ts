@@ -38,7 +38,7 @@
 
 import {
   TRI_TEXELS, MAT_TEXELS, LIGHT_TEXELS, NODE_TEXELS, TRIIDX_PER_TEXEL,
-  UV_TEXELS, EMIT_TEXELS,
+  UV_TEXELS, EMIT_TEXELS, LOCAL_TEXELS,
 } from './pack';
 
 /** Fixed traversal stack depth (task spec: max depth 64). */
@@ -66,6 +66,7 @@ uniform highp sampler2D uNodes;   uniform int uNodesW;   uniform int uNodeCount;
 uniform highp sampler2D uTriIdx;  uniform int uTriIdxW;
 uniform highp sampler2D uMats;    uniform int uMatsW;
 uniform highp sampler2D uUVs;     uniform int uUVsW;
+uniform highp sampler2D uLocals;  uniform int uLocalsW;
 uniform highp sampler2D uLights;  uniform int uLightsW;  uniform int uNumLights;
 uniform highp sampler2D uEmit;    uniform int uEmitW;
 uniform int   uNumEmitters;       uniform float uEmitTotalArea;
@@ -97,6 +98,7 @@ out vec4 fragColor;
 const int   TRI_TEXELS   = ${TRI_TEXELS};
 const int   MAT_TEXELS   = ${MAT_TEXELS};
 const int   UV_TEXELS    = ${UV_TEXELS};
+const int   LOCAL_TEXELS = ${LOCAL_TEXELS};
 const int   LIGHT_TEXELS = ${LIGHT_TEXELS};
 const int   EMIT_TEXELS  = ${EMIT_TEXELS};
 const int   NODE_TEXELS  = ${NODE_TEXELS};
@@ -117,6 +119,12 @@ float triIndexAt(int k) {
 }
 vec4 matT(int mat, int j) { return fetchTexel(uMats, uMatsW, mat * MAT_TEXELS + j); }
 vec3 triVert(int tri, int corner) { return fetchTexel(uTris, uTrisW, tri * TRI_TEXELS + corner).xyz; }
+vec3 triLocalVert(int tri, int corner) { return fetchTexel(uLocals, uLocalsW, tri * LOCAL_TEXELS + corner).xyz; }
+// UR16-1: object-space linear gradient t = clamp(p[axis]·scale + offset, 0, 1).
+float gradT(vec3 p, float axis, float offset, float scale) {
+  float c = axis < 0.5 ? p.x : axis < 1.5 ? p.y : p.z;
+  return clamp(c * scale + offset, 0.0, 1.0);
+}
 
 // ---- PCG per-pixel RNG -----------------------------------------------------
 uint rngState;
@@ -435,11 +443,35 @@ vec4 traceRay(vec3 orig, vec3 dir) {
 
   for (int depth = 0; depth < MAX_DEPTH; depth++) {
     Hit h = traceClosest(ox, dd);
+    // UR16-1 stochastic ALPHA pass-through (value only on GPU — alpha gradient/
+    // image + rough/metal gradients are a documented GPU cut; the CPU tracer does
+    // all, the parity harness uses only the color gradient + alpha value). Opaque
+    // materials (alpha 1) draw no rng, so existing GPU renders are unchanged.
+    for (int pt = 0; pt < 64 && h.tri >= 0; pt++) {
+      int matA = int(fetchTexel(uTris, uTrisW, h.tri * TRI_TEXELS).w + 0.5);
+      float av = matT(matA, 5).w;
+      if (av >= 1.0) break;
+      if (rand() < av) break;
+      vec3 hp = ox + dd * h.t;
+      ox = hp + dd * EPS;
+      h = traceClosest(ox, dd);
+    }
     if (depth == 0) primaryHit = h.tri >= 0 ? 1.0 : 0.0;
     if (h.tri < 0) { rad += thr * worldSky(dd); break; }
     int mat = int(fetchTexel(uTris, uTrisW, h.tri * TRI_TEXELS).w + 0.5);
     vec4 m0 = matT(mat, 0), m1 = matT(mat, 1), m2 = matT(mat, 2), m3 = matT(mat, 3);
     vec3 albedo = m0.rgb;
+    // UR16-1 color GRADIENT (object-space): overrides baseColor when enabled.
+    vec4 m4 = matT(mat, 4);
+    if (m4.x > 0.5) {
+      vec3 la = triLocalVert(h.tri, 0), lb = triLocalVert(h.tri, 1), lc = triLocalVert(h.tri, 2);
+      float w0 = 1.0 - h.uv.x - h.uv.y;
+      vec3 lp = la * w0 + lb * h.uv.x + lc * h.uv.y;
+      float t = gradT(lp, m4.y, m4.z, m4.w);
+      vec3 gradA = matT(mat, 5).rgb;
+      vec3 gradB = matT(mat, 6).rgb;
+      albedo = mix(gradA, gradB, t);
+    }
     float matRough = m0.w;
     float matMetal = m1.x;
     float transmission = m1.y;
@@ -453,7 +485,8 @@ vec4 traceRay(vec3 orig, vec3 dir) {
     float dw = 1.0 - transmission;
 
     // Interpolated UV (barycentric A=1-u-v, B=u, C=v) for the checker texture.
-    if (texKind != 0) {
+    // Skipped when a color gradient drives the albedo (UR16-1).
+    if (texKind != 0 && m4.x < 0.5) {
       vec4 uvA = fetchTexel(uUVs, uUVsW, h.tri * UV_TEXELS);
       vec2 uv2 = fetchTexel(uUVs, uUVsW, h.tri * UV_TEXELS + 1).xy;
       float w0 = 1.0 - h.uv.x - h.uv.y;

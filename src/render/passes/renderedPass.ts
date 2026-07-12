@@ -108,6 +108,7 @@ uniform mat4 u_proj;
 uniform mat3 u_normalMat; // WORLD-space normal matrix (model only)
 uniform mat4 u_shadowVP[4]; // per-slot shadow view-projections (identity when unused)
 out vec3 v_worldPos;
+out vec3 v_localPos; // object-LOCAL position (UR16-1 gradient eval)
 out vec3 v_normal;
 out vec3 v_tint;
 out vec2 v_uv;
@@ -115,6 +116,7 @@ out vec4 v_shadowCoord[4];
 void main() {
   vec4 world = u_model * vec4(a_position, 1.0);
   v_worldPos = world.xyz;
+  v_localPos = a_position;
   v_normal = u_normalMat * a_normal;
   v_tint = a_color;
   v_uv = a_uv;
@@ -125,10 +127,20 @@ void main() {
 const FRAG = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 v_worldPos;
+in vec3 v_localPos;
 in vec3 v_normal;
 in vec3 v_tint;
 in vec2 v_uv;
 in vec4 v_shadowCoord[4];
+
+// UR16-1 color gradient (object space) + alpha channel value.
+uniform int u_colorGrad;      // 1 = color channel is an object-space gradient
+uniform vec3 u_gradA;
+uniform vec3 u_gradB;
+uniform float u_gradAxis;     // 0 x | 1 y | 2 z
+uniform float u_gradOffset;
+uniform float u_gradScale;
+uniform float u_matAlpha;     // material alpha value (1 = opaque)
 
 uniform int u_texKind;      // 0 none, 1 checker, 2 image
 uniform int u_hasTex;       // 1 when an image texture is bound
@@ -269,9 +281,14 @@ void main() {
   float metallic = u_metallic;
   if (u_hasMetal == 1) metallic *= texture(u_metalTex, v_uv).r;
   vec3 baseColor = u_baseColor * v_tint;
-  // Base-color texture through the UVs (matches the tracer's sampleMaterialTexture):
-  // checker = 8×8 parity (even → 0.2 dark, odd → 1.0 light), image = bilinear.
-  if (u_texKind == 1) {
+  // UR16-1: object-space color GRADIENT overrides baseColor (and the texture).
+  if (u_colorGrad == 1) {
+    float c = u_gradAxis < 0.5 ? v_localPos.x : u_gradAxis < 1.5 ? v_localPos.y : v_localPos.z;
+    float t = clamp(c * u_gradScale + u_gradOffset, 0.0, 1.0);
+    baseColor = mix(u_gradA, u_gradB, t) * v_tint;
+  } else if (u_texKind == 1) {
+    // Base-color texture through the UVs (matches the tracer's sampleMaterialTexture):
+    // checker = 8×8 parity (even → 0.2 dark, odd → 1.0 light), image = bilinear.
     float parity = mod(floor(v_uv.x * 8.0) + floor(v_uv.y * 8.0), 2.0);
     baseColor *= mix(vec3(0.2), vec3(1.0), parity);
   } else if (u_texKind == 2 && u_hasTex == 1) {
@@ -285,7 +302,7 @@ void main() {
     vec3 c = baseColor;
     c *= texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
     c = pow(c, vec3(1.0 / 2.2));
-    outColor = vec4(c, 1.0);
+    outColor = vec4(c, u_matAlpha);
     return;
   }
   vec3 F0 = mix(vec3(0.04), baseColor, metallic);
@@ -371,7 +388,9 @@ void main() {
     alpha = mix(1.0 - 0.85 * u_transmission, 1.0, fres);
     color += vec3(fres * u_transmission * 0.4);
   }
-  outColor = vec4(color, alpha);
+  // UR16-1: the material alpha channel multiplies the final coverage (opaque
+  // materials pass u_matAlpha 1 → byte-identical).
+  outColor = vec4(color, alpha * u_matAlpha);
 }`;
 
 /** Forward PBR solid pass driven by the scene's light objects + materials. */
@@ -472,6 +491,21 @@ export class RenderedPass {
     s.setInt('u_shadeless', mat.shadeless ? 1 : 0);
     s.setFloat('u_transmission', mat.transmission ?? 0);
     s.setFloat('u_normStrength', mat.normalStrength);
+    // UR16-1: object-space color gradient + alpha channel value. A material with
+    // no gradient/alpha passes u_colorGrad 0 / u_matAlpha 1 → byte-identical.
+    const cg = mat.colorGradient;
+    s.setInt('u_colorGrad', cg ? 1 : 0);
+    if (cg) {
+      s.setVec3('u_gradA', new Vec3(cg.a[0], cg.a[1], cg.a[2]));
+      s.setVec3('u_gradB', new Vec3(cg.b[0], cg.b[1], cg.b[2]));
+      s.setFloat('u_gradAxis', cg.axis === 'x' ? 0 : cg.axis === 'y' ? 1 : 2);
+      s.setFloat('u_gradOffset', cg.offset);
+      s.setFloat('u_gradScale', cg.scale);
+    }
+    // Alpha VALUE only in the viewport (gradient/image alpha → opaque here, a
+    // documented viewport cut; the F12 tracer/GPU evaluate the full channel).
+    const a = mat.alpha;
+    s.setFloat('u_matAlpha', a && a.kind === 'value' ? Math.max(0, Math.min(1, a.value)) : 1);
   }
 
   /**

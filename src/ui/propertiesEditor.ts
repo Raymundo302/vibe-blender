@@ -8,6 +8,7 @@ import { InsertKeysCommand } from '../core/anim/animCommands';
 import { setHtmlPageExtent } from '../tools/htmlPlane';
 import { requestHtmlReraster } from '../tools/htmlPlaneDriver';
 import { clampHtmlFps, HTML_PLANE_FPS_MIN, HTML_PLANE_FPS_MAX } from '../core/scene/objectData';
+import { makeCollapsible } from './collapsibleSection';
 
 const DEG = 180 / Math.PI;
 const RAD = Math.PI / 180;
@@ -116,6 +117,12 @@ export class PropertiesEditor {
     this.element.append(this.strip, this.content);
 
     if (registry.length > 0) this.select(registry[0].id);
+  }
+
+  /** UR14-3 item 3: the active tab's human title, so the panel header can read
+   *  "Properties · Material" (main.ts polls this in the wrapPanel updater). */
+  get activeTitle(): string {
+    return registry.find((t) => t.id === this.activeTab)?.title ?? '';
   }
 
   /** Switch the visible tab (no-op if already active or unknown). */
@@ -538,7 +545,7 @@ class ObjectTab {
   ) {
     this.empty = document.createElement('div');
     this.empty.className = 'properties-empty';
-    this.empty.textContent = 'No active object';
+    this.empty.textContent = 'No active object — Shift+A adds one';
 
     this.body = document.createElement('div');
     this.body.className = 'properties-body';
@@ -611,6 +618,18 @@ class ObjectTab {
     // Web Page section — only shown for HTML planes (self-hiding in update()).
     this.webPage = new WebPageSection(this.scene, this.undo);
     this.body.appendChild(this.webPage.element);
+
+    // UR14-3 item 9: make the long Object-tab sections collapsible (persisted
+    // via uiPrefs, like shadePrefs.sections). Only this instance's DOM is
+    // touched — the N-panel builds its OWN TransformFields, so it's unaffected.
+    for (const group of Array.from(
+      this.transformFields.element.querySelectorAll<HTMLElement>(':scope > .properties-group'),
+    )) {
+      const title = group.querySelector<HTMLElement>(':scope > .properties-group-title');
+      if (title) makeCollapsible(group, title, `object.${title.textContent ?? ''}`);
+    }
+    const webTitle = this.webPage.element.querySelector<HTMLElement>(':scope > .properties-group-title');
+    if (webTitle) makeCollapsible(this.webPage.element, webTitle, 'object.Web Page');
 
     container.append(this.empty, this.body);
     this.update();

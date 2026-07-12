@@ -443,10 +443,201 @@ export function clampTransmission(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+// --- Shader model v2 (UR16-1) -----------------------------------------------
+
+/**
+ * Top-level material shader (UR16-1, Ray's redesign). A material picks ONE
+ * shader; each shader exposes only the channels it needs (see channelsForShader).
+ *  - 'diffuse' (default for NEW materials): color, roughness, alpha.
+ *  - 'metal':   color, roughness, alpha — metallic forced 1 in the BRDF.
+ *  - 'glass':   color, roughness, ior, alpha — transmission forced 1.
+ *  - 'emit':    color, strength, alpha — shadeless (unlit) semantics.
+ *  - 'super':   the everything shader — every legacy field (metallic, emissive,
+ *               transmission/ior, subsurface, normal/bump/rough/metal maps,
+ *               node graph). This is what MIGRATED legacy materials become.
+ * Optional on Material so a material/test that never set it parses (absent →
+ * 'super', the field-honoring everything shader — so the engines never clobber
+ * a hand-built material's stored fields).
+ */
+export type MaterialShader = 'diffuse' | 'super' | 'metal' | 'glass' | 'emit';
+
+export const MATERIAL_SHADERS: readonly MaterialShader[] = ['diffuse', 'super', 'metal', 'glass', 'emit'];
+
+/** Object-space linear gradient input for a channel (UR16-1). t = clamp(p[axis]·
+ *  scale + offset, 0, 1) evaluated at the OBJECT-LOCAL hit position; the channel
+ *  value = lerp(a, b, t). For scalar channels (roughness/metallic/alpha) the
+ *  a/b endpoints' RED component is used. */
+export interface GradientInput {
+  kind: 'gradient';
+  a: [number, number, number];
+  b: [number, number, number];
+  axis: 'x' | 'y' | 'z';
+  offset: number;
+  scale: number;
+}
+
+/** A channel socket (UR16-1): a value, an image, or an object-space gradient.
+ *  T is [r,g,b] for the color channel, number for scalar channels. */
+export type ChannelInput<T> =
+  | { kind: 'value'; value: T }
+  | { kind: 'image'; dataUrl: string }
+  | GradientInput;
+
+/** The socketable channels UR16-2's UI edits (and the engines evaluate). */
+export type MaterialChannelName = 'color' | 'roughness' | 'metallic' | 'alpha';
+
+/** Which channel rows a shader exposes (UR16-1 table; UR16-2 builds the UI from
+ *  this). 'super' additionally has emissive/transmission/ior/subsurface/maps/
+ *  nodes, handled by that tab directly. */
+export function channelsForShader(shader: MaterialShader): MaterialChannelName[] {
+  switch (shader) {
+    case 'diffuse': return ['color', 'roughness', 'alpha'];
+    case 'metal':   return ['color', 'roughness', 'alpha'];
+    case 'glass':   return ['color', 'roughness', 'alpha']; // + ior (value only, its own row)
+    case 'emit':    return ['color', 'alpha'];              // + strength (value only)
+    case 'super':   return ['color', 'roughness', 'metallic', 'alpha'];
+  }
+}
+
+/** The named shader a material resolves as (absent → 'super': the everything
+ *  shader that honors all stored fields, so legacy/hand-built materials render
+ *  exactly as before). */
+export function materialShader(mat: Pick<Material, 'shader'>): MaterialShader {
+  return mat.shader ?? 'super';
+}
+
+/** Gradient parameter t at an object-LOCAL position (UR16-1 closed form):
+ *  t = clamp(p[axis]·scale + offset, 0, 1). */
+export function gradientT(g: GradientInput, px: number, py: number, pz: number): number {
+  const p = g.axis === 'x' ? px : g.axis === 'y' ? py : pz;
+  const t = p * g.scale + g.offset;
+  return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
+/** Evaluate a color gradient at an object-LOCAL position → lerp(a, b, t). */
+export function evalGradientColor(
+  g: GradientInput, px: number, py: number, pz: number,
+  out: [number, number, number] = [0, 0, 0],
+): [number, number, number] {
+  const t = gradientT(g, px, py, pz);
+  out[0] = g.a[0] + (g.b[0] - g.a[0]) * t;
+  out[1] = g.a[1] + (g.b[1] - g.a[1]) * t;
+  out[2] = g.a[2] + (g.b[2] - g.a[2]) * t;
+  return out;
+}
+
+/** Evaluate a scalar gradient (roughness/metallic/alpha) → lerp of the a/b RED
+ *  components at t. */
+export function evalGradientScalar(g: GradientInput, px: number, py: number, pz: number): number {
+  const t = gradientT(g, px, py, pz);
+  return g.a[0] + (g.b[0] - g.a[0]) * t;
+}
+
+/** Named-shader BRDF overrides (UR16-1): metal→metallic 1, glass→transmission 1
+ *  (+ metallic 0), emit→shadeless. 'diffuse'/'super'/absent honor the stored
+ *  fields (so migrated + default-new materials render byte-identically). The
+ *  engines merge these over the material's legacy fields at their boundary. */
+export function shaderOverrides(mat: Pick<Material, 'shader' | 'transmission'>): {
+  metallic?: number; transmission?: number; ior?: number; shadeless?: boolean;
+} {
+  switch (materialShader(mat)) {
+    case 'metal': return { metallic: 1 };
+    case 'glass': return { metallic: 0, transmission: 1 };
+    case 'emit':  return { shadeless: true };
+    default:      return {};
+  }
+}
+
+/** Read a channel as a ChannelInput socket (UR16-1) synthesized from the
+ *  material's runtime fields — the gradient overrides win, then image, then the
+ *  scalar/color value. This is the accessor UR16-2's socket UI reads. */
+export function getMaterialChannel(mat: Material, ch: MaterialChannelName): ChannelInput<[number, number, number]> | ChannelInput<number> {
+  switch (ch) {
+    case 'color':
+      if (mat.colorGradient) return mat.colorGradient;
+      if (mat.texKind === 'image' && mat.texDataUrl) return { kind: 'image', dataUrl: mat.texDataUrl };
+      return { kind: 'value', value: [mat.baseColor[0], mat.baseColor[1], mat.baseColor[2]] };
+    case 'roughness':
+      if (mat.roughGradient) return mat.roughGradient;
+      if (mat.roughDataUrl) return { kind: 'image', dataUrl: mat.roughDataUrl };
+      return { kind: 'value', value: mat.roughness };
+    case 'metallic':
+      if (mat.metalGradient) return mat.metalGradient;
+      if (mat.metalDataUrl) return { kind: 'image', dataUrl: mat.metalDataUrl };
+      return { kind: 'value', value: mat.metallic };
+    case 'alpha':
+      return mat.alpha ?? { kind: 'value', value: 1 };
+  }
+}
+
+/** Write a channel from a ChannelInput socket (UR16-1) into the material's
+ *  runtime fields (the inverse of getMaterialChannel). Used by UR16-2's socket
+ *  UI and by the serializer's parse path. */
+export function setMaterialChannel(mat: Material, ch: MaterialChannelName, input: ChannelInput<[number, number, number]> | ChannelInput<number>): void {
+  switch (ch) {
+    case 'color':
+      mat.colorGradient = input.kind === 'gradient' ? input : undefined;
+      if (input.kind === 'value') { mat.texKind = 'none'; mat.texDataUrl = null; mat.baseColor = [...(input.value as [number, number, number])]; }
+      else if (input.kind === 'image') { mat.texKind = 'image'; mat.texDataUrl = input.dataUrl; }
+      break;
+    case 'roughness':
+      mat.roughGradient = input.kind === 'gradient' ? input : undefined;
+      if (input.kind === 'value') { mat.roughDataUrl = null; mat.roughness = input.value as number; }
+      else if (input.kind === 'image') { mat.roughDataUrl = input.dataUrl; }
+      break;
+    case 'metallic':
+      mat.metalGradient = input.kind === 'gradient' ? input : undefined;
+      if (input.kind === 'value') { mat.metalDataUrl = null; mat.metallic = input.value as number; }
+      else if (input.kind === 'image') { mat.metalDataUrl = input.dataUrl; }
+      break;
+    case 'alpha':
+      mat.alpha = input as ChannelInput<number>;
+      break;
+  }
+}
+
+/** Deep-copy a GradientInput. */
+export function cloneGradient(g: GradientInput): GradientInput {
+  return { kind: 'gradient', a: [...g.a], b: [...g.b], axis: g.axis, offset: g.offset, scale: g.scale };
+}
+
+/** Deep-copy an alpha ChannelInput. */
+export function cloneAlpha(a: ChannelInput<number>): ChannelInput<number> {
+  if (a.kind === 'gradient') return cloneGradient(a);
+  return { ...a };
+}
+
+/** The material's effective alpha VALUE at object-local p (UR16-1). For the
+ *  'value' kind this is constant; a gradient evaluates its scalar; an image alpha
+ *  channel isn't position-closed-form so it falls back to 1 here (the raster/
+ *  tracer sample it through the texture path instead). Clamped 0..1. */
+export function materialAlphaAt(mat: Pick<Material, 'alpha'>, px: number, py: number, pz: number): number {
+  const a = mat.alpha;
+  if (!a) return 1;
+  let v: number;
+  if (a.kind === 'value') v = a.value;
+  else if (a.kind === 'gradient') v = evalGradientScalar(a, px, py, pz);
+  else return 1;
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
 export interface Material {
   /** Stable id, unique within the scene (referenced by SceneObject.materialId). */
   readonly id: number;
   name: string;
+  /** Top-level shader (UR16-1). Absent → 'super' (everything, honors all fields).
+   *  NEW materials default 'diffuse'; migrated legacy materials → 'super'/'emit'. */
+  shader?: MaterialShader;
+  /** Alpha channel (UR16-1). 0..1, default value 1. alpha < 1 → blended in raster
+   *  (auto-alphaBlend) and stochastic pass-through in the tracer/GPU. Absent → 1
+   *  (opaque), so pre-UR16 materials are byte-identical. */
+  alpha?: ChannelInput<number>;
+  /** Object-space GRADIENT overrides (UR16-1) for the color/roughness/metallic
+   *  channels. When present they win over the value/image legacy fields for that
+   *  channel in every engine. Absent → the channel is value/image (legacy). */
+  colorGradient?: GradientInput;
+  roughGradient?: GradientInput;
+  metalGradient?: GradientInput;
   /** Linear RGB 0..1 albedo. */
   baseColor: [number, number, number];
   /** 0 = dielectric, 1 = metal. */
@@ -567,11 +758,16 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   useNodes: false,
 });
 
-/** Fresh mutable material with default params (scene assigns the id). */
+/** Fresh mutable material with default params (scene assigns the id). NEW
+ *  materials use the 'diffuse' shader (UR16-1) with an opaque alpha value. A
+ *  fresh diffuse material's metallic/transmission are already 0, so it renders
+ *  byte-identically to the pre-UR16 default material. */
 export function makeMaterial(id: number, name: string): Material {
   return {
     id,
     name,
+    shader: 'diffuse',
+    alpha: { kind: 'value', value: 1 },
     baseColor: [0.8, 0.8, 0.8],
     metallic: 0,
     roughness: 0.5,

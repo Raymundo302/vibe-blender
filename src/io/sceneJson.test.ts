@@ -213,7 +213,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(19);
+    expect(parsed.version).toBe(20);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -882,7 +882,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(19);
+    expect(json.version).toBe(20);
   });
 
   it('round-trips a shadeless material', () => {
@@ -1057,7 +1057,7 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
 
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(19);
+    expect(json.version).toBe(20);
     expect(json.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });
@@ -1195,5 +1195,132 @@ describe('sceneJson camera DoF + Glare (v17 / UR10-2)', () => {
     const rc = dst.objects.find((o) => o.kind === 'camera')!.camera!;
     expect(rc.dof).toBe(true);
     expect(rc.fStop).toBeCloseTo(1.25, 6);
+  });
+});
+
+// UR16-1 — shader model v2: legacy-material migration + v20 socket round-trips.
+import { setMaterialChannel, materialShader, type GradientInput } from '../core/scene/objectData';
+
+/** Build a v19 (legacy-format) scene JSON with a single cube + one legacy
+ *  material, so we can prove migration to the shader model. */
+function v19Scene(legacyMat: Record<string, unknown>): string {
+  const scene = new Scene();
+  scene.add('Cube', makeCube());
+  const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+  json.version = 19;
+  json.materials = [{
+    id: 0, name: 'M', baseColor: [0.4, 0.5, 0.6], metallic: 0.2, roughness: 0.7,
+    emissive: [0, 0, 0], emissiveStrength: 0, subsurfaceWeight: 0, subsurfaceRadius: 0.05,
+    texKind: 'none', texDataUrl: null, normalDataUrl: null, normalIsBump: false,
+    normalStrength: 1, roughDataUrl: null, metalDataUrl: null, nodeGraph: null, useNodes: false,
+    ...legacyMat,
+  }];
+  json.objects[0].materialId = 0;
+  return JSON.stringify(json);
+}
+
+describe('sceneJson shader-model migration (v20 / UR16-1)', () => {
+  const cases: { name: string; legacy: Record<string, unknown>; shader: string }[] = [
+    { name: 'plain lit material → super', legacy: {}, shader: 'super' },
+    { name: 'shadeless material → emit', legacy: { shadeless: true }, shader: 'emit' },
+    { name: 'shadeless image plane → emit', legacy: { shadeless: true, texKind: 'image', texDataUrl: 'data:x', alwaysTextured: true }, shader: 'emit' },
+    { name: 'diffuse-mode image plane → diffuse', legacy: { texKind: 'image', texDataUrl: 'data:x', alwaysTextured: true }, shader: 'diffuse' },
+    { name: 'metallic material → super (fields honored)', legacy: { metallic: 1 }, shader: 'super' },
+    { name: 'glass material → super (fields honored)', legacy: { transmission: 1, ior: 1.5 }, shader: 'super' },
+  ];
+  for (const c of cases) {
+    it(`migrates ${c.name}`, () => {
+      const scene = new Scene();
+      applySceneJson(v19Scene(c.legacy), scene, new OrbitCamera());
+      const m = scene.materials[0];
+      expect(materialShader(m)).toBe(c.shader);
+      // Migration is RENDER-NEUTRAL: the runtime fields are unchanged from legacy.
+      expect(m.roughness).toBe(c.legacy.roughness ?? 0.7);
+      expect(m.metallic).toBe(c.legacy.metallic ?? 0.2);
+      expect(m.shadeless === true).toBe(c.legacy.shadeless === true);
+      expect(m.alpha).toEqual({ kind: 'value', value: 1 }); // legacy materials are opaque
+    });
+  }
+
+  it('migrated material re-serializes as v20 and round-trips byte-identically', () => {
+    const scene = new Scene();
+    applySceneJson(v19Scene({ shadeless: true, texKind: 'image', texDataUrl: 'data:x', alwaysTextured: true }), scene, new OrbitCamera());
+    const a = serializeScene(scene, new OrbitCamera());
+    expect(JSON.parse(a).version).toBe(20);
+    const scene2 = new Scene();
+    applySceneJson(a, scene2, new OrbitCamera());
+    expect(serializeScene(scene2, new OrbitCamera())).toBe(a);
+  });
+});
+
+describe('sceneJson v20 socket round-trip (UR16-1)', () => {
+  it('color gradient + alpha value survive serialize→apply→serialize', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('G');
+    scene.objects[0].materialId = mat.id;
+    const grad: GradientInput = { kind: 'gradient', a: [1, 0, 0], b: [0, 0, 1], axis: 'z', offset: 0.25, scale: 0.5 };
+    setMaterialChannel(mat, 'color', grad);
+    setMaterialChannel(mat, 'alpha', { kind: 'value', value: 0.5 });
+    const a = serializeScene(scene, new OrbitCamera());
+    const scene2 = new Scene();
+    applySceneJson(a, scene2, new OrbitCamera());
+    const m2 = scene2.materials[0];
+    expect(m2.colorGradient).toEqual(grad);
+    expect(m2.alpha).toEqual({ kind: 'value', value: 0.5 });
+    // Byte-identical round trip.
+    expect(serializeScene(scene2, new OrbitCamera())).toBe(a);
+  });
+
+  it('gradient alpha channel survives round-trip', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('A');
+    scene.objects[0].materialId = mat.id;
+    const grad: GradientInput = { kind: 'gradient', a: [0, 0, 0], b: [1, 0, 0], axis: 'y', offset: 0, scale: 1 };
+    setMaterialChannel(mat, 'alpha', grad);
+    const a = serializeScene(scene, new OrbitCamera());
+    const scene2 = new Scene();
+    applySceneJson(a, scene2, new OrbitCamera());
+    expect(scene2.materials[0].alpha).toEqual(grad);
+    expect(serializeScene(scene2, new OrbitCamera())).toBe(a);
+  });
+});
+
+describe('sceneJson v20 value-under-map survives round trip (UR16-1 verify catch)', () => {
+  // Engines compute value × map — the socket format must carry BOTH. The
+  // original v20 serializer dropped the value when a map was present
+  // (baseColor tint → [1,1,1], metallic 0.9 → 0 on save→load).
+  it('keeps baseColor tint under an image texture', () => {
+    const scene = new Scene();
+    scene.add('Tinted', makeCube(1));
+    const mat = scene.addMaterial('Tinted');
+    scene.objects[0].materialId = mat.id;
+    mat.baseColor = [0.4, 0.5, 0.6];
+    mat.texKind = 'image';
+    mat.texDataUrl = 'data:image/png;base64,AAAA';
+    const json = serializeScene(scene, new OrbitCamera());
+    const scene2 = new Scene();
+    applySceneJson(json, scene2, new OrbitCamera());
+    expect(scene2.materials[0].baseColor).toEqual([0.4, 0.5, 0.6]);
+    expect(scene2.materials[0].texKind).toBe('image');
+    expect(serializeScene(scene2, new OrbitCamera())).toBe(json);
+  });
+
+  it('keeps roughness/metallic values under their maps', () => {
+    const scene = new Scene();
+    scene.add('Mapped', makeCube(1));
+    const mat = scene.addMaterial('Mapped');
+    scene.objects[0].materialId = mat.id;
+    mat.roughness = 0.3;
+    mat.roughDataUrl = 'data:image/png;base64,BBBB';
+    mat.metallic = 0.9;
+    mat.metalDataUrl = 'data:image/png;base64,CCCC';
+    const json = serializeScene(scene, new OrbitCamera());
+    const scene2 = new Scene();
+    applySceneJson(json, scene2, new OrbitCamera());
+    expect(scene2.materials[0].roughness).toBeCloseTo(0.3);
+    expect(scene2.materials[0].metallic).toBeCloseTo(0.9);
+    expect(serializeScene(scene2, new OrbitCamera())).toBe(json);
   });
 });

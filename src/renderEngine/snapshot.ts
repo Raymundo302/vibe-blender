@@ -4,7 +4,7 @@ import '../core/nodes/builtins';
 import { Vec3 } from '../core/math/vec3';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
-import { cameraFovY, cameraLensRadius, DOF_APERTURE_SCALE, objectForward, DEFAULT_MATERIAL, AREA_MIN_SIZE } from '../core/scene/objectData';
+import { cameraFovY, cameraLensRadius, DOF_APERTURE_SCALE, objectForward, DEFAULT_MATERIAL, AREA_MIN_SIZE, shaderOverrides, type Material, type GradientInput } from '../core/scene/objectData';
 import type { HdriImage } from '../core/scene/worldData';
 
 /**
@@ -40,6 +40,17 @@ export interface SnapMaterial {
    *  treats a hit whose sampled texture alpha < 0.5 as a cutout (ray passes
    *  through). Default false. */
   alphaBlend?: boolean;
+  /** Material ALPHA channel value (UR16-1), 0..1, default 1 (opaque). alpha < 1 is
+   *  stochastic pass-through in the tracer (probability 1−alpha). */
+  alpha?: number;
+  /** Object-space GRADIENT overrides (UR16-1): when present the engine evaluates
+   *  the gradient at the OBJECT-LOCAL hit position (via Snapshot.triLocal) instead
+   *  of the value/image field. Color = lerp(a,b,t); scalar channels use the a/b
+   *  RED components. alphaGradient drives the stochastic alpha per-hit. */
+  colorGradient?: import('../core/scene/objectData').GradientInput | null;
+  roughGradient?: import('../core/scene/objectData').GradientInput | null;
+  metalGradient?: import('../core/scene/objectData').GradientInput | null;
+  alphaGradient?: import('../core/scene/objectData').GradientInput | null;
   /** Base-color texture kind (P11), sampled through per-corner UVs. Default 'none'. */
   texKind?: 'none' | 'checker' | 'image';
   /**
@@ -171,6 +182,13 @@ export interface Snapshot {
    * interpolates it like triUV and passes it as ctx.gen. Optional; absent →
    * the Texture Coordinate node's generated output falls back to (u, v, 0). */
   triGen?: Float32Array;
+  /** Per-corner OBJECT-LOCAL position (3 floats × 3 corners per tri), parallel to
+   * tris (UR16-1): the corner vert's mesh-local co, BEFORE the world transform.
+   * The tracer/GPU interpolate it barycentrically to evaluate object-space
+   * gradients (a shared material on two transformed objects gradients along its
+   * own local axis, transform-independent). Optional; absent → gradients fall
+   * back to the world hit position. */
+  triLocal?: Float32Array;
   /** Material library; index 0 is always the default grey material. */
   materials: SnapMaterial[];
   lights: SnapLight[];
@@ -179,41 +197,38 @@ export interface Snapshot {
   world?: SnapWorld;
 }
 
-function toMat(m: {
-  baseColor: readonly [number, number, number];
-  metallic: number;
-  roughness: number;
-  transmission?: number;
-  ior?: number;
-  emissive: readonly [number, number, number];
-  emissiveStrength: number;
-  subsurfaceWeight?: number;
-  subsurfaceRadius?: number;
-  shadeless?: boolean;
-  alphaBlend?: boolean;
-  texKind?: 'none' | 'checker' | 'image';
-  texImage?: { width: number; height: number; pixels: Float32Array; alpha?: Float32Array };
-  normalImage?: { width: number; height: number; pixels: Float32Array };
-  normalIsBump?: boolean;
-  normalStrength?: number;
-  roughImage?: { width: number; height: number; pixels: Float32Array };
-  metalImage?: { width: number; height: number; pixels: Float32Array };
-  nodeGraph?: import('../core/nodes/nodeGraph').NodeGraph | null;
-  useNodes?: boolean;
-}): SnapMaterial {
+function cloneGrad(g: GradientInput | undefined): GradientInput | null {
+  return g ? { kind: 'gradient', a: [...g.a], b: [...g.b], axis: g.axis, offset: g.offset, scale: g.scale } : null;
+}
+
+/** Resolve a live Material into the flat, cross-worker-cloneable SnapMaterial the
+ *  tracer/GPU consume. UR16-1: the named SHADER is folded into the flat BRDF
+ *  fields here (metal→metallic 1, glass→transmission 1, emit→shadeless) so the
+ *  engines stay shader-unaware; per-channel GRADIENT overrides + the ALPHA channel
+ *  ride along for the engines to evaluate at the object-local hit position. */
+function toMat(m: Readonly<Material>): SnapMaterial {
   const texKind = m.texKind ?? 'none';
+  const ov = shaderOverrides(m);
+  const alphaCh = m.alpha;
+  const alphaVal = alphaCh && alphaCh.kind === 'value' ? alphaCh.value : 1;
   return {
     baseColor: [m.baseColor[0], m.baseColor[1], m.baseColor[2]],
-    metallic: m.metallic,
+    metallic: ov.metallic ?? m.metallic,
     roughness: m.roughness,
-    transmission: m.transmission ?? 0,
+    transmission: ov.transmission ?? (m.transmission ?? 0),
     ior: m.ior ?? 1.45,
     emissive: [m.emissive[0], m.emissive[1], m.emissive[2]],
     emissiveStrength: m.emissiveStrength,
     subsurfaceWeight: m.subsurfaceWeight ?? 0,
     subsurfaceRadius: m.subsurfaceRadius ?? 0.05,
-    shadeless: m.shadeless ?? false,
+    shadeless: ov.shadeless ?? (m.shadeless ?? false),
     alphaBlend: m.alphaBlend ?? false,
+    // UR16-1 alpha channel: value passthrough here; gradient rides in alphaGradient.
+    alpha: alphaVal < 0 ? 0 : alphaVal > 1 ? 1 : alphaVal,
+    colorGradient: cloneGrad(m.colorGradient),
+    roughGradient: cloneGrad(m.roughGradient),
+    metalGradient: cloneGrad(m.metalGradient),
+    alphaGradient: alphaCh && alphaCh.kind === 'gradient' ? cloneGrad(alphaCh) : null,
     texKind,
     // Only carry the decoded pixels for image materials; share the Float32Array
     // (it is immutable per data URL) so the snapshot stays cheap.
@@ -270,6 +285,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   const triMatArr: number[] = [];
   const triUVArr: number[] = [];
   const triGenArr: number[] = [];
+  const triLocalArr: number[] = [];
   /** Derived tinted materials, keyed by base index + tint (see face loop). */
   const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
@@ -343,6 +359,9 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
           triUVArr.push(uv?.[0] ?? 0, uv?.[1] ?? 0);
           const g = gen.get(vs[corner]);
           triGenArr.push(g?.[0] ?? 0, g?.[1] ?? 0, g?.[2] ?? 0);
+          // Object-LOCAL corner position (UR16-1 gradient eval).
+          const lco = mesh.verts.get(vs[corner])?.co;
+          triLocalArr.push(lco?.x ?? 0, lco?.y ?? 0, lco?.z ?? 0);
         }
         triMatArr.push(faceMi);
       }
@@ -418,6 +437,7 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     triMat: Int32Array.from(triMatArr),
     triUV: new Float32Array(triUVArr),
     triGen: new Float32Array(triGenArr),
+    triLocal: new Float32Array(triLocalArr),
     materials,
     lights,
     camera,
