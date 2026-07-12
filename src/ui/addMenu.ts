@@ -3,6 +3,7 @@ import type { UndoStack } from '../core/undo/UndoStack';
 import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
 import { CAMERA_SPAWN_ROTATION, type LightType } from '../core/scene/objectData';
+import { curvePreset, type CurvePreset } from '../core/curve/presets';
 import { pickImagePlane, type ImagePlaneMode } from '../tools/imagePlane';
 import { regenerateTextMesh } from '../tools/textObject';
 import { WebAddDialog } from './webAddDialog';
@@ -79,6 +80,12 @@ export class AddMenu {
       { label: 'Emit…', run: () => this.pickImage('emit') },
       { label: 'HTML / Website…', run: () => this.openWebDialog() },
     ]);
+    // Curve ▸ (UR11-1): Bezier / Circle / NURBS presets, spawned at the cursor.
+    this.category('Curve', () =>
+      (['bezier', 'circle', 'nurbs'] as CurvePreset[]).map((preset) => ({
+        label: preset === 'bezier' ? 'Bezier' : preset === 'circle' ? 'Circle' : 'NURBS',
+        run: () => this.addCurve(preset),
+      })));
     this.directItem('Camera', () =>
       this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
     // Empty (UR5-7): a null object for rigging/targeting (DoF focus, look-at).
@@ -247,6 +254,12 @@ export class AddMenu {
     const { parent, scene, undo, setStatus } = this.opts;
     this.close();
     new WebAddDialog({ parent, scene, undo, setStatus, onClose: () => {} });
+  }
+
+  private addCurve(preset: CurvePreset): void {
+    const { name, data } = curvePreset(preset);
+    const obj = this.opts.scene.addCurve(name, data);
+    this.commitAdd(name, obj);
   }
 
   private addPrimitive(def: PrimitiveDef): void {

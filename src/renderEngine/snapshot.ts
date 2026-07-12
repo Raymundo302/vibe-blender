@@ -273,7 +273,10 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   /** Derived tinted materials, keyed by base index + tint (see face loop). */
   const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
-    if (obj.kind !== 'mesh' || !scene.effectiveVisible(obj)) continue;
+    // Mesh objects, plus curve objects that materialize geometry (UR11-2 Pipe) —
+    // their evaluated mesh is the tube. Curves without a generating modifier have
+    // an empty evaluated mesh and fall out at the faces-size guard below.
+    if ((obj.kind !== 'mesh' && obj.kind !== 'curve') || !scene.effectiveVisible(obj)) continue;
     const mesh = obj.evaluatedMesh(scene.modifierContext(obj));
     if (mesh.faces.size === 0) continue;
     const model = scene.worldMatrix(obj);

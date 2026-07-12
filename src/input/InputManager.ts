@@ -60,6 +60,9 @@ import { extractState } from '../tools/extractElement';
 import { ExtractElementController } from '../ui/extractOverlay';
 import { textEditState, TextEditSession } from '../tools/textEdit';
 import { TextCommand } from '../core/undo/textCommands';
+import { CurveMoveOperator, appendCurvePoint } from '../tools/curveMove';
+import { CurveCommand } from '../core/undo/curveCommands';
+import { handleKey } from '../core/curve/CurveEdit';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
 import { SeparateCommand } from '../core/undo/separateCommand';
 
@@ -871,6 +874,13 @@ export class InputManager {
     }
 
     if (e.button === 0) {
+      // Curve edit mode (UR11-1): Ctrl+click appends a point; a plain/shift click
+      // selects the control point / handle under the cursor.
+      if (this.ctx.scene.curveEdit) {
+        if (e.ctrlKey) this.appendCurvePointAt();
+        else this.pickCurvePointAt(e.shiftKey);
+        return;
+      }
       // Edit mode: click-select the vert/edge/face under the cursor for the
       // current element mode. Alt = loop select; Shift toggles/extends; a miss
       // (no Shift) clears all.
@@ -1192,6 +1202,12 @@ export class InputManager {
     if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       const scene = this.ctx.scene;
+      // Already in curve edit → Tab exits back to Object Mode (UR11-1).
+      if (scene.curveEdit) {
+        scene.exitCurveEdit();
+        this.ctx.setStatus('');
+        return;
+      }
       // Already browsing → Tab exits page mode (cancel any Extract tool first).
       if (pageModeState.object) {
         extractState.controller?.cancel();
@@ -1217,6 +1233,13 @@ export class InputManager {
       if (!scene.editMode && active?.kind === 'text' && active.text) {
         textEditState.session = new TextEditSession(active);
         this.ctx.setStatus('Editing text — Tab/Esc to finish');
+        return;
+      }
+      // Curve object active → Curve Edit mode (control points), NOT mesh edit
+      // (a curve has no base mesh; its polyline is derived) — UR11-1.
+      if (!scene.editMode && active?.kind === 'curve' && active.curve) {
+        scene.enterCurveEdit(active.id);
+        this.ctx.setStatus('Curve Edit — click points, G: move, Ctrl+click: add, X: delete, Tab/Esc: exit');
         return;
       }
       if (scene.editMode) {
@@ -1338,6 +1361,13 @@ export class InputManager {
       } else {
         this.ctx.setStatus('No active camera');
       }
+      return;
+    }
+
+    // Curve edit mode (UR11-1): its own small keymap (G / X / A / Esc). Sits
+    // beside the mesh edit-mode branch so the same globals above still apply.
+    if (this.ctx.scene.curveEdit) {
+      this.onCurveEditKey(e, key);
       return;
     }
 
@@ -1687,6 +1717,120 @@ export class InputManager {
     this.camRig = null;
     this.camRigObj = null;
     this.camRigBefore = null;
+  }
+
+  // --- Curve edit mode (UR11-1) ----------------------------------------------
+
+  /** Curve-edit keymap: G move, X delete, A (de)select all, Esc exit. */
+  private onCurveEditKey(e: KeyboardEvent, key: string): void {
+    const scene = this.ctx.scene;
+    const sel = scene.curveEdit!;
+    const obj = scene.curveEditObject;
+    if (!obj || !obj.curve) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      scene.exitCurveEdit();
+      this.ctx.setStatus('');
+      return;
+    }
+    if (key === 'a' && e.altKey && !e.ctrlKey) {
+      e.preventDefault();
+      sel.clearSelection();
+      return;
+    }
+    if (key === 'a' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      sel.points.clear();
+      sel.handles.clear();
+      obj.curve.points.forEach((_, i) => sel.points.add(i));
+      sel.touch();
+      return;
+    }
+    if (key === 'g' && !e.ctrlKey && !e.altKey) {
+      this.startCurveMove();
+      return;
+    }
+    if (key === 'x' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      this.deleteCurvePoints();
+      return;
+    }
+  }
+
+  /** Curve edit G: modal move of the selected control points / handles. */
+  startCurveMove(): void {
+    this.startOperator(new CurveMoveOperator());
+  }
+
+  /** Click-select the control point / handle under the cursor (Shift extends). */
+  private pickCurvePointAt(shift: boolean): void {
+    const scene = this.ctx.scene;
+    const sel = scene.curveEdit;
+    if (!sel) return;
+    const hit = this.renderer.pickCurveElement(scene, this.ctx.camera, this.pointer.x, this.pointer.y);
+    if (!hit) {
+      if (!shift) sel.clearSelection();
+      return;
+    }
+    if (!shift) { sel.points.clear(); sel.handles.clear(); }
+    if (hit.kind === 'point') {
+      if (shift && sel.points.has(hit.index)) sel.points.delete(hit.index);
+      else sel.points.add(hit.index);
+    } else {
+      const k = handleKey(hit.index, hit.side);
+      if (shift && sel.handles.has(k)) sel.handles.delete(k);
+      else sel.handles.add(k);
+    }
+    sel.touch();
+  }
+
+  /** Ctrl+click: append a control point after the last, placed at the pointer
+   *  ray ∩ world grid plane (else the view plane through the last point). */
+  private appendCurvePointAt(): void {
+    const scene = this.ctx.scene;
+    const sel = scene.curveEdit!;
+    const obj = scene.curveEditObject;
+    if (!obj || !obj.curve) return;
+    const { width, height } = this.ctx.viewportSize();
+    const ray = this.ctx.camera.pointerRay(this.pointer.x, this.pointer.y, width, height);
+    const worldMat = scene.worldMatrix(obj);
+    let world = rayPlane(ray, Vec3.ZERO, Vec3.Z); // world grid plane z=0
+    if (!world && obj.curve.points.length > 0) {
+      const last = obj.curve.points[obj.curve.points.length - 1];
+      const lastWorld = worldMat.transformPoint(new Vec3(last.co[0], last.co[1], last.co[2]));
+      world = rayPlane(ray, lastWorld, this.ctx.camera.forward);
+    }
+    if (!world) return;
+    const invWorld = worldMat.invert();
+    let newIdx = -1;
+    const cmd = CurveCommand.capture('Add Point', obj, () => {
+      newIdx = appendCurvePoint(obj.curve!, invWorld, world!);
+    });
+    this.ctx.undo.push(cmd);
+    sel.clearSelection();
+    if (newIdx >= 0) sel.points.add(newIdx);
+    sel.touch();
+    this.ctx.setStatus(`Added control point (${obj.curve.points.length} total)`);
+  }
+
+  /** X: delete the selected control points (one undo entry). */
+  private deleteCurvePoints(): void {
+    const scene = this.ctx.scene;
+    const sel = scene.curveEdit!;
+    const obj = scene.curveEditObject;
+    if (!obj || !obj.curve) return;
+    const idx = [...sel.points].filter((i) => i < obj.curve!.points.length).sort((a, b) => b - a);
+    if (idx.length === 0) {
+      this.ctx.setStatus('Delete: select control points first');
+      return;
+    }
+    const cmd = CurveCommand.capture('Delete Points', obj, () => {
+      for (const i of idx) obj.curve!.points.splice(i, 1);
+    });
+    this.ctx.undo.push(cmd);
+    sel.clearSelection();
+    this.ctx.setStatus(`Deleted ${idx.length} control point(s)`);
   }
 
   /** Edit-mode keymap. Element tools (G/R/S, E, I, X, ...) arrive with P2-3..P2-6. */

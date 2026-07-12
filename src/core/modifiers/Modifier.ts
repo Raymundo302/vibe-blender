@@ -47,6 +47,13 @@ export interface ModifierContext {
   hostMatrix: Mat4;
   /** Resolve an object id, or null (missing / cycle / non-mesh). */
   target(objectId: number): ModifierTarget | null;
+  /**
+   * The host object's curve payload, iff it is a curve object (UR11-2). The Pipe
+   * modifier reads this to materialize its tube — a curve object carries an EMPTY
+   * base mesh, so the geometry source is the curve, not the mesh passed to
+   * apply(). Absent on mesh hosts (and in scene-less unit contexts) → Pipe no-ops.
+   */
+  hostCurve?: import('../scene/objectData').CurveData;
 }
 
 export interface Modifier {

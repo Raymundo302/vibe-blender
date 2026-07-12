@@ -1,5 +1,6 @@
 import type { Command } from './UndoStack';
-import type { SceneObject } from '../scene/Scene';
+import type { Scene } from '../scene/Scene';
+import { SceneObject } from '../scene/Scene';
 import { cloneModifier, type Modifier, type ModifierContext } from '../modifiers/Modifier';
 
 function snapshotStack(obj: SceneObject): Modifier[] {
@@ -77,4 +78,71 @@ export class ApplyModifierCommand implements Command {
     this.obj.mesh.copyFrom(this.afterMesh);
     restoreStack(this.obj, this.afterStack);
   }
+}
+
+/**
+ * Apply a Pipe on a CURVE object (UR11-2). A curve carries an empty base mesh
+ * and its `kind` is readonly, so the generic ApplyModifierCommand (which bakes
+ * into the base mesh in place) cannot turn it into a mesh object. Following the
+ * UR8-2 convert-to-mesh precedent, this REPLACES the curve object at its list
+ * index with a NEW SceneObject that shares its id / name / transform / parent /
+ * material / collection / color / anim, whose base mesh is the baked Pipe tube,
+ * whose kind is 'mesh', and which carries NO curve payload — so the result is a
+ * real, editable mesh. Any modifiers ABOVE the Pipe (index > 0) carry over onto
+ * the new mesh object. Because the id is preserved, selection/active survive.
+ * ONE undo restores the original curve object (with its Pipe) exactly.
+ */
+export class ApplyCurvePipeCommand implements Command {
+  readonly name = 'Apply Pipe';
+  private readonly index: number;
+
+  private constructor(
+    private readonly scene: Scene,
+    private readonly curveObj: SceneObject,
+    private readonly meshObj: SceneObject,
+  ) {
+    this.index = scene.objects.indexOf(curveObj);
+  }
+
+  /**
+   * Build the command (does NOT apply — call redo() then push, per the
+   * caller-applies-then-pushes convention). Returns null if `obj` is not a curve
+   * whose FIRST modifier is `modifier` and of type 'pipe'. `ctx`
+   * (Scene.modifierContext(obj)) is REQUIRED — the tube is baked from the host
+   * curve it carries.
+   */
+  static create(
+    scene: Scene,
+    obj: SceneObject,
+    modifier: Modifier,
+    ctx: ModifierContext,
+  ): ApplyCurvePipeCommand | null {
+    if (obj.kind !== 'curve' || !obj.curve) return null;
+    if (modifier.type !== 'pipe') return null;
+    if (obj.modifiers.indexOf(modifier) !== 0) return null; // Pipe must be first
+    const tube = modifier.apply(obj.mesh, ctx); // reads ctx.hostCurve
+    const meshObj = new SceneObject(obj.id, obj.name, tube.clone(), 'mesh');
+    meshObj.transform = obj.transform;
+    meshObj.visible = obj.visible;
+    meshObj.shadeSmooth = obj.shadeSmooth;
+    meshObj.color = [...obj.color];
+    meshObj.materialId = obj.materialId;
+    meshObj.collectionId = obj.collectionId;
+    meshObj.parentId = obj.parentId;
+    if (obj.anim) meshObj.anim = JSON.parse(JSON.stringify(obj.anim)) as typeof obj.anim;
+    // Modifiers above the Pipe survive onto the baked mesh.
+    for (let i = 1; i < obj.modifiers.length; i++) meshObj.modifiers.push(cloneModifier(obj.modifiers[i]));
+    if (meshObj.modifiers.length > 0) meshObj.modifiersVersion++;
+    return new ApplyCurvePipeCommand(scene, obj, meshObj);
+  }
+
+  private swap(to: SceneObject): void {
+    const from = to === this.meshObj ? this.curveObj : this.meshObj;
+    const i = this.scene.objects.indexOf(from);
+    const at = i >= 0 ? i : this.index;
+    this.scene.objects.splice(at, 1, to);
+  }
+
+  redo(): void { this.swap(this.meshObj); }
+  undo(): void { this.swap(this.curveObj); }
 }

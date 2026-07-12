@@ -5,7 +5,7 @@
 import { runE2e } from './harness.mjs';
 
 // Bumped whenever sceneJson VERSION bumps — single spot for the whole suite.
-const CURRENT_FORMAT_VERSION = 17; // v17: camera glare + F-Stop DoF (UR10-2)
+const CURRENT_FORMAT_VERSION = 19; // v19: curve objects (UR11-1)
 
 runE2e(async (t) => {
   // --- P3-2: scene save / load (JSON) ---

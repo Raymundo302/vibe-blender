@@ -11,6 +11,9 @@ import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
 import { GizmoPass, GIZMO_PICK_BASE, GIZMO_AXES, gizmoScreenScale, type GizmoAxis } from './passes/gizmoPass';
 import { EditOverlayPass } from './passes/editOverlayPass';
+import { CurveEditPass } from './passes/curveEditPass';
+import { evaluateCurve, leftHandle, rightHandle } from '../core/curve/eval';
+import { WIRE_MIN_PX, WIRE_MAX_PX } from './passes/ribbon';
 import {
   ElementPickPass,
   closestNonZeroId,
@@ -105,6 +108,7 @@ export class Renderer {
   private readonly pickingPass: PickingPass;
   private readonly gizmoPass: GizmoPass;
   private readonly editOverlayPass: EditOverlayPass;
+  private readonly curveEditPass: CurveEditPass;
   private readonly elementPickPass: ElementPickPass;
   private readonly renderedPass: RenderedPass;
   private readonly shadowPass: ShadowPass;
@@ -205,6 +209,7 @@ export class Renderer {
     this.pickingPass = new PickingPass(gl, canvas.width, canvas.height);
     this.gizmoPass = new GizmoPass(gl);
     this.editOverlayPass = new EditOverlayPass(gl);
+    this.curveEditPass = new CurveEditPass(gl);
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     this.renderedPass = new RenderedPass(gl);
     this.shadowPass = new ShadowPass(gl);
@@ -281,6 +286,89 @@ export class Renderer {
     };
     this.gpuMeshes.set(obj.id, entry);
     return entry;
+  }
+
+  /** Per-curve GPU buffers: the evaluated polyline as an anti-aliased ribbon
+   *  (display, every mode) + a raw gl.LINES VAO (object select-through pick).
+   *  Cached by the curve payload signature. */
+  private readonly curveGpus = new Map<number, {
+    version: string;
+    ribbon: VertexArray;
+    pickLines: VertexArray;
+    segCount: number;
+  }>();
+
+  private curveGpu(obj: SceneObject): {
+    version: string; ribbon: VertexArray; pickLines: VertexArray; segCount: number;
+  } {
+    const curve = obj.curve!;
+    const version = JSON.stringify(curve);
+    const cached = this.curveGpus.get(obj.id);
+    if (cached && cached.version === version) return cached;
+    cached?.ribbon.dispose();
+    cached?.pickLines.dispose();
+
+    const poly = evaluateCurve(curve);
+    // Consecutive-point segments (6 floats each) for both the ribbon + pick lines.
+    const segs = new Float32Array(Math.max(0, poly.length - 1) * 6);
+    const linePos = new Float32Array(Math.max(0, poly.length - 1) * 6);
+    for (let i = 1; i < poly.length; i++) {
+      const o = (i - 1) * 6;
+      segs[o] = poly[i - 1].x; segs[o + 1] = poly[i - 1].y; segs[o + 2] = poly[i - 1].z;
+      segs[o + 3] = poly[i].x; segs[o + 4] = poly[i].y; segs[o + 5] = poly[i].z;
+      linePos.set(segs.subarray(o, o + 6), o);
+    }
+    const r = buildWireRibbon(segs);
+    const entry = {
+      version,
+      ribbon: new VertexArray(this.ctx.gl, [
+        { location: 0, size: 3, data: r.positions },
+        { location: 1, size: 3, data: r.others },
+        { location: 2, size: 2, data: r.params },
+        { location: 3, size: 3, data: r.faceN1 },
+        { location: 4, size: 3, data: r.faceN2 },
+        { location: 5, size: 3, data: r.colors },
+      ]),
+      pickLines: new VertexArray(this.ctx.gl, [{ location: 0, size: 3, data: linePos }]),
+      segCount: Math.max(0, poly.length - 1),
+    };
+    this.curveGpus.set(obj.id, entry);
+    return entry;
+  }
+
+  /** Viewport color for a curve object: selection orange (bright when active),
+   *  otherwise the object's own display color. */
+  private curveColor(scene: Scene, obj: SceneObject): Vec3 {
+    if (scene.selection.has(obj.id)) {
+      return scene.activeId === obj.id ? new Vec3(1, 0.66, 0.25) : new Vec3(0.95, 0.55, 0.2);
+    }
+    return new Vec3(obj.color[0], obj.color[1], obj.color[2]);
+  }
+
+  /**
+   * Draw every visible curve object's evaluated polyline as an anti-aliased
+   * ribbon, in EVERY shading mode (a curve has no faces/mesh, so this is the
+   * only thing that draws it). Object color, selection tint when selected.
+   */
+  private drawCurves(scene: Scene, visible: SceneObject[], view: Mat4, proj: Mat4, refDist: number): void {
+    // Curves whose modifier stack materializes a mesh (UR11-2 Pipe) draw as that
+    // mesh in the solid pass — skip the polyline so it doesn't run down the
+    // tube's core. Bare curves (empty evaluated mesh) still draw their polyline.
+    const curves = visible.filter((o) => o.kind === 'curve' && o.curve && o.curve.points.length >= 2
+      && o.evaluatedMesh(scene.modifierContext(o)).faces.size === 0);
+    if (curves.length === 0) return;
+    const { gl, canvas } = this.ctx;
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    for (const obj of curves) {
+      const g = this.curveGpu(obj);
+      if (g.segCount === 0) continue;
+      this.wirePass.begin(view, proj, 0.0006, false, canvas.width, canvas.height,
+        refDist, this.curveColor(scene, obj), WIRE_MIN_PX, WIRE_MAX_PX);
+      this.wirePass.setObject(scene.worldMatrix(obj), view);
+      g.ribbon.draw(gl.TRIANGLES);
+    }
+    gl.disable(gl.BLEND);
   }
 
   /** Object-space triangle positions for an object's DISPLAYED mesh, cached by
@@ -865,7 +953,9 @@ export class Renderer {
       // World environment as the backdrop (flat / gradient / HDRI), then the
       // meshes over it. Other shading modes keep the theme clear color.
       this.syncHdriTexture(scene);
-      const meshes = visible.filter((o) => o.kind === 'mesh');
+      // Mesh objects + curve objects that materialize a tube (UR11-2 Pipe).
+      const meshes = visible.filter((o) => o.kind === 'mesh'
+        || (o.kind === 'curve' && o.evaluatedMesh(scene.modifierContext(o)).faces.size > 0));
       // UR8-3 B: alphaBlend cutouts draw in a blended SECOND pass and DON'T cast
       // shadows (a floating cutout casting a full quad shadow looks broken).
       // UR10-3: glass (transmission > 0) draws in a blended pass like alphaBlend,
@@ -1007,6 +1097,11 @@ export class Renderer {
       }
     }
 
+    // Curve objects (UR11-1): evaluated polylines drawn as anti-aliased ribbons
+    // in EVERY shading mode (a curve has no mesh, so this is its only geometry).
+    // After the solid/wire passes, before the grid so curves sit over surfaces.
+    this.drawCurves(scene, visible, view, proj, camera.distance);
+
     // Grid (blended, after opaque) — Overlays › Grid toggles it (P12-2).
     if (overlays.grid) this.gridPass.render(view, proj, eye);
 
@@ -1089,6 +1184,15 @@ export class Renderer {
       if (!hiddenLine) gl.enable(gl.DEPTH_TEST);
     }
 
+    // Curve edit mode (UR11-1): control points + bezier handles over the polyline.
+    // Depth cleared so the control structure is always visible on top.
+    const curveEditObj = scene.curveEditObject;
+    if (curveEditObj && scene.curveEdit && curveEditObj.curve && scene.effectiveVisible(curveEditObj)) {
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      const modelView = view.mul(scene.worldMatrix(curveEditObj));
+      this.curveEditPass.render(modelView, proj, curveEditObj.curve, scene.curveEdit);
+    }
+
     // Translate gizmo — on top of everything (clear depth after outlines).
     const gz = this.gizmoTransform(scene, eye, fovY);
     if (gz) {
@@ -1128,7 +1232,7 @@ export class Renderer {
    *  the current viewpoint's eye/fovY), or null when hidden. */
   private gizmoTransform(scene: Scene, eye: Vec3, fovY: number): { origin: Vec3; scale: number } | null {
     if (!this.gizmoVisible) return null;
-    if (scene.editMode) return null; // object gizmo has no meaning in edit mode (P2-3 may add an element gizmo)
+    if (scene.editMode || scene.curveEdit) return null; // no object gizmo in edit/curve-edit mode
     const active = scene.activeObject;
     if (!active || !active.visible) return null;
     const origin = scene.worldTransformOf(active).position;
@@ -1189,6 +1293,12 @@ export class Renderer {
     // keep that ordering regardless of the select-through phase below.
     if (raw >= GIZMO_PICK_BASE) return { kind: 'gizmo', axis: GIZMO_AXES[raw - GIZMO_PICK_BASE] };
 
+    // Curve select-through (UR11-1): a curve has no surface, so its polyline is
+    // rendered into the pick buffer and matched by proximity, in EVERY mode.
+    // Tight window so it doesn't steal clicks meant for meshes behind it.
+    const curveId = this.curveProximityPick(scene, viewProj, px, py);
+    if (curveId !== null) return { kind: 'object', id: curveId };
+
     // Object select-through: when Hidden Line is off for the current mode the
     // wireframe is see-through, so a click on/near ANY visible wire — including
     // one behind other geometry — should select that object. Runs BEFORE the
@@ -1235,6 +1345,84 @@ export class Renderer {
       }
     }
     return null;
+  }
+
+  /**
+   * Curve object select-through: render every visible curve's polyline into the
+   * pick buffer (depth OFF so it always writes) and return the id of the nearest
+   * non-zero pixel within a small window. Null = no curve near the cursor.
+   */
+  private curveProximityPick(scene: Scene, viewProj: Mat4, px: number, py: number): number | null {
+    const curves = scene.objects.filter((o) => scene.effectiveVisible(o) && o.kind === 'curve' && o.curve && o.curve.points.length >= 2);
+    if (curves.length === 0) return null;
+    const { gl, canvas } = this.ctx;
+    this.pickingPass.begin();
+    gl.disable(gl.DEPTH_TEST);
+    for (const obj of curves) {
+      const g = this.curveGpu(obj);
+      if (g.segCount === 0) continue;
+      this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
+      g.pickLines.draw(gl.LINES);
+    }
+    gl.enable(gl.DEPTH_TEST);
+    this.pickingPass.end(canvas.width, canvas.height);
+
+    const half = 5; // 11px window
+    for (let ring = 0; ring <= half; ring++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        for (let dx = -ring; dx <= ring; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== ring) continue;
+          const x = px + dx, y = py + dy;
+          if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) continue;
+          const id = this.pickingPass.read(x, y);
+          if (id !== 0 && id < GIZMO_PICK_BASE) return id - 1;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Curve-edit element pick (UR11-1): the control point or bezier handle under
+   * the cursor, by CPU screen-space projection (no faces to raster). Returns the
+   * nearest within `radius` CSS px — anchors win ties over handles — or null.
+   */
+  pickCurveElement(
+    scene: Scene,
+    camera: OrbitCamera,
+    cssX: number,
+    cssY: number,
+    radius = 12,
+  ): { kind: 'point'; index: number } | { kind: 'handle'; index: number; side: 'hl' | 'hr' } | null {
+    const obj = scene.curveEditObject;
+    const sel = scene.curveEdit;
+    if (!obj || !sel || !obj.curve) return null;
+    const { canvas } = this.ctx;
+    const mvp = camera.projMatrix(canvas.width / canvas.height).mul(camera.viewMatrix()).mul(scene.worldMatrix(obj));
+    const project = (p: Vec3): { x: number; y: number } | null => {
+      const ndc = mvp.transformPoint(p);
+      return { x: ((ndc.x + 1) / 2) * canvas.clientWidth, y: ((1 - ndc.y) / 2) * canvas.clientHeight };
+    };
+    let best: { kind: 'point'; index: number } | { kind: 'handle'; index: number; side: 'hl' | 'hr' } | null = null;
+    let bestD = radius * radius;
+    obj.curve.points.forEach((pt, i) => {
+      const anchor = project(new Vec3(pt.co[0], pt.co[1], pt.co[2]));
+      if (anchor) {
+        const d = (anchor.x - cssX) ** 2 + (anchor.y - cssY) ** 2;
+        if (d <= bestD) { bestD = d; best = { kind: 'point', index: i }; }
+      }
+      if (obj.curve!.kind === 'bezier') {
+        for (const side of ['hl', 'hr'] as const) {
+          const hv = side === 'hl' ? leftHandle(pt) : rightHandle(pt);
+          const s = project(hv);
+          if (!s) continue;
+          const d = (s.x - cssX) ** 2 + (s.y - cssY) ** 2;
+          // Strict '<' so an anchor at the same spot (auto handle == co) wins.
+          if (d < bestD) { bestD = d; best = { kind: 'handle', index: i, side }; }
+        }
+      }
+    });
+    return best;
   }
 
   /**

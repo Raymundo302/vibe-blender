@@ -6,7 +6,7 @@ import {
   type Modifier,
   type ModifierField,
 } from '../core/modifiers/Modifier';
-import { ModifierStackCommand, ApplyModifierCommand } from '../core/undo/modifierCommands';
+import { ModifierStackCommand, ApplyModifierCommand, ApplyCurvePipeCommand } from '../core/undo/modifierCommands';
 import { registerPropertiesTab } from './propertiesEditor';
 
 /**
@@ -52,16 +52,6 @@ class ModifierTab {
     this.addSelect = document.createElement('select');
     this.addSelect.className = 'modifier-add-select';
     this.addSelect.style.width = '100%';
-    const placeholder = document.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = 'Add Modifier';
-    this.addSelect.append(placeholder);
-    for (const { type, label } of modifierTypes()) {
-      const opt = document.createElement('option');
-      opt.value = type;
-      opt.textContent = label;
-      this.addSelect.append(opt);
-    }
     this.addSelect.addEventListener('change', () => this.onAdd());
     addRow.append(this.addSelect);
     this.body.append(addRow);
@@ -117,7 +107,32 @@ class ModifierTab {
     this.capture('Add Modifier', obj, () => obj.modifiers.push(createModifier(type)));
   }
 
+  /**
+   * Repopulate the Add-Modifier dropdown for the active object's kind (UR11-2).
+   * Pipe is CURVE-ONLY — it only materializes geometry from a curve payload — so
+   * it is filtered from the menu on mesh objects; conversely curve objects are
+   * offered ONLY Pipe (a curve has no base mesh for the deforming modifiers to
+   * act on; add those after Apply-ing the Pipe to a mesh). Documented UX choice.
+   */
+  private populateAddSelect(obj: SceneObject): void {
+    this.addSelect.replaceChildren();
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Add Modifier';
+    this.addSelect.append(placeholder);
+    const isCurve = obj.kind === 'curve';
+    for (const { type, label } of modifierTypes()) {
+      if (isCurve !== (type === 'pipe')) continue; // curve → only pipe; else → no pipe
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = label;
+      this.addSelect.append(opt);
+    }
+    this.addSelect.value = '';
+  }
+
   private rebuild(obj: SceneObject): void {
+    this.populateAddSelect(obj);
     this.stackEl.replaceChildren();
     if (obj.modifiers.length === 0) {
       const hint = document.createElement('div');
@@ -183,7 +198,16 @@ class ModifierTab {
       });
     });
     const apply = this.iconBtn('Apply', 'Apply modifier to base mesh', index !== 0, () => {
-      this.undo.push(new ApplyModifierCommand(obj, mod, this.scene.modifierContext(obj)));
+      // A Pipe on a curve object bakes to a NEW mesh object (curve → mesh); the
+      // generic in-place apply can't change kind. Everything else applies in
+      // place into the base mesh.
+      const curvePipe = ApplyCurvePipeCommand.create(this.scene, obj, mod, this.scene.modifierContext(obj));
+      if (curvePipe) {
+        curvePipe.redo(); // apply, then push (caller-applies-then-pushes convention)
+        this.undo.push(curvePipe);
+      } else {
+        this.undo.push(new ApplyModifierCommand(obj, mod, this.scene.modifierContext(obj)));
+      }
     });
     apply.classList.add('modifier-apply');
     apply.style.width = 'auto';

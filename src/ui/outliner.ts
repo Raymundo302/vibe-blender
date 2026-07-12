@@ -18,6 +18,7 @@ const KIND_GLYPH: Record<ObjectKind, string> = {
   camera: '\u{1F3A5}', // 🎥
   empty: '✛', // plain-axes empty (UR5-7)
   text: '\u{1D413}', // 𝐓 — text object (UR8-2)
+  curve: '∿', // ∿ — curve object (UR11-1)
 };
 
 /**

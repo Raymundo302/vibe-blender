@@ -435,6 +435,22 @@ topbar.mountTabs(workspaces.createTabs());
     regenerate: (id: number) => { const o = scene.get(id); if (o) regenerateTextMesh(o); },
     setFrame: (f: number) => { scene.frameCurrent = f; applyAnimation(scene, f); textDriver.syncAll(); },
   },
+  // UR11-1 curve handle for e2e: inspect + drive curve edit without pixel picks.
+  curve: {
+    editing: () => scene.curveEdit !== null,
+    pointCount: () => (scene.curveEditObject?.curve ?? scene.activeObject?.curve)?.points.length ?? -1,
+    selectPoint: (i: number) => {
+      const sel = scene.curveEdit;
+      if (!sel) return;
+      sel.points.clear();
+      sel.handles.clear();
+      sel.points.add(i);
+      sel.touch();
+    },
+    selectedPoints: () => (scene.curveEdit ? [...scene.curveEdit.points] : []),
+    pointCo: (i: number) => (scene.curveEditObject?.curve ?? scene.activeObject?.curve)?.points[i]?.co ?? null,
+    cyclic: () => (scene.curveEditObject?.curve ?? scene.activeObject?.curve)?.cyclic ?? null,
+  },
   nodes: createNodesApi({ scene, undo }),
   animRender: {
     render: (opts: Parameters<typeof animRender.render>[0]) => animRender.render(opts),

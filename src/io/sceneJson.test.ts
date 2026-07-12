@@ -170,12 +170,50 @@ describe('sceneJson v14 text objects', () => {
   });
 });
 
+describe('sceneJson v19 curve objects', () => {
+  it('round-trips bezier + nurbs curves (byte-identical serialize→apply→serialize)', () => {
+    const scene = new Scene();
+    scene.addCurve('Bez', {
+      kind: 'bezier', cyclic: true, resolution: 16,
+      points: [
+        { co: [1, 0, 0], hl: [1, -0.5, 0], hr: [1, 0.5, 0] },
+        { co: [0, 1, 0], hl: [0.5, 1, 0], hr: [-0.5, 1, 0] },
+      ],
+    });
+    scene.addCurve('Nur', {
+      kind: 'nurbs', cyclic: false, resolution: 10, order: 3,
+      points: [{ co: [-1, 0, 0], w: 1 }, { co: [0, 1, 0], w: 0.7 }, { co: [1, 0, 0], w: 1 }],
+    });
+    scene.selectOnly(scene.objects[0].id);
+    const cam = new OrbitCamera();
+    const s1 = serializeScene(scene, cam);
+    const dst = new Scene();
+    const dstCam = new OrbitCamera();
+    applySceneJson(s1, dst, dstCam);
+    const s2 = serializeScene(dst, dstCam);
+    expect(s2).toBe(s1);
+
+    expect(dst.objects[0].kind).toBe('curve');
+    expect(dst.objects[0].curve).toEqual(scene.objects[0].curve);
+    expect(dst.objects[1].curve).toEqual(scene.objects[1].curve);
+  });
+
+  it('rejects a curve object missing its payload', () => {
+    const scene = new Scene();
+    scene.addCurve('Bez', { kind: 'bezier', cyclic: false, resolution: 12, points: [{ co: [0, 0, 0] }, { co: [1, 0, 0] }] });
+    const json = serializeScene(scene, new OrbitCamera());
+    const broken = JSON.parse(json);
+    delete broken.objects[0].curve;
+    expect(() => applySceneJson(JSON.stringify(broken), new Scene(), new OrbitCamera())).toThrow();
+  });
+});
+
 describe('sceneJson format v2 modifiers', () => {
   it('writes the current format version', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(18);
+    expect(parsed.version).toBe(19);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -844,7 +882,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(18);
+    expect(json.version).toBe(19);
   });
 
   it('round-trips a shadeless material', () => {
@@ -1019,7 +1057,7 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
 
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(18);
+    expect(json.version).toBe(19);
     expect(json.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });

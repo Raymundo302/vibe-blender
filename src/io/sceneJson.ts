@@ -9,6 +9,8 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type {
   CameraData,
+  CurveData,
+  CurvePoint,
   EmptyData,
   HtmlPlaneData,
   LightData,
@@ -17,7 +19,7 @@ import type {
   ObjectKind,
   TextData,
 } from '../core/scene/objectData';
-import { clampHtmlFps, clampFStop, AREA_MIN_SIZE, clampIor, clampTransmission, type GlareSettings } from '../core/scene/objectData';
+import { clampHtmlFps, clampFStop, clampCurveResolution, AREA_MIN_SIZE, clampIor, clampTransmission, type GlareSettings } from '../core/scene/objectData';
 import {
   createModifier,
   modifierTypes,
@@ -45,8 +47,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 18;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+const VERSION = 19;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -214,6 +216,9 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
       thickness: num(obj.text.thickness),
     };
   }
+  // Curve payload (v19/UR11-1) — the source of truth for a curve object's
+  // viewport polyline (the object carries an empty mesh).
+  if (obj.curve) out.curve = serializeCurve(obj.curve);
   // HTML-plane payload (v13/UR7-1). kind 'file' serializes the full source text.
   if (obj.html) {
     out.html = {
@@ -251,6 +256,25 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
       })),
     };
   }
+  return out;
+}
+
+/** Full CurveData payload (v19/UR11-1), numbers rounded; optional per-point
+ *  handles/weight only written when present so bezier/nurbs stay minimal. */
+function serializeCurve(c: CurveData): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    kind: c.kind,
+    cyclic: c.cyclic,
+    resolution: num(clampCurveResolution(c.resolution)),
+    points: c.points.map((p) => {
+      const e: Record<string, unknown> = { co: vec(new Vec3(p.co[0], p.co[1], p.co[2])) };
+      if (p.hl) e.hl = vec(new Vec3(p.hl[0], p.hl[1], p.hl[2]));
+      if (p.hr) e.hr = vec(new Vec3(p.hr[0], p.hr[1], p.hr[2]));
+      if (p.w !== undefined) e.w = num(p.w);
+      return e;
+    }),
+  };
+  if (c.order !== undefined) out.order = num(c.order);
   return out;
 }
 
@@ -442,6 +466,7 @@ interface ObjectData {
   empty?: EmptyData;
   html?: HtmlPlaneData;
   text?: TextData;
+  curve?: CurveData;
 }
 interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
@@ -861,6 +886,31 @@ function parseText(v: unknown, i: number): TextData {
   };
 }
 
+/** Parse an object's CurveData payload (kind 'curve' only, v19/UR11-1). */
+function parseCurve(v: unknown, i: number): CurveData {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(`objects[${i}].curve must be an object`);
+  const c = v as Record<string, unknown>;
+  if (c.kind !== 'bezier' && c.kind !== 'nurbs') fail(`objects[${i}].curve.kind must be bezier|nurbs`);
+  if (!Array.isArray(c.points)) fail(`objects[${i}].curve.points must be an array`);
+  const points: CurvePoint[] = (c.points as unknown[]).map((pt, pi) => {
+    if (typeof pt !== 'object' || pt === null || Array.isArray(pt)) fail(`objects[${i}].curve.points[${pi}] must be an object`);
+    const p = pt as Record<string, unknown>;
+    const out: CurvePoint = { co: numArray(p.co, 3, `objects[${i}].curve.points[${pi}].co`) as [number, number, number] };
+    if (p.hl !== undefined) out.hl = numArray(p.hl, 3, `objects[${i}].curve.points[${pi}].hl`) as [number, number, number];
+    if (p.hr !== undefined) out.hr = numArray(p.hr, 3, `objects[${i}].curve.points[${pi}].hr`) as [number, number, number];
+    if (p.w !== undefined) out.w = numField(p.w, `objects[${i}].curve.points[${pi}].w`);
+    return out;
+  });
+  const data: CurveData = {
+    kind: c.kind,
+    cyclic: c.cyclic === true,
+    resolution: clampCurveResolution(c.resolution === undefined ? 12 : numField(c.resolution, `objects[${i}].curve.resolution`)),
+    points,
+  };
+  if (c.order !== undefined) data.order = Math.max(2, Math.round(numField(c.order, `objects[${i}].curve.order`)));
+  return data;
+}
+
 /** Parse an object's EmptyData payload (kind 'empty' only). */
 function parseEmpty(v: unknown, i: number): EmptyData {
   if (typeof v !== 'object' || v === null) fail(`objects[${i}].empty is missing`);
@@ -878,8 +928,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   // kind: absent (v1/v2) → 'mesh'; otherwise validated.
   let kind: ObjectKind = 'mesh';
   if (obj.kind !== undefined) {
-    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty' && obj.kind !== 'text') {
-      fail(`objects[${i}].kind must be one of mesh, light, camera, empty, text`);
+    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty' && obj.kind !== 'text' && obj.kind !== 'curve') {
+      fail(`objects[${i}].kind must be one of mesh, light, camera, empty, text, curve`);
     }
     kind = obj.kind;
   }
@@ -1003,6 +1053,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   if (kind === 'empty') data.empty = obj.empty === undefined ? { displaySize: 1 } : parseEmpty(obj.empty, i);
   // Text payload (v14/UR8-2) — required for kind 'text'.
   if (kind === 'text') data.text = parseText(obj.text, i);
+  // Curve payload (v19/UR11-1) — required for kind 'curve'.
+  if (kind === 'curve') data.curve = parseCurve(obj.curve, i);
   // HTML plane (v13/UR7-1) — a mesh object with an html payload; absent in older
   // files, so pre-UR7 image planes stay plain static image planes.
   if (obj.html !== undefined) data.html = parseHtml(obj.html, i);
@@ -1290,6 +1342,12 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       obj = scene.addCamera(od.name, { ...od.camera! });
     } else if (od.kind === 'empty') {
       obj = scene.addEmpty(od.name, { ...od.empty! });
+    } else if (od.kind === 'curve') {
+      // Deep-copy the payload so the loaded object is independent of parse data.
+      obj = scene.addCurve(od.name, {
+        ...od.curve!,
+        points: od.curve!.points.map((p) => ({ ...p, co: [...p.co], ...(p.hl ? { hl: [...p.hl] } : {}), ...(p.hr ? { hr: [...p.hr] } : {}) })) as CurvePoint[],
+      });
     } else if (od.kind === 'text') {
       // Restore the payload AND the last-generated mesh verbatim (byte-identical
       // round trips). The text driver re-derives the mesh from the payload on the

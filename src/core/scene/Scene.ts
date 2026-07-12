@@ -3,6 +3,7 @@ import { Transform } from '../math/transform';
 import { Mat4 } from '../math/mat4';
 import { Vec3 } from '../math/vec3';
 import { EditModeState } from './EditMode';
+import { CurveEditState } from '../curve/CurveEdit';
 import { defaultWorld, type World } from './worldData';
 import type { Modifier, ModifierContext } from '../modifiers/Modifier';
 import {
@@ -13,7 +14,9 @@ import {
   defaultLight,
   defaultTextData,
   makeMaterial,
+  cloneCurveData,
   type CameraData,
+  type CurveData,
   type EmptyData,
   type LightData,
   type LightType,
@@ -64,6 +67,9 @@ export class SceneObject {
   /** Text payload (UR8-2) — set iff kind === 'text'. The mesh is regenerated
    *  from this by the text driver whenever the payload changes. */
   text?: TextData;
+  /** Curve payload (UR11-1) — set iff kind === 'curve'. The viewport polyline
+   *  is DERIVED from this (evaluateCurve); the object carries an empty mesh. */
+  curve?: CurveData;
 
   constructor(
     /** Stable id, unique within the scene. Also the picking id (offset by 1). */
@@ -108,6 +114,9 @@ export class Scene {
   activeId: number | null = null;
   /** Non-null while editing one object's mesh (Blender's Edit Mode). */
   editMode: EditModeState | null = null;
+  /** Non-null while editing one curve object's control points (UR11-1) — the
+   *  curve analogue of editMode, kept separate because a curve has no mesh cage. */
+  curveEdit: CurveEditState | null = null;
   /** Scene material library; objects reference entries by id. */
   readonly materials: Material[] = [];
   /** Outliner collections; objects reference entries by collectionId. */
@@ -213,6 +222,35 @@ export class Scene {
     return obj;
   }
 
+  /**
+   * Add a curve object (UR11-1). Carries an EMPTY mesh (the viewport polyline is
+   * derived from the payload, not stored geometry). Not auto-selected.
+   */
+  addCurve(name: string, data: CurveData): SceneObject {
+    const obj = new SceneObject(this.nextId++, name, new EditableMesh(), 'curve');
+    obj.curve = data;
+    this.objects.push(obj);
+    return obj;
+  }
+
+  /** Enter curve edit mode on a curve object (defaults to the active one). */
+  enterCurveEdit(id = this.activeId): boolean {
+    const obj = id === null ? null : this.get(id);
+    if (!obj || obj.kind !== 'curve' || !obj.curve) return false;
+    this.selectOnly(obj.id);
+    this.curveEdit = new CurveEditState(obj.id);
+    return true;
+  }
+
+  exitCurveEdit(): void {
+    this.curveEdit = null;
+  }
+
+  /** The curve object being edited, or null outside curve edit mode. */
+  get curveEditObject(): SceneObject | null {
+    return this.curveEdit ? this.get(this.curveEdit.objectId) ?? null : null;
+  }
+
   /** The active camera object, or null (none set / it was deleted). */
   get activeCamera(): SceneObject | null {
     const obj = this.activeCameraId === null ? null : this.get(this.activeCameraId);
@@ -287,6 +325,9 @@ export class Scene {
     visited.add(host.id);
     return {
       hostMatrix: this.worldMatrix(host),
+      // UR11-2: a curve host exposes its payload so the Pipe modifier can sweep
+      // a tube along it (curve objects carry an empty base mesh).
+      hostCurve: host.kind === 'curve' ? host.curve : undefined,
       target: (objectId: number) => {
         if (visited.has(objectId)) return null;
         const obj = this.get(objectId);
@@ -462,6 +503,8 @@ export class Scene {
     // Text payload (UR8-2): deep-copy so the duplicate's mesh regenerates from
     // its own payload (the cloned mesh above is a fine starting point).
     if (src.text) obj.text = cloneTextData(src.text);
+    // Curve payload (UR11-1): deep-copy so the duplicate is independent.
+    if (src.curve) obj.curve = cloneCurveData(src.curve);
     obj.transform = src.transform; // Transform is immutable — sharing is safe.
     obj.visible = src.visible;
     obj.shadeSmooth = src.shadeSmooth;
@@ -510,6 +553,7 @@ export class Scene {
     const i = this.objects.findIndex((o) => o.id === id);
     if (i < 0) return;
     if (this.editMode?.objectId === id) this.exitEditMode();
+    if (this.curveEdit?.objectId === id) this.exitCurveEdit();
     const doomed = this.objects[i];
     const grandparent = this.parentOf(doomed);
     for (const child of this.childrenOf(doomed)) {

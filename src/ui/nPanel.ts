@@ -6,7 +6,8 @@ import { Vec3 } from '../core/math/vec3';
 import { TransformFields } from './propertiesEditor';
 import { TransformCommand } from '../core/undo/commands';
 import { CameraCommand } from './cameraTab';
-import { focalLengthToFovY, fovYToFocalLength } from '../core/scene/objectData';
+import { focalLengthToFovY, fovYToFocalLength, clampCurveResolution } from '../core/scene/objectData';
+import { CurveCommand } from '../core/undo/curveCommands';
 import { viewPrefs, loadViewPrefs, saveViewPrefs } from '../render/viewPrefs';
 
 /**
@@ -46,6 +47,14 @@ export class NPanel {
   private readonly dimEls: [HTMLSpanElement, HTMLSpanElement, HTMLSpanElement];
   private readonly medianEls: [HTMLSpanElement, HTMLSpanElement, HTMLSpanElement];
   private readonly countsEl: HTMLDivElement;
+
+  // --- Curve section (UR11-1) --------------------------------------------
+  private readonly curveBody: HTMLDivElement;
+  private readonly curveKindEl: HTMLSpanElement;
+  private readonly curveCyclicInput: HTMLInputElement;
+  private readonly curveResInput: HTMLInputElement;
+  private readonly curveOrderRow: HTMLElement;
+  private readonly curveOrderInput: HTMLInputElement;
 
   // --- View tab -----------------------------------------------------------
   private readonly viewBody: HTMLDivElement;
@@ -115,6 +124,65 @@ export class NPanel {
     this.countsEl.className = 'n-panel-counts';
     this.editBody.appendChild(this.countsEl);
     this.itemContent.appendChild(this.editBody);
+
+    // Curve section (UR11-1): kind (read-only), cyclic, resolution, order.
+    this.curveBody = document.createElement('div');
+    this.curveBody.className = 'n-panel-curve';
+    this.curveBody.style.display = 'none';
+    const curveTitle = document.createElement('div');
+    curveTitle.className = 'properties-group-title';
+    curveTitle.textContent = 'Curve';
+    this.curveBody.appendChild(curveTitle);
+
+    this.curveKindEl = document.createElement('span');
+    this.curveKindEl.className = 'n-panel-value';
+    this.curveKindEl.dataset.field = 'curve-kind';
+    this.curveBody.appendChild(this.labelledRow('Type', this.curveKindEl));
+
+    this.curveCyclicInput = document.createElement('input');
+    this.curveCyclicInput.type = 'checkbox';
+    this.curveCyclicInput.className = 'n-panel-check';
+    this.curveCyclicInput.dataset.action = 'curve-cyclic';
+    this.curveCyclicInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return;
+      const checked = this.curveCyclicInput.checked;
+      this.undo.push(CurveCommand.capture('Toggle Cyclic', obj, () => { obj.curve!.cyclic = checked; }));
+      this.scene.curveEdit?.touch();
+    });
+    const cyclicRow = document.createElement('label');
+    cyclicRow.className = 'n-panel-check-row';
+    const cyclicLabel = document.createElement('span');
+    cyclicLabel.textContent = 'Cyclic';
+    cyclicRow.append(this.curveCyclicInput, cyclicLabel);
+    this.curveBody.appendChild(cyclicRow);
+
+    this.curveResInput = this.numberInput('curve-res', 2, 64, 1);
+    this.curveResInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return this.updateItem();
+      const r = clampCurveResolution(parseFloat(this.curveResInput.value));
+      this.undo.push(CurveCommand.capture('Set Resolution', obj, () => { obj.curve!.resolution = r; }));
+      this.scene.curveEdit?.touch();
+      this.updateItem();
+    });
+    this.curveBody.appendChild(this.labelledRow('Resolution', this.curveResInput));
+
+    this.curveOrderInput = this.numberInput('curve-order', 2, 6, 1);
+    this.curveOrderInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return this.updateItem();
+      const raw = Math.round(parseFloat(this.curveOrderInput.value));
+      if (!Number.isFinite(raw)) return this.updateItem();
+      const k = Math.max(2, Math.min(raw, obj.curve.points.length));
+      this.undo.push(CurveCommand.capture('Set Order', obj, () => { obj.curve!.order = k; }));
+      this.scene.curveEdit?.touch();
+      this.updateItem();
+    });
+    this.curveOrderRow = this.labelledRow('Order', this.curveOrderInput);
+    this.curveBody.appendChild(this.curveOrderRow);
+
+    this.itemContent.appendChild(this.curveBody);
 
     content.appendChild(this.itemContent);
 
@@ -367,7 +435,16 @@ export class NPanel {
       this.nameEl.style.display = 'none';
       this.objectBody.style.display = 'none';
       this.editBody.style.display = 'none';
+      this.curveBody.style.display = 'none';
       return;
+    }
+
+    // Curve section: shown for any active curve object (object or curve-edit mode).
+    if (obj.kind === 'curve' && obj.curve) {
+      this.curveBody.style.display = '';
+      this.updateCurve(obj);
+    } else {
+      this.curveBody.style.display = 'none';
     }
 
     this.emptyEl.style.display = 'none';
@@ -384,6 +461,28 @@ export class NPanel {
       this.objectBody.style.display = '';
       this.transformFields.update();
       this.writeVec(this.dimEls, worldDimensions(this.scene, obj));
+    }
+  }
+
+  /** Populate the Curve section from the active curve object's payload. */
+  private updateCurve(obj: SceneObject): void {
+    const c = obj.curve!;
+    const kindText = c.kind === 'nurbs' ? 'NURBS' : 'Bezier';
+    if (this.curveKindEl.textContent !== kindText) this.curveKindEl.textContent = kindText;
+    if (this.curveCyclicInput.checked !== c.cyclic) this.curveCyclicInput.checked = c.cyclic;
+    if (document.activeElement !== this.curveResInput) {
+      const s = String(clampCurveResolution(c.resolution));
+      if (this.curveResInput.value !== s) this.curveResInput.value = s;
+    }
+    // Order applies only to NURBS.
+    if (c.kind === 'nurbs') {
+      this.curveOrderRow.style.display = '';
+      if (document.activeElement !== this.curveOrderInput) {
+        const s = String(c.order ?? 4);
+        if (this.curveOrderInput.value !== s) this.curveOrderInput.value = s;
+      }
+    } else {
+      this.curveOrderRow.style.display = 'none';
     }
   }
 

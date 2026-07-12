@@ -8,7 +8,7 @@ import type { Transform } from '../math/transform';
  * and the path tracer (P8-4) can consume these without touching the renderer.
  */
 
-export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty' | 'text';
+export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty' | 'text' | 'curve';
 
 export type LightType = 'point' | 'sun' | 'spot' | 'area';
 
@@ -364,6 +364,65 @@ export function cameraFovY(cam: CameraData): number {
  */
 export function objectForward(t: Transform): Vec3 {
   return t.rotation.rotate(new Vec3(0, 0, -1));
+}
+
+// --- Curves (UR11-1) ---------------------------------------------------------
+
+/**
+ * One control point of a curve. `co` is the anchor (object-local). Bezier points
+ * additionally carry left/right handles `hl`/`hr` (absolute object-local coords,
+ * NOT offsets); when a handle is absent the evaluator mirrors the opposite one
+ * about `co` (or falls back to `co` itself → a straight span). NURBS points carry
+ * a rational weight `w` (default 1); handles are ignored for NURBS.
+ */
+export interface CurvePoint {
+  co: [number, number, number];
+  hl?: [number, number, number];
+  hr?: [number, number, number];
+  w?: number;
+}
+
+/**
+ * Curve-object payload (UR11-1): a Bezier or NURBS spline. Plain data only —
+ * the viewport polyline is DERIVED by evaluateCurve (core/curve/eval). Set iff
+ * the object is kind 'curve'; absent on every other kind. Precedent:
+ * light/camera/empty/text payloads.
+ */
+export interface CurveData {
+  kind: 'bezier' | 'nurbs';
+  /** Closed loop (bezier wraps the last→first span; nurbs periodic-lite). */
+  cyclic: boolean;
+  /** Eval segments per span (clamped 2..64, default 12). */
+  resolution: number;
+  points: CurvePoint[];
+  /** NURBS order k (degree+1), clamped 2..#points; default 4. Unused for bezier. */
+  order?: number;
+}
+
+/** Resolution clamp bounds for a curve (eval segments per span). */
+export const CURVE_RES_MIN = 2;
+export const CURVE_RES_MAX = 64;
+
+/** Clamp a curve resolution into the supported range (default 12). */
+export function clampCurveResolution(r: number): number {
+  if (!Number.isFinite(r)) return 12;
+  return Math.max(CURVE_RES_MIN, Math.min(CURVE_RES_MAX, Math.round(r)));
+}
+
+/** Deep copy of a CurveData (its points + handle/weight arrays are copied). */
+export function cloneCurveData(c: CurveData): CurveData {
+  return {
+    kind: c.kind,
+    cyclic: c.cyclic,
+    resolution: c.resolution,
+    order: c.order,
+    points: c.points.map((p) => ({
+      co: [...p.co] as [number, number, number],
+      ...(p.hl ? { hl: [...p.hl] as [number, number, number] } : {}),
+      ...(p.hr ? { hr: [...p.hr] as [number, number, number] } : {}),
+      ...(p.w !== undefined ? { w: p.w } : {}),
+    })),
+  };
 }
 
 // --- Materials ---------------------------------------------------------------
