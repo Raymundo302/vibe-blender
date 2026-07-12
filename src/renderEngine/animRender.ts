@@ -4,6 +4,7 @@ import type { Renderer } from '../render/Renderer';
 import { applyAnimation } from '../core/anim/sampler';
 import { buildSnapshot } from './snapshot';
 import { prepareScene, renderSample } from './tracer';
+import { getGpuTracer } from './gpu/sharedTracer';
 import { tonemapAccumToRgba } from './renderWindow';
 import './animRender.css';
 
@@ -214,8 +215,9 @@ export function buildStoreZip(entries: ZipEntry[]): Uint8Array {
 
 /** Output format. 'webm'/'png' kept back-compatible with the P16-1 API. */
 export type AnimRenderMode = 'webm' | 'mp4' | 'png';
-/** Which engine produces each frame. */
-export type AnimEngine = 'viewport' | 'pathtraced';
+/** Which engine produces each frame. 'pathtraced' = CPU tracer; 'gpu' = the
+ *  WebGL2 fragment-shader tracer (UR12-3). */
+export type AnimEngine = 'viewport' | 'pathtraced' | 'gpu';
 
 export interface AnimRenderOptions {
   /** Output format. Default 'webm'. */
@@ -344,7 +346,10 @@ export class AnimRender {
     this.engineSel = document.createElement('select');
     this.engineSel.className = 'anim-render-input';
     this.engineSel.dataset.testid = 'anim-engine';
-    for (const [val, label] of [['viewport', 'Viewport'], ['pathtraced', 'Path Traced']] as const) {
+    const engineOpts: [string, string][] = [['viewport', 'Viewport'], ['pathtraced', 'Path Traced (CPU)']];
+    // GPU engine (UR12-3) only when the WebGL2 tracer probe succeeds.
+    if (getGpuTracer().available) engineOpts.push(['gpu', 'Path Traced (GPU)']);
+    for (const [val, label] of engineOpts) {
       const opt = document.createElement('option');
       opt.value = val;
       opt.textContent = label;
@@ -450,9 +455,9 @@ export class AnimRender {
     this.updateHint();
   }
 
-  /** Show the Samples row only for the path-traced engine. */
+  /** Show the Samples row for the path-traced engines (CPU + GPU). */
   private updateSamplesVisibility(): void {
-    const show = this.engineSel.value === 'pathtraced';
+    const show = this.engineSel.value === 'pathtraced' || this.engineSel.value === 'gpu';
     this.samplesLabel.style.display = show ? '' : 'none';
     this.samplesInput.style.display = show ? '' : 'none';
   }
@@ -572,8 +577,9 @@ export class AnimRender {
     // canvas via readPixels, so it is physically bound to the canvas size (it
     // cannot exceed it without resizing the GL context); documented limitation.
     const rs = scene.renderSettings;
-    const tw = engine === 'pathtraced' ? Math.round(opts.width ?? rs.width) : canvas.width;
-    const th = engine === 'pathtraced' ? Math.round(opts.height ?? rs.height) : canvas.height;
+    const traced = engine === 'pathtraced' || engine === 'gpu';
+    const tw = traced ? Math.round(opts.width ?? rs.width) : canvas.width;
+    const th = traced ? Math.round(opts.height ?? rs.height) : canvas.height;
 
     // Resolve the video MIME up front so an unsupported format fails before we
     // touch scene state.
@@ -697,6 +703,80 @@ export class AnimRender {
   }
 
   /**
+   * Pose + path-trace one frame on the GPU (UR12-3): the shared WebGL2 tracer,
+   * `samples` spp, at `w × h`, WITHOUT the render window. Per-frame it re-packs
+   * ONLY what changed (fullRepack=false → geometry/materials/lights diff'd; a
+   * camera-only fly-through frame re-packs NOTHING — see GpuTracer.setSnapshot),
+   * except the FIRST frame which does a full rebuild. Deterministic: same frame +
+   * spp → bit-identical bytes (fixed accumulation order + frame-indexed seed).
+   * The prepareFrame await for HTML planes happens BEFORE packing (UR7-1). Returns
+   * a top-left-origin RGBA byte buffer, or null if cancelled.
+   */
+  private async traceGpuFrame(
+    frame: number,
+    w: number,
+    h: number,
+    samples: number,
+    fullRepack: boolean,
+    onSample: (s: number, total: number) => void,
+  ): Promise<Uint8ClampedArray | null> {
+    const { scene, camera } = this.ctx;
+    scene.frameCurrent = frame;
+    applyAnimation(scene, frame);
+    await this.ctx.htmlDriver?.prepareFrame(frame); // UR7-1: raster BEFORE packing
+    const tracer = getGpuTracer();
+    if (!tracer.available) throw new Error('GPU tracer unavailable');
+    const snap = buildSnapshot(scene, camera);
+    tracer.setSnapshot(snap, !fullRepack); // incremental for frames after the first
+    if (!tracer.beginProgressive(w, h, seedForFrame(frame))) return null;
+    const BATCH = 8;
+    let lastYield = performance.now();
+    while (tracer.accumulatedSamples < samples) {
+      if (this.cancelled) return null;
+      if (tracer.contextLost) throw new Error('GPU context lost mid-render');
+      tracer.accumulate(Math.min(BATCH, samples - tracer.accumulatedSamples));
+      const now = performance.now();
+      if (now - lastYield > 30 || tracer.accumulatedSamples >= samples) {
+        onSample(Math.min(samples, tracer.accumulatedSamples), samples);
+        await raf();
+        lastYield = performance.now();
+      }
+    }
+    if (this.cancelled) return null;
+    const avg = tracer.readbackProgressive(); // averaged RGBA, top-left origin
+    if (!avg) return null;
+    // Route through the SAME tonemap seam as F12/CPU (glare parity): pass the
+    // averaged radiance with sample count 1 (updateFrame's divide is a no-op),
+    // so Camera Glare blooms the identical HDR before Reinhard+gamma.
+    const rgb = new Float32Array(w * h * 3);
+    for (let i = 0; i < w * h; i++) {
+      rgb[i * 3] = avg[i * 4];
+      rgb[i * 3 + 1] = avg[i * 4 + 1];
+      rgb[i * 3 + 2] = avg[i * 4 + 2];
+    }
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    tonemapAccumToRgba(rgb, 1, rgba,
+      { width: w, height: h, glare: scene.activeCamera?.camera?.glare ?? null });
+    return rgba;
+  }
+
+  /** Trace one frame with the selected path-tracing engine (CPU or GPU),
+   *  returning a top-left-origin RGBA buffer or null if cancelled. */
+  private traceFrame(
+    engine: AnimEngine,
+    frame: number,
+    w: number,
+    h: number,
+    samples: number,
+    fullRepack: boolean,
+    onSample: (s: number, total: number) => void,
+  ): Promise<Uint8ClampedArray | null> {
+    return engine === 'gpu'
+      ? this.traceGpuFrame(frame, w, h, samples, fullRepack, onSample)
+      : this.tracePathFrame(frame, w, h, samples, onSample);
+  }
+
+  /**
    * Read the just-rendered WebGL buffer into a Y-flipped 2D canvas. readPixels
    * is synchronous, so this captures the exact frame regardless of the context's
    * preserveDrawingBuffer setting. Returns the 2D canvas (reused across frames).
@@ -756,7 +836,7 @@ export class AnimRender {
         await this.drawViewportFrame(f);
         source = this.captureToScratch();
       } else {
-        const rgba = await this.tracePathFrame(f, tw, th, samples, (s, n) =>
+        const rgba = await this.traceFrame(engine, f, tw, th, samples, f === start, (s, n) =>
           this.setProgress(done + 1, total, s, n));
         if (this.cancelled || !rgba) break;
         source = this.putRgbaToScratch(rgba, tw, th);
@@ -827,7 +907,7 @@ export class AnimRender {
       let done = 0;
       for (let f = start; f <= end; f++) {
         if (this.cancelled) break;
-        const rgba = await this.tracePathFrame(f, tw, th, samples, (s, n) =>
+        const rgba = await this.traceFrame(engine, f, tw, th, samples, f === start, (s, n) =>
           this.setProgress(done + 1, total, s, n));
         if (this.cancelled || !rgba) break;
         frames.push(rgba);

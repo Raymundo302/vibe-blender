@@ -21,8 +21,22 @@ describe('viewPrefs persistence', () => {
     Object.assign(viewPrefs, defaultViewPrefs());
   });
 
-  it('defaults: passepartout on', () => {
-    expect(defaultViewPrefs()).toEqual({ passepartout: true });
+  it('defaults: passepartout on, render engine gpu', () => {
+    expect(defaultViewPrefs()).toEqual({ passepartout: true, renderEngine: 'gpu' });
+  });
+
+  it('round-trips the render engine through localStorage', () => {
+    viewPrefs.renderEngine = 'cpu';
+    saveViewPrefs();
+    Object.assign(viewPrefs, defaultViewPrefs());
+    loadViewPrefs();
+    expect(viewPrefs.renderEngine).toBe('cpu');
+  });
+
+  it('an unknown stored render engine clamps to the default', () => {
+    localStorage.setItem(KEY, JSON.stringify({ passepartout: true, renderEngine: 'quantum' }));
+    loadViewPrefs();
+    expect(viewPrefs.renderEngine).toBe('gpu');
   });
 
   it('round-trips through localStorage', () => {

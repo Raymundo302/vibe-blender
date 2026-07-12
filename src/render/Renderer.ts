@@ -865,8 +865,17 @@ export class Renderer {
     // SSAO (shading-dropdown "Ambient Occlusion", solid modes only): depth
     // prepass of the visible meshes, then SSAO+blur into aoPass.texture. The
     // solid passes below multiply it in; when off they bind the 1×1 white.
-    const aoOn = shadePrefs.ao && this.shadingMode !== 'wireframe';
-    if (aoOn) {
+    // Cavity (UR13-1, Blender viewport curvature) shares AO's depth+normal
+    // prepass. It works in the solid modes AND in wireframe HIDDEN-LINE mode
+    // (the depth prime gives the wires a surface to read); classic see-through
+    // wireframe has no primed surface, so cavity is skipped there. The prepass
+    // must run when EITHER AO or cavity needs it (generalized from the old
+    // ao-only gate).
+    const solidMode = this.shadingMode !== 'wireframe';
+    const aoOn = shadePrefs.ao && solidMode;
+    const cavityOn = shadePrefs.cavity
+      && (solidMode || shadePrefs.hiddenLine.wireframe);
+    if (aoOn || cavityOn) {
       this.aoPass.beginDepth(view, proj);
       const aoMeshes: SceneObject[] = [];
       for (const obj of visible) {
@@ -880,17 +889,30 @@ export class Renderer {
         this.aoPass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
-      if (shadePrefs.aoMode === 'object') {
-        // Object AO (Ray's SDF technique): voxel-SDF atlas in sync with the
-        // visible meshes, then the world-space march instead of GTAO.
-        const sdf = this.sdfAtlas.sync(scene, aoMeshes);
-        this.aoPass.computeObject(proj.invert(), view.invert(), sdf,
-          shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples, shadePrefs.aoMethod);
-      } else {
-        this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples);
+      if (aoOn) {
+        if (shadePrefs.aoMode === 'object') {
+          // Object AO (Ray's SDF technique): voxel-SDF atlas in sync with the
+          // visible meshes, then the world-space march instead of GTAO.
+          const sdf = this.sdfAtlas.sync(scene, aoMeshes);
+          this.aoPass.computeObject(proj.invert(), view.invert(), sdf,
+            shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples, shadePrefs.aoMethod);
+        } else {
+          this.aoPass.compute(proj, proj.invert(), shadePrefs.aoRadius, shadePrefs.aoStrength, shadePrefs.aoSamples);
+        }
       }
     }
-    const aoTex = aoOn ? this.aoPass.texture : this.aoPass.white;
+    // Factor texture the shaded passes multiply: AO alone, or AO·cavity folded
+    // (computeCavity composes the two into ONE full-res factor), or 1×1 white.
+    let aoTex = aoOn ? this.aoPass.texture : this.aoPass.white;
+    let cavityTex: WebGLTexture | null = null;
+    if (cavityOn) {
+      this.aoPass.computeCavity(proj.invert(), aoOn ? this.aoPass.texture : null,
+        shadePrefs.cavityRidge, shadePrefs.cavityValley);
+      cavityTex = this.aoPass.cavityTexture;
+      // Solid modes multiply the composed factor as their AO texture; wireframe
+      // hidden-line reads it in the wire fragment (below) instead.
+      if (solidMode) aoTex = cavityTex;
+    }
 
     // While an object is in edit mode its EDGE lines are skipped in every
     // wirePass draw below — the edit cage IS its wireframe (Blender's model),
@@ -930,9 +952,12 @@ export class Renderer {
         }
         gl.colorMask(true, true, true, true);
       }
-      // Anti-aliased ribbons (UR6-1), blended for the soft AA rim.
+      // Anti-aliased ribbons (UR6-1), blended for the soft AA rim. In hidden-
+      // line mode the wires sample the cavity factor (UR13-1) so ridges brighten
+      // and valley/crease edges darken; see-through wireframe passes null.
       this.wirePass.begin(view, proj, hiddenLine ? 0.002 : 0, hiddenLine,
-        canvas.width, canvas.height, camera.distance, wireColor, wireMinPx, wireMaxPx);
+        canvas.width, canvas.height, camera.distance, wireColor, wireMinPx, wireMaxPx,
+        cavityTex ? { texture: cavityTex, width: canvas.width, height: canvas.height } : null);
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       for (const obj of visible) {

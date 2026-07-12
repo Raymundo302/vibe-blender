@@ -7,6 +7,9 @@
 import { runE2e } from './harness.mjs';
 
 runE2e(async (t) => {
+  // UR12-3: default render engine is GPU; these are CPU-path regression suites — pin CPU.
+  await t.until('!!window.__renderEngine');
+  await t.evaluate("window.__renderEngine.setEngine('cpu')");
   const saved = await t.evaluate('window.__app.io.serialize()');
 
   // --- Seed the default cube with programmatic per-face UVs (each quad face

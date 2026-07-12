@@ -69,6 +69,16 @@
   padding: 1px 4px;
 }
 
+.render-win-engine {
+  background: var(--vb-input, #1f1f1f);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  color: var(--vb-text, #d0d0d0);
+  font: inherit;
+  padding: 1px 4px;
+}
+.render-win-engine option:disabled { color: var(--vb-text-dim, #8a8a8a); }
+
 .render-win-canvas {
   display: block;
   background: #000;

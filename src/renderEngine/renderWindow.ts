@@ -1,6 +1,7 @@
 import './renderWindow.css';
 import { applyGlare } from './glare';
 import type { GlareSettings } from '../core/scene/objectData';
+import type { RenderEngine } from '../render/viewPrefs';
 
 /**
  * Reinhard tonemap + gamma 1/2.2 of an averaged path-tracer accumulation buffer
@@ -70,6 +71,8 @@ export class RenderWindow {
   private readonly host: HTMLElement;
   private readonly apertureInput: HTMLInputElement;
   private readonly focusInput: HTMLInputElement;
+  private readonly engineSel: HTMLSelectElement;
+  private readonly gpuOption: HTMLOptionElement;
 
   isOpen = false;
   sample = 0;
@@ -87,6 +90,11 @@ export class RenderWindow {
   onClose: () => void = () => {};
   /** Fired when aperture / focus distance change (init.ts re-renders). */
   onParamsChange: () => void = () => {};
+  /** Selected path-tracer backend (UR12-3). init.ts reads this at render start
+   *  and persists it; the GPU option disables itself when unavailable. */
+  engine: RenderEngine = 'gpu';
+  /** Fired when the user changes the Engine select (init.ts persists + restarts). */
+  onEngineChange: () => void = () => {};
 
   constructor(host: HTMLElement, width = 960, height = 540) {
     this.host = host;
@@ -158,7 +166,25 @@ export class RenderWindow {
     fLabel.title = 'Focus distance (blank = auto)';
     dof.append(apLabel, this.apertureInput, fLabel, this.focusInput);
 
-    header.append(title, this.readout, dof, saveBtn, closeBtn);
+    // Engine select: CPU (Web Worker tracer) | GPU (WebGL2 tracer, UR12).
+    this.engineSel = document.createElement('select');
+    this.engineSel.className = 'render-win-engine';
+    this.engineSel.dataset.testid = 'render-engine';
+    this.engineSel.title = 'Path-tracer backend';
+    this.gpuOption = document.createElement('option');
+    this.gpuOption.value = 'gpu';
+    this.gpuOption.textContent = 'GPU';
+    const cpuOption = document.createElement('option');
+    cpuOption.value = 'cpu';
+    cpuOption.textContent = 'CPU';
+    this.engineSel.append(this.gpuOption, cpuOption);
+    this.engineSel.value = this.engine;
+    this.engineSel.addEventListener('change', () => {
+      this.engine = this.engineSel.value === 'cpu' ? 'cpu' : 'gpu';
+      this.onEngineChange();
+    });
+
+    header.append(title, this.readout, this.engineSel, dof, saveBtn, closeBtn);
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'render-win-canvas';
@@ -218,6 +244,26 @@ export class RenderWindow {
   setFocusDistance(v: number | null): void {
     this.focusDistance = v !== null && Number.isFinite(v) && v > 0 ? v : null;
     this.focusInput.value = this.focusDistance === null ? '' : String(this.focusDistance);
+  }
+
+  /** Set the selected engine and reflect it in the select (no event fired). */
+  setEngine(e: RenderEngine): void {
+    this.engine = e;
+    this.engineSel.value = e;
+  }
+
+  /**
+   * Reflect GPU availability: when unavailable the GPU option is disabled and its
+   * tooltip carries the reason (the render-window Engine select shows it), and the
+   * select falls back to CPU if it was on GPU (UR12-3).
+   */
+  setGpuAvailability(available: boolean, reason: string | null): void {
+    this.gpuOption.disabled = !available;
+    this.gpuOption.title = available ? '' : (reason ?? 'GPU tracer unavailable');
+    this.engineSel.title = available
+      ? 'Path-tracer backend'
+      : `GPU tracer unavailable: ${reason ?? 'unknown'} — using CPU`;
+    if (!available && this.engine === 'gpu') this.setEngine('cpu');
   }
 
   /** Show the effective (auto) focus distance in the field without overriding

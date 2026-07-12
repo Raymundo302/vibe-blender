@@ -1,6 +1,6 @@
 import { Shader } from '../gl/Shader';
 import { Vec3 } from '../../core/math/vec3';
-import { RIBBON_EXPAND_GLSL, RIBBON_FRAG, WIRE_MIN_PX, WIRE_MAX_PX } from './ribbon';
+import { RIBBON_EXPAND_GLSL, WIRE_MIN_PX, WIRE_MAX_PX } from './ribbon';
 import type { Mat4 } from '../../core/math/mat4';
 
 /**
@@ -84,6 +84,35 @@ void main() {
   }
 }`;
 
+// Mesh-wire fragment: the shared RIBBON_FRAG AA (soft ~1px rim) plus an OPTIONAL
+// cavity multiply. Cavity applies in wireframe HIDDEN-LINE mode — the wires sit
+// exactly on the convex edges / concave creases the curvature signal is
+// strongest at, so multiplying the wire color by the cavity factor reads the
+// surface detail (ridges brighten, valleys darken). u_cavityOn defaults to 0 →
+// bit-identical to RIBBON_FRAG for the wireframe/overlay/see-through paths that
+// don't bind it (the edit cage keeps the shared RIBBON_FRAG untouched).
+const WIRE_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+in float v_side;
+in float v_halfPx;
+in vec3 v_color;
+uniform vec3 u_color;
+// highp: the factor reaches 4.0, past lowp's guaranteed range — sampler2D
+// defaults to lowp in ES fragment shaders and radeonsi honors it (the AO-saga
+// lesson, 2026-07-08).
+uniform highp sampler2D u_cavity; // full-res AO·cavity factor (bound only when on)
+uniform vec2 u_cavityTexel;      // 1 / canvas size
+uniform float u_cavityOn;        // 1 → modulate wire color by cavity, 0 → no-op
+out vec4 outColor;
+void main() {
+  float edgeDistPx = (1.0 - abs(v_side)) * v_halfPx;
+  float alpha = clamp(edgeDistPx, 0.0, 1.0);
+  if (alpha <= 0.0) discard;
+  vec3 col = u_color * v_color;
+  if (u_cavityOn > 0.5) col *= texture(u_cavity, gl_FragCoord.xy * u_cavityTexel).r;
+  outColor = vec4(col, alpha);
+}`;
+
 // Simple position-only depth-prime shader: draws the solid TRIANGLES into the
 // depth buffer (color masked off by the caller) so hidden-line wireframe can
 // depth-test its wires against the faces. Kept separate from the ribbon shader
@@ -105,8 +134,8 @@ export class WirePass {
   readonly shader: Shader;
   private readonly primeShader: Shader;
 
-  constructor(gl: WebGL2RenderingContext) {
-    this.shader = new Shader(gl, VERT, RIBBON_FRAG, 'mesh-wire');
+  constructor(private readonly gl: WebGL2RenderingContext) {
+    this.shader = new Shader(gl, VERT, WIRE_FRAG, 'mesh-wire');
     this.primeShader = new Shader(gl, PRIME_VERT, PRIME_FRAG, 'mesh-wire-prime');
   }
 
@@ -119,7 +148,11 @@ export class WirePass {
     view: Mat4, proj: Mat4, zBias = 0, hideBack = false,
     width = 1, height = 1, refDist = 8, color: Vec3 = WIRE_DARK,
     minPx = WIRE_MIN_PX, maxPx = WIRE_MAX_PX,
+    /** Cavity (wireframe hidden-line): the full-res AO·cavity factor texture and
+     *  canvas size. null → no cavity (u_cavityOn=0, bit-identical old behavior). */
+    cavity: { texture: WebGLTexture; width: number; height: number } | null = null,
   ): void {
+    const gl = this.gl;
     this.shader.use();
     this.shader.setMat4('u_view', view);
     this.shader.setMat4('u_proj', proj);
@@ -130,6 +163,14 @@ export class WirePass {
     this.shader.setVec3('u_color', color);
     this.shader.setFloat('u_minPx', minPx);
     this.shader.setFloat('u_maxPx', maxPx);
+    this.shader.setFloat('u_cavityOn', cavity ? 1 : 0);
+    if (cavity) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, cavity.texture);
+      this.shader.setInt('u_cavity', 1);
+      this.shader.setVec2('u_cavityTexel', 1 / cavity.width, 1 / cavity.height);
+      gl.activeTexture(gl.TEXTURE0);
+    }
   }
 
   setObject(model: Mat4, view: Mat4): void {

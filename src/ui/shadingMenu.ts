@@ -1,5 +1,5 @@
 import type { Renderer, ShadingMode } from '../render/Renderer';
-import { shadePrefs, saveShadePrefs, AO_METHODS, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE, WIRE_MIN_PX_RANGE, WIRE_MAX_PX_RANGE } from '../render/shadePrefs';
+import { shadePrefs, saveShadePrefs, AO_METHODS, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE, CAVITY_RANGE, WIRE_MIN_PX_RANGE, WIRE_MAX_PX_RANGE } from '../render/shadePrefs';
 import type { AoMode } from '../render/shadePrefs';
 
 /**
@@ -120,7 +120,7 @@ export class ShadingMenu {
       }
     };
 
-    type NumKey = 'aoRadius' | 'aoStrength' | 'aoSamples' | 'wireMinPx' | 'wireMaxPx';
+    type NumKey = 'aoRadius' | 'aoStrength' | 'aoSamples' | 'cavityRidge' | 'cavityValley' | 'wireMinPx' | 'wireMaxPx';
     const sliderRow = (
       key: NumKey, label: string,
       range: { min: number; max: number }, step: number, title: string,
@@ -207,8 +207,8 @@ export class ShadingMenu {
     // checkbox + label) and a body of controls, hidden when collapsed. The
     // expanded state persists per section in shadePrefs.sections.
     const makeSection = (
-      id: 'ao' | 'wire' | 'intersect',
-      prefKey: 'ao' | 'wireOverlay' | 'intersections',
+      id: 'ao' | 'cavity' | 'wire' | 'intersect',
+      prefKey: 'ao' | 'cavity' | 'wireOverlay' | 'intersections',
       label: string, title: string,
       buildBody: (body: HTMLElement) => void,
     ): void => {
@@ -318,6 +318,15 @@ export class ShadingMenu {
         body.appendChild(sliderRow('aoSamples', 'Samples', AO_SAMPLES_RANGE, 16,
           'AO samples per pixel — more is cleaner, fewer is faster',
           { attr: 'shadeSlider', greyWithAo: true }));
+      });
+
+    // --- Cavity section (UR13-1) ---
+    makeSection('cavity', 'cavity', 'Cavity',
+      'Screen-space curvature — ridges brighten, valleys/creases darken', (body) => {
+        body.appendChild(sliderRow('cavityRidge', 'Ridge', CAVITY_RANGE, 0.05,
+          'Convex-edge brightening amount (0 = off)'));
+        body.appendChild(sliderRow('cavityValley', 'Valley', CAVITY_RANGE, 0.05,
+          'Concave-crease darkening amount (0 = off)'));
       });
 
     // --- Wireframe section ---

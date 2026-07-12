@@ -8,9 +8,19 @@
  * preference, not scene data.
  */
 
+/** Which path-tracing backend F12 / Ctrl+F12 use (UR12-3). */
+export type RenderEngine = 'cpu' | 'gpu';
+
 export interface ViewPrefs {
   /** Show the darkened passepartout border while in camera view. */
   passepartout: boolean;
+  /**
+   * Path-tracer backend. 'gpu' = the WebGL2 fragment-shader tracer (UR12);
+   * 'cpu' = the original Web Worker tracer. Default 'gpu' — the render engine
+   * downgrades to CPU at render time when the GPU probe fails (and the render
+   * window's Engine select disables the GPU option with the reason as tooltip).
+   */
+  renderEngine: RenderEngine;
 }
 
 const STORAGE_KEY = 'vibe-view-v1';
@@ -19,6 +29,8 @@ export function defaultViewPrefs(): ViewPrefs {
   return {
     // Blender ships passepartout ON by default.
     passepartout: true,
+    // Prefer the GPU tracer when available (probed at render time).
+    renderEngine: 'gpu',
   };
 }
 
@@ -43,6 +55,10 @@ export function loadViewPrefs(): ViewPrefs {
     const v = src[key];
     (viewPrefs as unknown as Record<string, unknown>)[key] =
       typeof v === want ? v : d[key];
+  }
+  // renderEngine is a string union — reject anything that isn't a known backend.
+  if (viewPrefs.renderEngine !== 'cpu' && viewPrefs.renderEngine !== 'gpu') {
+    viewPrefs.renderEngine = d.renderEngine;
   }
   return viewPrefs;
 }

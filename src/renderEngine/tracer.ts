@@ -1397,3 +1397,39 @@ export function renderSample(
     }
   }
 }
+
+/**
+ * UR12-1 DEBUG EXPORT — binary primary-ray hit mask (row 0 = top). For each
+ * pixel a CENTER (unjittered) pinhole ray is cast through the same camera model
+ * as renderSample; the mask is 1 where it hits scene geometry, 0 on a miss. This
+ * is the CPU reference the GPU tracer's renderHitMask() is compared against to
+ * prove traversal parity (e2e/gpu-tracer-1.mjs). Aperture/DoF is ignored here
+ * (pinhole centers only) so the mask is deterministic. NOT used by the app.
+ */
+export function renderHitMask(scene: TraceScene, w: number, h: number): Uint8Array {
+  const mask = new Uint8Array(w * h);
+  if (!scene.bvh) return mask;
+  const cam = scene.camera;
+  const aspect = w / h;
+  const th = Math.tan(cam.fovY / 2);
+  const [fx, fy, fz] = cam.forward;
+  const [rx, ry, rz] = cam.right;
+  const [ux, uy, uz] = cam.up;
+  const [ex, ey, ez] = cam.position;
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const sx = ((px + 0.5) / w) * 2 - 1;
+      const sy = 1 - ((py + 0.5) / h) * 2;
+      const ndcx = sx * aspect * th;
+      const ndcy = sy * th;
+      let dx = fx + rx * ndcx + ux * ndcy;
+      let dy = fy + ry * ndcx + uy * ndcy;
+      let dz = fz + rz * ndcx + uz * ndcy;
+      const inv = 1 / Math.hypot(dx, dy, dz);
+      dx *= inv; dy *= inv; dz *= inv;
+      const hit = intersectBVH(scene.bvh, scene.tris, ex, ey, ez, dx, dy, dz);
+      mask[py * w + px] = hit ? 1 : 0;
+    }
+  }
+  return mask;
+}

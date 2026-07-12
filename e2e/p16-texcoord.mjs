@@ -22,6 +22,9 @@ const SHOTS = '/tmp/p16-texcoord';
 mkdirSync(SHOTS, { recursive: true });
 
 runE2e(async (t) => {
+  // UR12-3: default render engine is GPU; these are CPU-path regression suites — pin CPU.
+  await t.until('!!window.__renderEngine');
+  await t.evaluate("window.__renderEngine.setEngine('cpu')");
   await t.reload();
   const evalAsync = async (expr) => {
     const { result, exceptionDetails } = await t.send('Runtime.evaluate', {

@@ -12,6 +12,9 @@
 import { runE2e } from './harness.mjs';
 
 runE2e(async (t) => {
+  // UR12-3: default render engine is GPU; these are CPU-path regression suites — pin CPU.
+  await t.until('!!window.__renderEngine');
+  await t.evaluate("window.__renderEngine.setEngine('cpu')");
   const pristine = await t.evaluate('window.__app.io.serialize()');
 
   // Reduce to a single cube at origin, then Shift+A a fresh Camera (exercises the

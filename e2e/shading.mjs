@@ -22,10 +22,10 @@ runE2e(async (t) => {
   await t.sleep(80);
   t.check('menu shows 4 shading modes',
     (await t.evaluate(`document.querySelectorAll('.shading-menu-mode').length`)) === 4);
-  t.check('menu shows AO / wireframe / intersections / hidden-line checkboxes',
+  t.check('menu shows AO / cavity / wireframe / intersections / hidden-line checkboxes',
     await t.evaluate(`(() => {
       const keys = [...document.querySelectorAll('[data-shade-pref]')].map((r) => r.dataset.shadePref);
-      return keys.join(',') === 'ao,wireOverlay,intersections,hiddenLine';
+      return keys.join(',') === 'ao,cavity,wireOverlay,intersections,hiddenLine';
     })()`));
   await t.key('Escape', 'Escape', 0);
   await t.sleep(60);
@@ -116,11 +116,16 @@ runE2e(async (t) => {
   await t.sleep(80);
   t.check('AO radius + strength + samples sliders present in the menu',
     await t.evaluate(`(() => {
-      const keys = [...document.querySelectorAll('[data-shade-slider]')].map((r) => r.dataset.shadeSlider);
+      // Scope to the AO section — Cavity (UR13-1) also has data-shade-slider rows.
+      const ao = document.querySelector('.shading-section[data-section="ao"]');
+      const keys = [...ao.querySelectorAll('[data-shade-slider]')].map((r) => r.dataset.shadeSlider);
       return keys.join(',') === 'aoRadius,aoStrength,aoSamples';
     })()`));
   t.check('sliders are greyed out while AO is off',
-    await t.evaluate(`[...document.querySelectorAll('[data-shade-slider] input')].every((i) => i.disabled)`));
+    await t.evaluate(`(() => {
+      const ao = document.querySelector('.shading-section[data-section="ao"]');
+      return [...ao.querySelectorAll('[data-shade-slider] input')].every((i) => i.disabled);
+    })()`));
   const sliderWrites = await t.evaluate(`(() => {
     const aoBox = document.querySelector('[data-shade-pref="ao"] input');
     aoBox.click(); // enables AO → sliders wake up
@@ -671,8 +676,8 @@ runE2e(async (t) => {
   }
 
   // (5) Persistence — driving the selects (object, method 4) fires their change
-  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v5' (UR9-1
-  // bumped the storage key from v4).
+  // handlers which saveShadePrefs() to localStorage 'vibe-shading-v6' (UR13-1
+  // bumped the storage key from v5).
   const persisted = await t.evaluate(`(() => {
     const modeSel = document.querySelector('select[data-shade-mode]');
     const methodSel = document.querySelector('select[data-shade-method]');
@@ -680,9 +685,9 @@ runE2e(async (t) => {
       modeSel.value = 'object'; modeSel.dispatchEvent(new Event('change'));
       methodSel.value = '2'; methodSel.dispatchEvent(new Event('change'));
     }
-    return localStorage.getItem('vibe-shading-v5') || '';
+    return localStorage.getItem('vibe-shading-v6') || '';
   })()`);
-  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v5)',
+  t.check('Object AO persists aoMode=object to localStorage (vibe-shading-v6)',
     persisted.includes('"aoMode":"object"'), `stored=${persisted.slice(0, 90)}`);
 
   // Restore global state: close menu, revert selects to screen (re-persists),
@@ -1189,15 +1194,15 @@ runE2e(async (t) => {
   await t.evaluate(`window.__app.renderer.shadingMode = 'matcap'`);
   // Earlier blocks may have expanded the AO section; reset to the collapsed
   // default before the fresh menu is built so the default-collapsed check holds.
-  await t.evaluate(`window.__app.shadePrefs.sections = { ao: false, wire: false, intersect: false }`);
+  await t.evaluate(`window.__app.shadePrefs.sections = { ao: false, cavity: false, wire: false, intersect: false }`);
   await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
   await t.sleep(80);
   const bodyDisplay = (sec) => t.evaluate(`(() => {
     const b = document.querySelector('.shading-section[data-section="${sec}"] .shading-section-body');
     return b ? getComputedStyle(b).display : 'no-body';
   })()`);
-  t.check('UR9 (1) three disclosure sections exist (ao/wire/intersect)',
-    (await t.evaluate(`[...document.querySelectorAll('.shading-section')].map((s)=>s.dataset.section).join(',')`)) === 'ao,wire,intersect');
+  t.check('UR9 (1) four disclosure sections exist (ao/cavity/wire/intersect)',
+    (await t.evaluate(`[...document.querySelectorAll('.shading-section')].map((s)=>s.dataset.section).join(',')`)) === 'ao,cavity,wire,intersect');
   t.check('UR9 (1) AO section controls hidden while collapsed (default)',
     (await bodyDisplay('ao')) === 'none');
   t.check('UR9 (1) AO radius slider not visible while collapsed',
@@ -1369,12 +1374,207 @@ runE2e(async (t) => {
   t.check('UR9 (5) intersectColor cyan → intersection ribbon pixels are cyan',
     cyanN >= 5, `cyan=${cyanN}`);
 
+  // ===================================================================
+  // UR13-1: CAVITY (Blender-style screen-space curvature). Ridges (convex
+  // edges) brighten, valleys (concave creases) darken. Independent of AO;
+  // composes when both are on. Solid modes + wireframe-with-hidden-line.
+  // ===================================================================
+  await t.evaluate(`(async () => {
+    const S = window.__app.scene;
+    for (const o of [...S.objects]) { if (S.editMode) S.exitEditMode(); S.remove(o.id); }
+    const prim = await import('/src/core/mesh/primitives.ts');
+    const V = (await import('/src/core/math/vec3.ts')).Vec3;
+    S.add('CavCube', prim.makeCube(1));                       // spans [-1,1]^3
+    const floor = S.add('CavFloor', prim.makePlane(30));
+    floor.transform = floor.transform.withPosition(new V(0, 0, -1.001)); // cube rests on it
+    S.deselectAll();
+    const cam = window.__app.camera; cam.yaw = 0.6; cam.pitch = 0.45; cam.distance = 6;
+    const p = window.__app.shadePrefs;
+    p.ao = false; p.cavity = false; p.aoMode = 'screen';
+    p.cavityRidge = 1; p.cavityValley = 1;
+    // Studio mode: diffuse shading leaves the convex edge mid-tone (matcap
+    // blows silhouette edges to 255, hiding the brightening). Here edge==face
+    // without cavity, so any edge>face is a PURE cavity measurement.
+    window.__app.renderer.shadingMode = 'studio';
+  })()`);
+  t.check('cavity scene: cube + floor landed',
+    await t.until(`window.__app.scene.objects.some((o) => o.name === 'CavFloor')`));
+  await t.sleep(150);
+
+  // Brightest pixel in a short vertical strip (ridge band is ~1px; a single
+  // projected pixel rounds off the convex edge — mirror of darkestAt).
+  const brightestAt = (wx, wy, wz) => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const vp = app.renderer.currentViewProj(app.scene, app.camera).m;
+    const cx = vp[0]*${wx} + vp[4]*${wy} + vp[8]*${wz} + vp[12];
+    const cy = vp[1]*${wx} + vp[5]*${wy} + vp[9]*${wz} + vp[13];
+    const cw = vp[3]*${wx} + vp[7]*${wy} + vp[11]*${wz} + vp[15];
+    const px = Math.round((cx/cw*0.5+0.5) * c.width);
+    const py = Math.round((cy/cw*0.5+0.5) * c.height);
+    const out = new Uint8Array(4);
+    let best = -1, bestPx = [0,0,0];
+    for (let dy = -3; dy <= 3; dy++) {
+      gl.readPixels(px, py + dy, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+      const l = 0.2126*out[0] + 0.7152*out[1] + 0.0722*out[2];
+      if (l > best) { best = l; bestPx = [out[0], out[1], out[2]]; }
+    }
+    return bestPx;
+  })()`);
+
+  const RIDGE = [0.4, -1.0, 1.0];   // top-front convex edge (z=1,y=-1 line)
+  const FACE = [0.4, -0.4, 1.0];    // top-face interior (flat → no cavity)
+  const CREASE = [0.3, -1.0, -1.0]; // cube-floor concave contact crease
+
+  // (1) RIDGE: isolate brightening (ridge high, valley 0). Baseline off first.
+  await setPref('cavityRidge', 2.5);
+  await setPref('cavityValley', 0);
+  const edgeOff = lum(await brightestAt(...RIDGE));
+  const faceOff = lum(await pixelAt(...FACE));
+  await setPref('cavity', true);
+  await t.sleep(60);
+  const edgeRidge = lum(await brightestAt(...RIDGE));
+  const faceRidge = lum(await pixelAt(...FACE));
+  t.check('cavity: convex top edge BRIGHTER than the adjacent flat face',
+    edgeRidge - faceRidge > 15, `edge=${edgeRidge.toFixed(1)} face=${faceRidge.toFixed(1)}`);
+  t.check('cavity ridge brightens the convex edge vs cavity off',
+    edgeRidge - edgeOff > 12, `off=${edgeOff.toFixed(1)} on=${edgeRidge.toFixed(1)}`);
+  t.check('cavity ridge leaves the flat face nearly unchanged',
+    Math.abs(faceRidge - faceOff) < 8, `off=${faceOff.toFixed(1)} on=${faceRidge.toFixed(1)}`);
+
+  // (1) VALLEY: isolate darkening (valley high, ridge 0) — interior crease.
+  await setPref('cavity', false);
+  await setPref('cavityRidge', 0);
+  await setPref('cavityValley', 2.5);
+  const creaseOff = lum(await darkestAt(...CREASE));
+  await setPref('cavity', true);
+  await t.sleep(60);
+  const creaseValley = lum(await darkestAt(...CREASE));
+  t.check('cavity valley DARKENS the interior (concave) crease vs off',
+    creaseOff - creaseValley > 12, `off=${creaseOff.toFixed(1)} on=${creaseValley.toFixed(1)}`);
+
+  // (2) SLIDER ZERO: ridge 0 → brightening gone; valley 0 → darkening gone
+  // (with both 0 the factor is exactly 1 → identical to cavity off).
+  await setPref('cavityRidge', 0);
+  await setPref('cavityValley', 0);
+  await t.sleep(60);
+  const edgeR0 = lum(await brightestAt(...RIDGE));
+  const creaseV0 = lum(await darkestAt(...CREASE));
+  t.check('cavity ridge slider 0 → convex-edge brightening gone',
+    Math.abs(edgeR0 - edgeOff) < 8, `off=${edgeOff.toFixed(1)} ridge0=${edgeR0.toFixed(1)}`);
+  t.check('cavity valley slider 0 → crease darkening gone',
+    Math.abs(creaseV0 - creaseOff) < 8, `off=${creaseOff.toFixed(1)} valley0=${creaseV0.toFixed(1)}`);
+
+  // (3) AO + CAVITY together: no NaN / blow-out. Both on, strong sliders; the
+  // cube region must stay a valid, VARIED image (not saturated all-white, and
+  // still darker at the crease than the open face).
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs;
+    p.ao = true; p.cavity = true; p.cavityRidge = 2.5; p.cavityValley = 2.5;
+    p.aoStrength = 2; })()`);
+  await t.sleep(80);
+  const combo = await t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const vp = app.renderer.currentViewProj(app.scene, app.camera).m;
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+    for (let i=0;i<8;i++){const x=i&1?1:-1,y=i&2?1:-1,z=i&4?1:-1;
+      const cx=vp[0]*x+vp[4]*y+vp[8]*z+vp[12],cy=vp[1]*x+vp[5]*y+vp[9]*z+vp[13],cw=vp[3]*x+vp[7]*y+vp[11]*z+vp[15];
+      const px=(cx/cw*0.5+0.5)*c.width,py=(cy/cw*0.5+0.5)*c.height;
+      x0=Math.min(x0,px);x1=Math.max(x1,px);y0=Math.min(y0,py);y1=Math.max(y1,py);}
+    const w=Math.round(x1-x0),h=Math.round(y1-y0);
+    const buf=new Uint8Array(w*h*4);
+    gl.readPixels(Math.round(x0),Math.round(y0),w,h,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+    let mn=255,mx=0,white=0,n=w*h;
+    for(let i=0;i<n;i++){const l=0.2126*buf[i*4]+0.7152*buf[i*4+1]+0.0722*buf[i*4+2];
+      if(l<mn)mn=l; if(l>mx)mx=l; if(l>=250)white++;}
+    return {mn,mx,whiteFrac:white/n,n};
+  })()`);
+  await t.screenshot('research/ur13-cavity-ao-combo.png');
+  t.check('AO + cavity together: image is valid and varied (no blow-out)',
+    combo.n > 100 && combo.mx - combo.mn > 20 && combo.whiteFrac < 0.6,
+    `min=${combo.mn.toFixed(0)} max=${combo.mx.toFixed(0)} white=${(combo.whiteFrac*100).toFixed(0)}%`);
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs;
+    p.ao = false; p.cavity = false; p.aoStrength = 1; p.cavityRidge = 1; p.cavityValley = 1; })()`);
+
+  // (4) WIREFRAME HIDDEN-LINE applies cavity; see-through wireframe unaffected.
+  // Block-diff the cube's screen bbox between cavity on and off.
+  const wireBlock = () => t.evaluate(`(() => {
+    const app = window.__app, gl = app.renderer.ctx.gl, c = gl.canvas;
+    app.renderer.render(app.scene, app.camera);
+    const vp = app.renderer.currentViewProj(app.scene, app.camera).m;
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+    for (let i=0;i<8;i++){const x=i&1?1:-1,y=i&2?1:-1,z=i&4?1:-1;
+      const cx=vp[0]*x+vp[4]*y+vp[8]*z+vp[12],cy=vp[1]*x+vp[5]*y+vp[9]*z+vp[13],cw=vp[3]*x+vp[7]*y+vp[11]*z+vp[15];
+      const px=(cx/cw*0.5+0.5)*c.width,py=(cy/cw*0.5+0.5)*c.height;
+      x0=Math.min(x0,px);x1=Math.max(x1,px);y0=Math.min(y0,py);y1=Math.max(y1,py);}
+    const w=Math.round(x1-x0),h=Math.round(y1-y0);
+    const buf=new Uint8Array(w*h*4);
+    gl.readPixels(Math.round(x0),Math.round(y0),w,h,gl.RGBA,gl.UNSIGNED_BYTE,buf);
+    return Array.from(buf);
+  })()`);
+  const sad = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += Math.abs(a[i] - b[i]); return s; };
+  await t.evaluate(`window.__app.renderer.shadingMode = 'wireframe'`);
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs; p.cavityRidge = 2.5; p.cavityValley = 2.5; })()`);
+  // Hidden-line ON: cavity toggles the wire pixels.
+  await setPref('hiddenLine.wireframe', true);
+  await setPref('cavity', false);
+  await t.sleep(60);
+  const wlHlOff = await wireBlock();
+  await setPref('cavity', true);
+  await t.sleep(60);
+  const wlHlOn = await wireBlock();
+  await t.screenshot('research/ur13-cavity-wireframe-hidden.png');
+  const hlDiff = sad(wlHlOff, wlHlOn);
+  t.check('cavity applies in wireframe HIDDEN-LINE mode (wire pixels change)',
+    hlDiff > 300, `SAD=${hlDiff}`);
+  // See-through wireframe (hidden-line OFF): cavity has NO surface to read → no change.
+  await setPref('cavity', false);
+  await setPref('hiddenLine.wireframe', false);
+  await t.sleep(60);
+  const seeOff = await wireBlock();
+  await setPref('cavity', true);
+  await t.sleep(60);
+  const seeOn = await wireBlock();
+  const seeDiff = sad(seeOff, seeOn);
+  t.check('see-through wireframe UNAFFECTED by cavity',
+    seeDiff === 0, `SAD=${seeDiff}`);
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs;
+    p.cavity = false; p.cavityRidge = 1; p.cavityValley = 1;
+    window.__app.renderer.shadingMode = 'matcap'; })()`);
+
+  // (5) DISCLOSURE section persists across a reload.
+  await t.evaluate(`window.__app.shadePrefs.sections.cavity = false`);
+  await t.evaluate(`document.querySelector('.shading-menu-btn').click()`);
+  await t.sleep(80);
+  t.check('cavity disclosure section exists with Ridge + Valley sliders',
+    await t.evaluate(`(() => {
+      const sec = document.querySelector('.shading-section[data-section="cavity"]');
+      if (!sec) return false;
+      const sl = [...sec.querySelectorAll('[data-shade-slider]')].map((r)=>r.dataset.shadeSlider).join(',');
+      return sl === 'cavityRidge,cavityValley';
+    })()`));
+  // Expand via the caret (not the enable checkbox) and confirm the pref flips.
+  await t.evaluate(`document.querySelector('.shading-section[data-section="cavity"] .shading-disc').click()`);
+  await t.sleep(50);
+  t.check('expanding the cavity section writes sections.cavity',
+    await t.evaluate(`window.__app.shadePrefs.sections.cavity === true`));
+  await t.key('Escape', 'Escape', 0);
+  await t.sleep(40);
+  await t.reload();
+  await t.sleep(200);
+  await t.key('Escape', 'Escape', 0);
+  t.check('cavity disclosure state persisted across reload',
+    await t.until(`window.__app && window.__app.shadePrefs.sections.cavity === true`));
+  await t.evaluate(`(() => { const p = window.__app.shadePrefs;
+    p.sections.cavity = false; p.cavity = false; })()`);
+
   // Cleanup.
   await t.evaluate(`(() => {
     const S = window.__app.scene;
     for (const o of [...S.objects]) { if (S.editMode) S.exitEditMode(); S.remove(o.id); }
     const p = window.__app.shadePrefs;
     p.intersections = false; p.intersectColor = [0.45,0.45,0.48];
+    p.cavity = false; p.cavityRidge = 1; p.cavityValley = 1;
     window.__app.renderer.shadingMode = 'matcap';
   })()`);
 });

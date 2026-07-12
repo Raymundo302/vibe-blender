@@ -84,6 +84,9 @@ function decodePng(buf) {
 }
 
 runE2e(async (t) => {
+  // UR12-3: default render engine is GPU; these are CPU-path regression suites — pin CPU.
+  await t.until('!!window.__renderEngine');
+  await t.evaluate("window.__renderEngine.setEngine('cpu')");
   const wallStart = Date.now();
   const evalAsync = async (expr) => {
     const { result, exceptionDetails } = await t.send('Runtime.evaluate', {

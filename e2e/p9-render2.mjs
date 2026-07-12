@@ -30,6 +30,9 @@
 import { runE2e } from './harness.mjs';
 
 runE2e(async (t) => {
+  // UR12-3: default render engine is GPU; these are CPU-path regression suites — pin CPU.
+  await t.until('!!window.__renderEngine');
+  await t.evaluate("window.__renderEngine.setEngine('cpu')");
   // Runtime.evaluate with awaitPromise so we can `await import(...)` the
   // primitives module in the page to build the torus + floor.
   const evalAsync = async (expression) => {

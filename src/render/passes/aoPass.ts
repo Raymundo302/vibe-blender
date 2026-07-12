@@ -566,6 +566,82 @@ void main() {
   outColor = vec4(vec3(clamp(ao, 0.0, 1.0)), 1.0);
 }`;
 
+// Cavity (Blender viewport "Cavity", screen-space curvature). Reads the SAME
+// depth+normal prepass as AO, at FULL canvas resolution (fine convex edges are
+// the whole point — no half-res chain). Curvature = the 4-neighbourhood
+// divergence of the view-space normals: for each neighbour, dot(nᵢ−n₀, dirᵢ)
+// with dirᵢ the view-space direction toward that neighbour. Positive sum →
+// convex RIDGE (brighten), negative → concave VALLEY (darken). Neighbours across
+// a depth cliff or off the background are skipped so silhouettes don't fake huge
+// curvature. Output = aoFactor · (1 − valley·k_v) · (1 + ridge·k_r): folds into
+// the SAME single-channel factor the shaded passes already multiply, so cavity
+// and AO compose for free (aoFactor = 1 when AO is off). r16f target holds the
+// >1 ridge brightening (both SwiftShader and radeonsi are float-renderable).
+const CAVITY_GAIN = 0.5;   // curvature → shading scale (eyes-on calibrated)
+const CAVITY_FRAG = /* glsl */ `#version 300 es
+precision highp float;
+// highp samplers: same lowp-default lesson as GTAO — fp16 depth on AMD would
+// jitter the reconstructed neighbour positions and speckle the curvature.
+uniform highp sampler2D u_depth;   // full-res depth prepass (0..1 window depth)
+uniform highp sampler2D u_normal;  // full-res view-space normals (n*0.5+0.5)
+uniform highp sampler2D u_ao;      // AO factor to compose with (ignored if u_hasAo=0)
+uniform mat4 u_invProj;
+uniform vec2 u_texel;              // 1 / canvas size
+uniform float u_ridge;            // convex brightening amount (pref)
+uniform float u_valley;           // concave darkening amount (pref)
+uniform float u_hasAo;            // 1 → multiply by u_ao, 0 → AO off
+out vec4 outColor;
+
+const float GAIN = ${CAVITY_GAIN.toFixed(3)};
+
+vec3 viewPos(vec2 uv, float d) {
+  vec4 p = u_invProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+  return p.xyz / p.w;
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy * u_texel;
+  float d = texture(u_depth, uv).r;
+  float aoF = u_hasAo > 0.5 ? texture(u_ao, uv).r : 1.0;
+  if (d >= 1.0) { outColor = vec4(vec3(aoF), 1.0); return; } // background: no cavity
+
+  vec3 P = viewPos(uv, d);
+  vec3 N = normalize(texture(u_normal, uv).xyz * 2.0 - 1.0);
+  if (dot(N, -P) < 0.0) N = -N;   // face the camera per-pixel (see prepass)
+
+  vec2 offs[4];
+  offs[0] = vec2( u_texel.x, 0.0);
+  offs[1] = vec2(-u_texel.x, 0.0);
+  offs[2] = vec2(0.0,  u_texel.y);
+  offs[3] = vec2(0.0, -u_texel.y);
+  float depthTol = 0.03 * abs(P.z) + 0.02;   // relative depth-cliff reject
+  float curv = 0.0;
+  for (int i = 0; i < 4; i++) {
+    vec2 nuv = uv + offs[i];
+    if (nuv.x < 0.0 || nuv.x > 1.0 || nuv.y < 0.0 || nuv.y > 1.0) continue;
+    float sd = texture(u_depth, nuv).r;
+    if (sd >= 1.0) continue;                  // background neighbour
+    vec3 sP = viewPos(nuv, sd);
+    if (abs(sP.z - P.z) > depthTol) continue; // depth cliff → silhouette, skip
+    vec3 dir = sP - P;
+    float dl = length(dir);
+    if (dl < 1e-7) continue;
+    dir /= dl;
+    vec3 sN = normalize(texture(u_normal, nuv).xyz * 2.0 - 1.0);
+    if (dot(sN, -sP) < 0.0) sN = -sN;         // same camera-facing convention
+    curv += dot(sN - N, dir);                 // divergence contribution
+  }
+
+  float c = curv * GAIN;
+  float ridge = max(c, 0.0);
+  float valley = max(-c, 0.0);
+  // valley term clamped so heavy sliders can't drive the factor negative;
+  // overall factor clamped so a sharp ridge can't blow the color out to inf.
+  float factor = (1.0 - clamp(valley * u_valley, 0.0, 1.0)) * (1.0 + ridge * u_ridge);
+  factor = clamp(factor, 0.0, 4.0);
+  outColor = vec4(vec3(aoF * factor), 1.0);
+}`;
+
 export class AoPass {
   private readonly preShader: Shader;
   private readonly gtaoShader: Shader;
@@ -573,11 +649,15 @@ export class AoPass {
   private readonly upsampleShader: Shader;
   /** Object AO (SDF-march) program — compiled on first use of the mode. */
   private objAoShader: Shader | null = null;
+  /** Cavity (screen-space curvature) program — compiled on first use. */
+  private cavityShader: Shader | null = null;
   private readonly fullscreen: EmptyVao;
   private readonly ssaoFbo: Framebuffer;
   private readonly blurFbo: Framebuffer;
   private readonly finalFbo: Framebuffer;
   private readonly fullFbo: Framebuffer;
+  /** Full-res target for the composed AO·cavity factor (cavity output). */
+  private readonly cavityFbo: Framebuffer;
   private preFbo: WebGLFramebuffer;
   private depthTex: WebGLTexture;
   private normalTex: WebGLTexture;
@@ -608,6 +688,9 @@ export class AoPass {
     this.blurFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat);
     this.finalFbo = new Framebuffer(gl, aoW, aoH, false, this.aoFormat, true);
     this.fullFbo = new Framebuffer(gl, width, height, false, this.aoFormat);
+    // Cavity runs at FULL resolution (fine convex edges are the point); its
+    // r16f target holds the >1 ridge brightening the shaded passes multiply in.
+    this.cavityFbo = new Framebuffer(gl, width, height, false, this.aoFormat);
 
     this.white = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.white);
@@ -636,6 +719,7 @@ export class AoPass {
     this.blurFbo.setFormat(format);
     this.finalFbo.setFormat(format);
     this.fullFbo.setFormat(format);
+    this.cavityFbo.setFormat(format);
   }
 
   private allocateTargets(width: number, height: number): void {
@@ -675,6 +759,7 @@ export class AoPass {
     this.blurFbo.resize(aoW, aoH);
     this.finalFbo.resize(aoW, aoH);
     this.fullFbo.resize(width, height);
+    this.cavityFbo.resize(width, height);
   }
 
   /** Stage 1: bind the prepass FBO; the Renderer then draws every mesh through
@@ -831,8 +916,54 @@ export class AoPass {
     gl.viewport(0, 0, this.width, this.height);
   }
 
+  /**
+   * Cavity (Blender viewport curvature): a single FULL-res pass over the depth+
+   * normal prepass. Composes with AO — pass the AO factor texture as `aoTex`
+   * (its texel-for-texel product is written) or `null` when AO is off (factor
+   * starts at 1). Leaves the default framebuffer bound at (canvasW, canvasH).
+   * Result is {@link cavityTexture}. `radius` is unused here (cavity is a fixed
+   * 5-tap neighbourhood) — the look is driven by ridge/valley only.
+   */
+  computeCavity(
+    invProj: Mat4, aoTex: WebGLTexture | null, ridge: number, valley: number,
+  ): void {
+    const gl = this.gl;
+    const depthWasOn = gl.isEnabled(gl.DEPTH_TEST);
+    gl.disable(gl.DEPTH_TEST);
+
+    if (!this.cavityShader) this.cavityShader = new Shader(gl, FS_VERT, CAVITY_FRAG, 'ao-cavity');
+    const sh = this.cavityShader;
+    this.cavityFbo.bind(); // full-res viewport
+    sh.use();
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.depthTex);
+    sh.setInt('u_depth', 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.normalTex);
+    sh.setInt('u_normal', 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, aoTex ?? this.white);
+    sh.setInt('u_ao', 2);
+    gl.activeTexture(gl.TEXTURE0);
+    sh.setMat4('u_invProj', invProj);
+    sh.setVec2('u_texel', 1 / this.width, 1 / this.height);
+    sh.setFloat('u_ridge', ridge);
+    sh.setFloat('u_valley', valley);
+    sh.setFloat('u_hasAo', aoTex ? 1 : 0);
+    this.fullscreen.drawTriangles(3);
+
+    this.cavityFbo.unbind();
+    gl.viewport(0, 0, this.width, this.height);
+    if (depthWasOn) gl.enable(gl.DEPTH_TEST);
+  }
+
   /** The denoised, canvas-resolution AO texture (valid after compute()). */
   get texture(): WebGLTexture {
     return this.fullFbo.texture;
+  }
+
+  /** The full-res composed AO·cavity factor (valid after computeCavity()). */
+  get cavityTexture(): WebGLTexture {
+    return this.cavityFbo.texture;
   }
 }

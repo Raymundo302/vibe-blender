@@ -13,6 +13,9 @@
 import { runE2e } from './harness.mjs';
 
 runE2e(async (t) => {
+  // UR12-3: default render engine is GPU; these are CPU-path regression suites — pin CPU.
+  await t.until('!!window.__renderEngine');
+  await t.evaluate("window.__renderEngine.setEngine('cpu')");
   // Force the Layout workspace so the Properties panel + viewport are present.
   await t.evaluate(`document.querySelector('.wsp-tab[data-workspace="Layout"]')?.click()`);
   await t.sleep(150);

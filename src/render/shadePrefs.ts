@@ -34,6 +34,14 @@ export interface ShadePrefs {
   aoStrength: number;
   /** AO samples per pixel (2·slices·steps) — more = cleaner, slower. */
   aoSamples: number;
+  /** Cavity (Blender-style screen-space curvature): valleys (concave creases)
+   *  darken, ridges (convex edges) brighten. Independent of AO — composes when
+   *  both are on. Solid modes + wireframe-with-hidden-line. */
+  cavity: boolean;
+  /** Ridge (convex) brightening amount, 0–2.5 (0 = no brightening). */
+  cavityRidge: number;
+  /** Valley (concave) darkening amount, 0–2.5 (0 = no darkening). */
+  cavityValley: number;
   /** Draw the edge wireframe on top of the shaded modes. */
   wireOverlay: boolean;
   /** Wire line color (0..1 rgb) — drives BOTH the wireframe SHADING MODE and
@@ -60,13 +68,14 @@ export interface ShadePrefs {
   hiddenLine: Record<ShadingMode, boolean>;
   /** Per-section expanded (disclosure) state in the shading dropdown; all
    *  default collapsed (false). UI-only — no render effect. */
-  sections: { ao: boolean; wire: boolean; intersect: boolean };
+  sections: { ao: boolean; cavity: boolean; wire: boolean; intersect: boolean };
 }
 
 /** Slider bounds — shared by the UI and the loader's clamping. */
 export const AO_RADIUS_RANGE = { min: 0.1, max: 2.5, default: 0.3 };
 export const AO_STRENGTH_RANGE = { min: 0, max: 2, default: 1 };
 export const AO_SAMPLES_RANGE = { min: 16, max: 96, default: 48 };
+export const CAVITY_RANGE = { min: 0, max: 2.5, default: 1 };
 // Wire ribbon width bounds — defaults come from ribbon.ts (WIRE_MIN_PX /
 // WIRE_MAX_PX) so the prefs match the historical constant look out of the box.
 export const WIRE_MIN_PX_RANGE = { min: 0.3, max: 2, default: 0.6 };
@@ -80,9 +89,14 @@ export const WIRE_MAX_PX_RANGE = { min: 1, max: 8, default: 3.5 };
 // and the per-section disclosure state. New key so a stored v4 blob loads its
 // values + the new defaults (and the v3→v4 wireHiddenLine chain still applies
 // when only a v3 blob exists).
-// (v4: Hidden Line per shading mode. v3: Object SDF AO default. v2: half-res
+// v6: added cavity / cavityRidge / cavityValley + the sections.cavity flag.
+// New key so a stored v5 blob loads its values plus the new cavity defaults
+// (and the v5→v4→v3 chain still applies when only an older blob exists).
+// (v5: wireColor/proximity/ribbon-width/intersectColor + disclosure state.
+// v4: Hidden Line per shading mode. v3: Object SDF AO default. v2: half-res
 // GTAO rebuild, 2026-07-08.)
-const STORAGE_KEY = 'vibe-shading-v5';
+const STORAGE_KEY = 'vibe-shading-v6';
+const LEGACY_V5_KEY = 'vibe-shading-v5';
 const LEGACY_V4_KEY = 'vibe-shading-v4';
 const LEGACY_V3_KEY = 'vibe-shading-v3';
 
@@ -94,6 +108,9 @@ export function defaultShadePrefs(): ShadePrefs {
     aoRadius: AO_RADIUS_RANGE.default,
     aoStrength: AO_STRENGTH_RANGE.default,
     aoSamples: AO_SAMPLES_RANGE.default,
+    cavity: false,
+    cavityRidge: CAVITY_RANGE.default,
+    cavityValley: CAVITY_RANGE.default,
     wireOverlay: false,
     wireColor: [0.05, 0.05, 0.06],   // the historical hardcoded wire dark
     wireProximity: true,
@@ -104,7 +121,7 @@ export function defaultShadePrefs(): ShadePrefs {
     // Hidden Line on in the solid modes (occlusion looks natural there),
     // off in wireframe (classic see-through is the historical default).
     hiddenLine: { matcap: true, studio: true, rendered: true, wireframe: false },
-    sections: { ao: false, wire: false, intersect: false }, // all collapsed
+    sections: { ao: false, cavity: false, wire: false, intersect: false }, // all collapsed
   };
 }
 
@@ -132,14 +149,19 @@ export function loadShadePrefs(): ShadePrefs {
   let src: Record<string, unknown> = {};
   let fromV3 = false;
   try {
-    const rawV5 = localStorage.getItem(STORAGE_KEY);
+    const rawV6 = localStorage.getItem(STORAGE_KEY);
+    const rawV5 = localStorage.getItem(LEGACY_V5_KEY);
     const rawV4 = localStorage.getItem(LEGACY_V4_KEY);
     const rawV3 = localStorage.getItem(LEGACY_V3_KEY);
-    if (rawV5 !== null) {
+    if (rawV6 !== null) {
+      const p = JSON.parse(rawV6);
+      if (p && typeof p === 'object') src = p as Record<string, unknown>;
+    } else if (rawV5 !== null) {
+      // v5 blob: its values load directly; the new v6 cavity fields take defaults.
       const p = JSON.parse(rawV5);
       if (p && typeof p === 'object') src = p as Record<string, unknown>;
     } else if (rawV4 !== null) {
-      // v4 blob: its values load directly; the new v5 fields take defaults.
+      // v4 blob: its values load directly; the newer fields take defaults.
       const p = JSON.parse(rawV4);
       if (p && typeof p === 'object') src = p as Record<string, unknown>;
     } else if (rawV3 !== null) {
@@ -191,6 +213,8 @@ export function loadShadePrefs(): ShadePrefs {
   shadePrefs.aoRadius = Math.min(AO_RADIUS_RANGE.max, Math.max(AO_RADIUS_RANGE.min, shadePrefs.aoRadius));
   shadePrefs.aoStrength = Math.min(AO_STRENGTH_RANGE.max, Math.max(AO_STRENGTH_RANGE.min, shadePrefs.aoStrength));
   shadePrefs.aoSamples = Math.min(AO_SAMPLES_RANGE.max, Math.max(AO_SAMPLES_RANGE.min, shadePrefs.aoSamples));
+  shadePrefs.cavityRidge = Math.min(CAVITY_RANGE.max, Math.max(CAVITY_RANGE.min, shadePrefs.cavityRidge));
+  shadePrefs.cavityValley = Math.min(CAVITY_RANGE.max, Math.max(CAVITY_RANGE.min, shadePrefs.cavityValley));
   shadePrefs.wireMinPx = Math.min(WIRE_MIN_PX_RANGE.max, Math.max(WIRE_MIN_PX_RANGE.min, shadePrefs.wireMinPx));
   shadePrefs.wireMaxPx = Math.min(WIRE_MAX_PX_RANGE.max, Math.max(WIRE_MAX_PX_RANGE.min, shadePrefs.wireMaxPx));
   return shadePrefs;
