@@ -17,7 +17,7 @@ import type {
   ObjectKind,
   TextData,
 } from '../core/scene/objectData';
-import { clampHtmlFps } from '../core/scene/objectData';
+import { clampHtmlFps, clampFStop, AREA_MIN_SIZE, clampIor, clampTransmission, type GlareSettings } from '../core/scene/objectData';
 import {
   createModifier,
   modifierTypes,
@@ -45,8 +45,8 @@ import { defaultWorld, decodeHdriDataUrl, type World } from '../core/scene/world
 
 const FORMAT = 'vibe-blender-scene';
 /** Version we WRITE. Loader accepts every entry of SUPPORTED_VERSIONS. */
-const VERSION = 15;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const VERSION = 18;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -79,16 +79,22 @@ function serializeParams(p: ModifierParams): Record<string, number | boolean | s
   return out;
 }
 
-/** Full LightData payload, numbers rounded. */
+/** Full LightData payload, numbers rounded. Area width/height (v16/UR10-1) are
+ *  only written for area lights so pre-area scenes/tests serialize identically. */
 function serializeLight(l: LightData): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     type: l.type,
     color: rgb(l.color),
     power: num(l.power),
     spotAngle: num(l.spotAngle),
     spotBlend: num(l.spotBlend),
-    radius: num(l.radius ?? (l.type === 'sun' ? 0 : 0.1)),
+    radius: num(l.radius ?? (l.type === 'sun' || l.type === 'area' ? 0 : 0.1)),
   };
+  if (l.type === 'area') {
+    out.width = num(l.width ?? 1);
+    out.height = num(l.height ?? 1);
+  }
+  return out;
 }
 
 /**
@@ -103,14 +109,28 @@ function serializeCamera(c: CameraData, scene: Scene): Record<string, unknown> {
     const i = scene.objects.findIndex((o) => o.id === id);
     return i < 0 ? undefined : i;
   };
-  return {
+  const out: Record<string, unknown> = {
     focalLength: num(c.focalLength),
     near: num(c.near),
     far: num(c.far),
     lockToView: !!c.lockToView,
     focusObject: idxOf(c.focusObjectId),
     lookAt: idxOf(c.lookAtId),
+    // F-Stop DoF (UR10-2 Part C). Always written so round-trips are stable.
+    dof: !!c.dof,
+    fStop: num(clampFStop(c.fStop ?? 2.8)),
   };
+  // Camera Glare (UR10-2 Part B) — only when present, so pre-UR10-2 cameras
+  // serialize byte-identically (absent → no glare).
+  if (c.glare) {
+    out.glare = {
+      enabled: !!c.glare.enabled,
+      threshold: num(c.glare.threshold),
+      strength: num(c.glare.strength),
+      radius: num(c.glare.radius),
+    };
+  }
+  return out;
 }
 
 /**
@@ -312,6 +332,12 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
       baseColor: rgb(m.baseColor),
       metallic: num(m.metallic),
       roughness: num(m.roughness),
+      // Transmission / IOR (v18/UR10-3) — optional, only written when the
+      // material actually transmits (>0), so pre-UR10-3 materials serialize
+      // byte-identically (JSON drops undefined keys). IOR only matters for glass,
+      // so it too is omitted for opaque materials.
+      transmission: m.transmission ? num(m.transmission) : undefined,
+      ior: m.transmission ? num(clampIor(m.ior ?? 1.45)) : undefined,
       emissive: rgb(m.emissive),
       emissiveStrength: num(m.emissiveStrength),
       subsurfaceWeight: num(m.subsurfaceWeight),
@@ -369,6 +395,8 @@ interface MaterialData {
   baseColor: [number, number, number];
   metallic: number;
   roughness: number;
+  transmission: number;
+  ior: number;
   emissive: [number, number, number];
   emissiveStrength: number;
   subsurfaceWeight: number;
@@ -631,6 +659,9 @@ function parseMaterials(v: unknown): MaterialData[] {
       baseColor: numArray(mat.baseColor, 3, `materials[${mi}].baseColor`) as [number, number, number],
       metallic: numField(mat.metallic, `materials[${mi}].metallic`),
       roughness: numField(mat.roughness, `materials[${mi}].roughness`),
+      // Transmission / IOR (v18/UR10-3) — tolerant: absent → 0 / 1.45, clamped.
+      transmission: mat.transmission === undefined ? 0 : clampTransmission(numField(mat.transmission, `materials[${mi}].transmission`)),
+      ior: mat.ior === undefined ? 1.45 : clampIor(numField(mat.ior, `materials[${mi}].ior`)),
       emissive: numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
       emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
       subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
@@ -693,12 +724,13 @@ function optionalUrl(v: unknown, where: string): string | null {
 function parseLight(v: unknown, i: number): LightData {
   if (typeof v !== 'object' || v === null) fail(`objects[${i}].light is missing`);
   const l = v as Record<string, unknown>;
-  if (l.type !== 'point' && l.type !== 'sun' && l.type !== 'spot') {
-    fail(`objects[${i}].light.type must be one of point, sun, spot`);
+  if (l.type !== 'point' && l.type !== 'sun' && l.type !== 'spot' && l.type !== 'area') {
+    fail(`objects[${i}].light.type must be one of point, sun, spot, area`);
   }
   const color = numArray(l.color, 3, `objects[${i}].light.color`) as [number, number, number];
   const power = numField(l.power, `objects[${i}].light.power`);
   if (power < 0) fail(`objects[${i}].light.power must not be negative`);
+  const isArea = l.type === 'area';
   return {
     type: l.type as LightType,
     color,
@@ -706,10 +738,18 @@ function parseLight(v: unknown, i: number): LightData {
     spotAngle: numField(l.spotAngle, `objects[${i}].light.spotAngle`),
     spotBlend: numField(l.spotBlend, `objects[${i}].light.spotBlend`),
     // Optional on load (mirrors spotAngle handling); default a small physical
-    // size for point/spot, hard (0) for sun so old scenes keep sharp sun shadows.
+    // size for point/spot, hard (0) for sun/area so old scenes keep sharp
+    // sun shadows and area softness comes from width/height instead.
     radius: l.radius === undefined
-      ? (l.type === 'sun' ? 0 : 0.1)
+      ? (l.type === 'sun' || isArea ? 0 : 0.1)
       : Math.max(0, numField(l.radius, `objects[${i}].light.radius`)),
+    // Area rectangle (v16/UR10-1) — tolerant: absent → 1×1, clamped > AREA_MIN_SIZE.
+    width: isArea
+      ? Math.max(AREA_MIN_SIZE, l.width === undefined ? 1 : numField(l.width, `objects[${i}].light.width`))
+      : undefined,
+    height: isArea
+      ? Math.max(AREA_MIN_SIZE, l.height === undefined ? 1 : numField(l.height, `objects[${i}].light.height`))
+      : undefined,
   };
 }
 
@@ -725,14 +765,46 @@ function parseCamera(v: unknown, i: number): CameraData {
     if (!Number.isInteger(idx)) fail(`objects[${i}].camera.${name} must be an integer index`);
     return idx;
   };
+  const focalLength = numField(c.focalLength, `objects[${i}].camera.focalLength`);
+  // F-Stop DoF (UR10-2 Part C). MIGRATION: a scene that stored a raw thin-lens
+  // `aperture` (radius, scene units) instead of an fStop loads as
+  //   fStop = focalLength / (2000 · aperture)   [inverse of cameraLensRadius]
+  // clamped to the supported range, with DoF enabled — so the derived aperture
+  // matches the old radius and the old save renders the same. When `fStop` is
+  // present it wins (no migration needed).
+  let dof = c.dof === true;
+  let fStop = 2.8;
+  if (typeof c.fStop === 'number' && Number.isFinite(c.fStop)) {
+    fStop = clampFStop(c.fStop);
+  } else if (typeof c.aperture === 'number' && Number.isFinite(c.aperture) && c.aperture > 0) {
+    fStop = clampFStop(focalLength / (2000 * c.aperture));
+    dof = true;
+  }
   return {
-    focalLength: numField(c.focalLength, `objects[${i}].camera.focalLength`),
+    focalLength,
     near: numField(c.near, `objects[${i}].camera.near`),
     far: numField(c.far, `objects[${i}].camera.far`),
     // Optional (pre-lock files omit it) → false.
     lockToView: c.lockToView === true,
     focusObjectId: parseRef(c.focusObject, 'focusObject'),
     lookAtId: parseRef(c.lookAt, 'lookAt'),
+    dof,
+    fStop,
+    glare: parseGlare(c.glare),
+  };
+}
+
+/** Parse a CameraData.glare payload (UR10-2 Part B); absent/invalid → undefined
+ *  (no glare). Tolerant of partial data — missing fields fall back to defaults. */
+function parseGlare(v: unknown): GlareSettings | undefined {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return undefined;
+  const g = v as Record<string, unknown>;
+  const n = (x: unknown, d: number): number => (typeof x === 'number' && Number.isFinite(x) ? x : d);
+  return {
+    enabled: g.enabled === true,
+    threshold: n(g.threshold, 1.0),
+    strength: n(g.strength, 0.5),
+    radius: n(g.radius, 0.05),
   };
 }
 
@@ -1173,6 +1245,8 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
       baseColor: [...md.baseColor],
       metallic: md.metallic,
       roughness: md.roughness,
+      transmission: md.transmission,
+      ior: md.ior,
       emissive: [...md.emissive],
       emissiveStrength: md.emissiveStrength,
       subsurfaceWeight: md.subsurfaceWeight,

@@ -28,10 +28,11 @@ import { LightDirPass, hasAimArrow } from './passes/lightDirPass';
 import { EmptyAxesPass } from './passes/emptyAxesPass';
 import { ensureBaked } from '../core/nodes/bake';
 import { nodeImageCache } from '../core/nodes/imageCache';
-import { cameraFovY, type Material } from '../core/scene/objectData';
+import { cameraFovY, type Material, type GlareSettings } from '../core/scene/objectData';
 import { overlays } from './overlayPrefs';
 import { shadePrefs } from './shadePrefs';
 import { AoPass } from './passes/aoPass';
+import { GlarePass } from './passes/glarePass';
 import { SdfAtlas } from './sdfAtlas';
 import { createMatcapTexture } from './matcap';
 import { themeViewport } from '../ui/themes';
@@ -108,6 +109,8 @@ export class Renderer {
   private readonly renderedPass: RenderedPass;
   private readonly shadowPass: ShadowPass;
   private readonly aoPass: AoPass;
+  /** Camera Glare / bloom for the through-camera Rendered viewport (UR10-2 B). */
+  private readonly glarePass: GlarePass;
   private readonly sdfAtlas: SdfAtlas;
   private readonly worldBgPass: WorldBackgroundPass;
   private readonly iconPass: IconPass;
@@ -206,6 +209,7 @@ export class Renderer {
     this.renderedPass = new RenderedPass(gl);
     this.shadowPass = new ShadowPass(gl);
     this.aoPass = new AoPass(gl, canvas.width, canvas.height);
+    this.glarePass = new GlarePass(gl, canvas.width, canvas.height);
     this.sdfAtlas = new SdfAtlas(gl);
     this.worldBgPass = new WorldBackgroundPass(gl);
     this.iconPass = new IconPass(gl);
@@ -670,6 +674,25 @@ export class Renderer {
     };
   }
 
+  /**
+   * Camera Glare (UR10-2 Part B): the glare settings of the camera we are looking
+   * THROUGH, or null. Glare is a CAMERA property — it applies only through-camera
+   * (cameraViewId set), never during free navigation. Requires the HDR capture
+   * target to be available on this GL context.
+   */
+  /** e2e/debug: whether the through-camera glare GL pass can run on this context
+   *  (needs a float-renderable HDR capture target — false on SwiftShader). */
+  get glareAvailable(): boolean {
+    return this.glarePass.available;
+  }
+
+  private viewportGlare(scene: Scene): GlareSettings | null {
+    if (!this.glarePass.available || this.cameraViewId === null) return null;
+    const cam = scene.get(this.cameraViewId);
+    const g = cam && cam.kind === 'camera' ? cam.camera?.glare : undefined;
+    return g && g.enabled ? g : null;
+  }
+
   /** UR8-3: is this a mesh whose material shows its texture in every solid mode? */
   private isAlwaysTextured(obj: SceneObject, scene: Scene): boolean {
     return obj.kind === 'mesh' && scene.materialOf(obj).alwaysTextured === true;
@@ -678,6 +701,13 @@ export class Renderer {
   /** UR8-3: is this a mesh whose material alpha-blends (transparent cutout)? */
   private isAlphaBlend(obj: SceneObject, scene: Scene): boolean {
     return obj.kind === 'mesh' && scene.materialOf(obj).alphaBlend === true;
+  }
+
+  /** UR10-3: is this a mesh whose material transmits (glass)? Drawn Cook-Torrance
+   *  but alpha-blended with a Fresnel rim (the RenderedPass glass approximation). */
+  private isGlass(obj: SceneObject, scene: Scene): boolean {
+    return obj.kind === 'mesh' && (scene.materialOf(obj).transmission ?? 0) > 0
+      && scene.materialOf(obj).alphaBlend !== true;
   }
 
   /** Sort objects back-to-front by their origin's view-space depth (camera looks
@@ -728,6 +758,7 @@ export class Renderer {
       this.pickingPass.resize(canvas.width, canvas.height);
       this.elementPickPass.resize(canvas.width, canvas.height);
       this.aoPass.resize(canvas.width, canvas.height);
+      this.glarePass.resize(canvas.width, canvas.height);
     }
     gl.viewport(0, 0, canvas.width, canvas.height);
     const bg = themeViewport.background;
@@ -736,6 +767,12 @@ export class Renderer {
 
     const { view, proj, eye, fovY } = this.resolveView(scene, camera);
     const visible = scene.objects.filter((o) => scene.effectiveVisible(o));
+
+    // Camera Glare (UR10-2 Part B): in Rendered mode through a glare-enabled
+    // camera the whole frame is rendered into an HDR capture target (so emissive
+    // surfaces keep their >1 values), then bright-pass + blurred + composited to
+    // the canvas at the end. null → straight-to-canvas (byte-identical).
+    const glare = this.shadingMode === 'rendered' ? this.viewportGlare(scene) : null;
 
     // SSAO (shading-dropdown "Ambient Occlusion", solid modes only): depth
     // prepass of the visible meshes, then SSAO+blur into aoPass.texture. The
@@ -747,8 +784,10 @@ export class Renderer {
       for (const obj of visible) {
         if (obj.kind !== 'mesh') continue;
         // UR8-3 B: alphaBlend cutouts DON'T occlude — a floating transparent
-        // plane must not sink AO into the surfaces behind it.
+        // plane must not sink AO into the surfaces behind it. UR10-3: glass is
+        // transparent too, so it doesn't sink AO either.
         if (this.isAlphaBlend(obj, scene)) continue;
+        if (this.isGlass(obj, scene)) continue;
         aoMeshes.push(obj);
         this.aoPass.setObject(scene.worldMatrix(obj), view);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
@@ -829,10 +868,22 @@ export class Renderer {
       const meshes = visible.filter((o) => o.kind === 'mesh');
       // UR8-3 B: alphaBlend cutouts draw in a blended SECOND pass and DON'T cast
       // shadows (a floating cutout casting a full quad shadow looks broken).
-      const opaqueMeshes = meshes.filter((o) => !this.isAlphaBlend(o, scene));
+      // UR10-3: glass (transmission > 0) draws in a blended pass like alphaBlend,
+      // but through the RenderedPass (Cook-Torrance + Fresnel-rim glass alpha),
+      // NOT the shadeless TexturedPass. It doesn't cast shadow maps either.
+      const opaqueMeshes = meshes.filter((o) => !this.isAlphaBlend(o, scene) && !this.isGlass(o, scene));
+      const glassMeshes = this.sortBackToFront(scene, meshes.filter((o) => this.isGlass(o, scene)), view);
       const alphaMeshes = meshes.filter((o) => this.isAlphaBlend(o, scene));
       const lights = collectLights(scene);
       const { casters, cubeCasters } = this.renderShadows(scene, opaqueMeshes, lights);
+      // Glare (UR10-2 B): redirect the frame into the HDR capture target. The AO
+      // and shadow passes above bind their own FBOs (and end on the default), so
+      // this must happen AFTER them; a fresh clear matches the canvas path.
+      if (glare) {
+        this.glarePass.capture.bind();
+        gl.clearColor(bg[0], bg[1], bg[2], 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      }
       const invViewProj = proj.mul(view).invert();
       this.worldBgPass.render(invViewProj, eye, scene.world, this.hdriTexture);
       const amb = averageWorldColor(scene.world);
@@ -873,6 +924,28 @@ export class Renderer {
           this.textureFor(effMat.metalDataUrl, false),
         );
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+      }
+      // UR10-3: glass meshes over the opaque result — same RenderedPass shader
+      // (so lighting/nodes/maps all apply), blended back-to-front with depth-test
+      // ON, depth-WRITE OFF so multiple glass surfaces layer correctly.
+      if (glassMeshes.length > 0) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        for (const obj of glassMeshes) {
+          const mat = scene.materialOf(obj);
+          this.renderedPass.setObject(scene.worldMatrix(obj), mat);
+          this.renderedPass.bindTexture(this.materialTexture(mat));
+          this.renderedPass.bindMaps(
+            mat,
+            this.textureFor(mat.normalDataUrl, false),
+            this.textureFor(mat.roughDataUrl, false),
+            this.textureFor(mat.metalDataUrl, false),
+          );
+          this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
+        }
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
       }
       // UR8-3 B: alphaBlend planes over the opaque result, blended back-to-front
       // (shadeless textured — transparent HTML/image cutouts are emit planes).
@@ -955,7 +1028,14 @@ export class Renderer {
       const viewProj = proj.mul(view);
       this.lightDirPass.begin();
       for (const obj of aimed) {
-        this.lightDirPass.draw(viewProj, scene.worldTransformOf(obj), selectionColor(scene, obj));
+        const pose = scene.worldTransformOf(obj);
+        const col = selectionColor(scene, obj);
+        this.lightDirPass.draw(viewProj, pose, col);
+        // Area lights (UR10-1) also get their emitting rectangle outline drawn
+        // in the light's local XY plane at width×height.
+        if (obj.light?.type === 'area') {
+          this.lightDirPass.drawRect(viewProj, pose, obj.light.width ?? 1, obj.light.height ?? 1, col);
+        }
       }
     }
 
@@ -991,6 +1071,9 @@ export class Renderer {
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
       this.outlinePass.endMask(canvas.width, canvas.height);
+      // endMask unbinds to the default framebuffer — restore the glare capture so
+      // the outline edges (and the gizmo/guides below) land in the HDR target.
+      if (glare) this.glarePass.capture.bind();
       this.outlinePass.renderEdges();
     }
 
@@ -1033,6 +1116,12 @@ export class Renderer {
       const forward = new Vec3(-view.m[2], -view.m[6], -view.m[10]);
       this.gizmoPass.renderGuides(proj.mul(view), this.guideSegments, eye, forward);
     }
+
+    // Camera Glare (UR10-2 Part B): bright-pass + separable blur of the HDR
+    // capture, composited over the canvas. Runs last so every pass above is in
+    // the captured frame. Overlays (grid/gizmo) are LDR (< threshold) so they
+    // don't bloom — only bright emissive surfaces do.
+    if (glare) this.glarePass.composite(glare);
   }
 
   /** Gizmo placement (active object's position) + constant-screen-size scale (from

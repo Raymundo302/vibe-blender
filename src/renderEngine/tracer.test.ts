@@ -197,6 +197,45 @@ describe('soft shadows (P9-4)', () => {
   });
 });
 
+describe('area light (UR10-1)', () => {
+  // A 1×1 rect emitter 3 units above the origin, facing straight down (aim = -Z,
+  // i.e. local -Z rotated by identity). uAxis/vAxis are world X/Y.
+  const area = (width: number, height: number, dir: [number, number, number] = [0, 0, -1]): SnapLight => ({
+    type: 3, position: [0, 0, 3], direction: dir,
+    energy: [10, 10, 10], cosInner: 1, cosOuter: 1,
+    uAxis: [1, 0, 0], vAxis: [0, 1, 0], width, height,
+  });
+
+  // Surface point at the origin, normal up (+Z), directly under the rect center.
+  const shadeUp = (l: SnapLight, rng?: ReturnType<typeof mulberry32>): number =>
+    directLighting(null, new Float32Array(0), 0, 0, 0, 0, 0, 1, WHITE, [l], [0, 0, 0], rng)[0];
+
+  it('center sample (no rng) matches the closed form energy·cosθ·NdotL/(π·d²)', () => {
+    // Directly below the center: L=(0,0,1), cosLight=1, NdotL=1, d²=9.
+    const expected = (10 * 1 * 1) / (Math.PI * 9);
+    expect(shadeUp(area(1, 1))).toBeCloseTo(expected, 9);
+  });
+
+  it('brightness of the unoccluded center point is independent of rect size', () => {
+    // The area cancels in the estimator — a bigger rect only softens shadows.
+    expect(shadeUp(area(4, 4))).toBeCloseTo(shadeUp(area(1, 1)), 9);
+  });
+
+  it('one-sided: a rect facing AWAY (+Z) from the surface below gives zero', () => {
+    expect(shadeUp(area(1, 1, [0, 0, 1]))).toBe(0);
+  });
+
+  it('averages toward the center value under random rect sampling', () => {
+    const rng = mulberry32(123);
+    let sum = 0;
+    const N = 400;
+    for (let i = 0; i < N; i++) sum += shadeUp(area(2, 2), rng);
+    // Unoccluded: mean of many rect samples ≈ the center value (foreshortening
+    // and 1/d² vary slightly off-center, so allow a loose tolerance).
+    expect(sum / N).toBeCloseTo(shadeUp(area(2, 2)), 1);
+  });
+});
+
 describe('subsurface wrapped diffuse (P9-4)', () => {
   // Sun almost at the horizon relative to an up-facing surface → tiny NdotL.
   const grazeSun: SnapLight = {

@@ -8,6 +8,8 @@ import {
   NewMaterialCommand,
   MapImageEditCommand,
   MapParamEditCommand,
+  MaterialPresetCommand,
+  readPresetState,
   decodeRawTextureDataUrl,
   hexToRgb,
   rgbToHex,
@@ -254,5 +256,57 @@ describe('MapParamEditCommand', () => {
     expect(mat.normalIsBump).toBe(false);
     cmd.redo();
     expect(mat.normalIsBump).toBe(true);
+  });
+});
+
+describe('MaterialPresetCommand (UR10-3)', () => {
+  it('Glass preset sets the whole cluster in one command and undoes it', () => {
+    const { scene } = sceneWithCube();
+    const mat = scene.addMaterial('Mat');
+    mat.baseColor = [0.3, 0.6, 0.9];
+    mat.metallic = 0.5;
+    mat.roughness = 0.8;
+    mat.transmission = 0;
+    mat.ior = 1.45;
+
+    const cmd = MaterialPresetCommand.perform('Apply Glass Preset', mat, {
+      baseColor: [0.95, 0.95, 0.95], metallic: 0, roughness: 0, transmission: 1, ior: 1.45,
+    });
+    // perform() has already applied it.
+    expect(cmd.name).toBe('Apply Glass Preset');
+    expect(mat.transmission).toBe(1);
+    expect(mat.metallic).toBe(0);
+    expect(mat.roughness).toBe(0);
+    expect(mat.baseColor).toEqual([0.95, 0.95, 0.95]);
+
+    cmd.undo();
+    expect(mat.baseColor).toEqual([0.3, 0.6, 0.9]);
+    expect(mat.metallic).toBe(0.5);
+    expect(mat.roughness).toBe(0.8);
+    expect(mat.transmission).toBe(0);
+
+    cmd.redo();
+    expect(mat.transmission).toBe(1);
+    expect(mat.metallic).toBe(0);
+  });
+
+  it('Metal preset keeps the base color as the tint and clears transmission', () => {
+    const { scene } = sceneWithCube();
+    const mat = scene.addMaterial('Gold');
+    mat.baseColor = [1.0, 0.78, 0.34];
+    mat.transmission = 1; // was glass
+    const before = readPresetState(mat);
+
+    const cmd = MaterialPresetCommand.perform('Apply Metal Preset', mat, {
+      baseColor: [...before.baseColor] as [number, number, number],
+      metallic: 1, roughness: 0.15, transmission: 0, ior: before.ior,
+    });
+    expect(mat.metallic).toBe(1);
+    expect(mat.roughness).toBe(0.15);
+    expect(mat.transmission).toBe(0);
+    expect(mat.baseColor).toEqual([1.0, 0.78, 0.34]); // preserved gold tint
+
+    cmd.undo();
+    expect(mat.transmission).toBe(1);
   });
 });

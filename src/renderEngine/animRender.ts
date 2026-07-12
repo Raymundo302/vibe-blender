@@ -688,7 +688,11 @@ export class AnimRender {
     }
     if (this.cancelled) return null;
     const rgba = new Uint8ClampedArray(w * h * 4);
-    tonemapAccumToRgba(accum, samples, rgba);
+    // Camera Glare (UR10-2 Part B): same tonemap seam as F12 — the active
+    // camera's glare blooms the HDR radiance before tonemap so an animation
+    // render carries the identical halo.
+    tonemapAccumToRgba(accum, samples, rgba,
+      { width: w, height: h, glare: scene.activeCamera?.camera?.glare ?? null });
     return rgba;
   }
 

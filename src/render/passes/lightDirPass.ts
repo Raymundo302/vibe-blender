@@ -1,6 +1,7 @@
 import { Shader } from '../gl/Shader';
 import { VertexArray } from '../gl/VertexArray';
 import { Mat4 } from '../../core/math/mat4';
+import { Vec3 } from '../../core/math/vec3';
 import type { SceneObject } from '../../core/scene/Scene';
 import type { Transform } from '../../core/math/transform';
 
@@ -29,6 +30,18 @@ export function lightDirLineData(): Float32Array {
   ]);
 }
 
+/** Unit-rectangle outline (LINE list) in the light's local XY plane, corners at
+ *  ±0.5. Scaled to width×height by the model matrix in drawRect (UR10-1). */
+export function areaRectLineData(): Float32Array {
+  const c = [
+    [-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0],
+  ];
+  const seg = (a: number[], b: number[]): number[] => [...a, ...b];
+  return new Float32Array([
+    ...seg(c[0], c[1]), ...seg(c[1], c[2]), ...seg(c[2], c[3]), ...seg(c[3], c[0]),
+  ]);
+}
+
 const VERT = /* glsl */ `#version 300 es
 layout(location = 0) in vec3 a_position;
 uniform mat4 u_mvp;
@@ -43,11 +56,15 @@ void main() { outColor = u_color; }`;
 export class LightDirPass {
   private readonly shader: Shader;
   private readonly lines: VertexArray;
+  private readonly rect: VertexArray;
 
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.shader = new Shader(gl, VERT, FRAG, 'light-dir');
     this.lines = new VertexArray(gl, [
       { location: 0, size: 3, data: lightDirLineData() },
+    ]);
+    this.rect = new VertexArray(gl, [
+      { location: 0, size: 3, data: areaRectLineData() },
     ]);
   }
 
@@ -56,16 +73,32 @@ export class LightDirPass {
     this.shader.use();
   }
 
-  /** Draw one light's aim arrow. `pose` is the light's WORLD transform. */
+  /** Draw one light's aim arrow. `pose` is the light's WORLD transform. The arrow
+   *  is scale-free (rotation only) so squashing a light never skews it. */
   draw(viewProj: Mat4, pose: Transform, color: readonly [number, number, number]): void {
     const model = Mat4.translation(pose.position).mul(Mat4.fromQuat(pose.rotation));
     this.shader.setMat4('u_mvp', viewProj.mul(model));
     this.shader.setVec4('u_color', color[0], color[1], color[2], 1);
     this.lines.draw(this.gl.LINES);
   }
+
+  /** Draw one area light's rectangle outline (UR10-1): the unit rect scaled to
+   *  width×height in the light's local XY plane. `pose` is the WORLD transform. */
+  drawRect(
+    viewProj: Mat4, pose: Transform, width: number, height: number,
+    color: readonly [number, number, number],
+  ): void {
+    const model = Mat4.translation(pose.position)
+      .mul(Mat4.fromQuat(pose.rotation))
+      .mul(Mat4.scaling(new Vec3(width, height, 1)));
+    this.shader.setMat4('u_mvp', viewProj.mul(model));
+    this.shader.setVec4('u_color', color[0], color[1], color[2], 1);
+    this.rect.draw(this.gl.LINES);
+  }
 }
 
-/** Which lights get an aim arrow: direction only means something for sun/spot. */
+/** Which lights get an aim arrow: direction means something for sun/spot/area. */
 export function hasAimArrow(obj: SceneObject): boolean {
-  return obj.kind === 'light' && (obj.light?.type === 'sun' || obj.light?.type === 'spot');
+  return obj.kind === 'light'
+    && (obj.light?.type === 'sun' || obj.light?.type === 'spot' || obj.light?.type === 'area');
 }

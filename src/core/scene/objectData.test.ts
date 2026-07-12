@@ -7,6 +7,12 @@ import {
   defaultCamera,
   defaultLight,
   objectForward,
+  areaEmittedRadiance,
+  AREA_MIN_SIZE,
+  cameraLensRadius,
+  clampFStop,
+  F_STOP_MIN,
+  F_STOP_MAX,
 } from './objectData';
 import { makeCube } from '../mesh/primitives';
 import { Transform } from '../math/transform';
@@ -135,10 +141,70 @@ describe('light math', () => {
   });
 });
 
+describe('area light (UR10-1)', () => {
+  it('defaultLight("area") is a 1×1 rect with no sphere radius', () => {
+    const l = defaultLight('area');
+    expect(l.type).toBe('area');
+    expect(l.width).toBe(1);
+    expect(l.height).toBe(1);
+    expect(l.radius).toBe(0);
+    expect(l.power).toBe(100);
+  });
+
+  it('areaEmittedRadiance = power / (4π·w·h)', () => {
+    expect(areaEmittedRadiance(100, 1, 1)).toBeCloseTo(100 / (4 * Math.PI), 9);
+    // Emitted radiance is INVERSELY proportional to area: doubling each side
+    // (4× the area) quarters Le — the "bigger light, dimmer per-area" rule.
+    expect(areaEmittedRadiance(100, 2, 2)).toBeCloseTo(areaEmittedRadiance(100, 1, 1) / 4, 9);
+    // Linear in power.
+    expect(areaEmittedRadiance(200, 1, 1)).toBeCloseTo(2 * areaEmittedRadiance(100, 1, 1), 9);
+  });
+
+  it('clamps extents to AREA_MIN_SIZE so a zero-size rect never divides by 0', () => {
+    const clamped = areaEmittedRadiance(100, 0, 0);
+    expect(Number.isFinite(clamped)).toBe(true);
+    expect(clamped).toBeCloseTo(areaEmittedRadiance(100, AREA_MIN_SIZE, AREA_MIN_SIZE), 9);
+  });
+});
+
 describe('camera math', () => {
   it('cameraFovY: 50mm on a 24mm-tall sensor ≈ 27°', () => {
     const fov = cameraFovY(defaultCamera());
     expect((fov * 180) / Math.PI).toBeCloseTo(27, 0);
+  });
+});
+
+describe('F-Stop DoF (UR10-2 Part C)', () => {
+  it('clampFStop clamps to the supported range', () => {
+    expect(clampFStop(0.1)).toBe(F_STOP_MIN);
+    expect(clampFStop(1000)).toBe(F_STOP_MAX);
+    expect(clampFStop(2.8)).toBe(2.8);
+    expect(clampFStop(NaN)).toBe(2.8);
+  });
+
+  it('cameraLensRadius: 0 (pinhole) when DoF is off', () => {
+    expect(cameraLensRadius({ ...defaultCamera(), dof: false, fStop: 2.8 })).toBe(0);
+  });
+
+  it('cameraLensRadius: 50mm f/2.8 ≈ 0.0089 scene units', () => {
+    const r = cameraLensRadius({ ...defaultCamera(), dof: true, fStop: 2.8 });
+    expect(r).toBeCloseTo(0.0089, 4);
+    // radius = (focal/1000)/(2·fStop)
+    expect(r).toBeCloseTo((50 / 1000) / (2 * 2.8), 9);
+  });
+
+  it('cameraLensRadius: smaller f-stop → wider aperture (bigger radius)', () => {
+    const wide = cameraLensRadius({ ...defaultCamera(), dof: true, fStop: 0.5 });
+    const narrow = cameraLensRadius({ ...defaultCamera(), dof: true, fStop: 16 });
+    expect(wide).toBeGreaterThan(narrow);
+    expect(wide).toBeCloseTo(0.05, 6);   // 0.05/(2·0.5)
+    expect(narrow).toBeCloseTo(0.0015625, 6); // 0.05/(2·16)
+  });
+
+  it('cameraLensRadius clamps the f-stop before deriving', () => {
+    // f-stop below the min clamps up → not an absurd radius.
+    const r = cameraLensRadius({ ...defaultCamera(), dof: true, fStop: 0.01 });
+    expect(r).toBeCloseTo((50 / 1000) / (2 * F_STOP_MIN), 9);
   });
 });
 

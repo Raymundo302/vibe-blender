@@ -2,6 +2,7 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import type { Command } from '../core/undo/UndoStack';
 import type { LightData, LightType } from '../core/scene/objectData';
+import { AREA_MIN_SIZE } from '../core/scene/objectData';
 import { registerPropertiesTab } from './propertiesEditor';
 import { InsertKeysCommand } from '../core/anim/animCommands';
 import './lightTab.css';
@@ -88,6 +89,7 @@ const LIGHT_TYPES: readonly { value: LightType; label: string }[] = [
   { value: 'point', label: 'Point' },
   { value: 'sun', label: 'Sun' },
   { value: 'spot', label: 'Spot' },
+  { value: 'area', label: 'Area' },
 ];
 
 class LightTab {
@@ -98,6 +100,9 @@ class LightTab {
   private readonly powerInput: HTMLInputElement;
   private readonly radiusRow: HTMLElement;
   private readonly radiusInput: HTMLInputElement;
+  private readonly areaBlock: HTMLDivElement;
+  private readonly widthInput: HTMLInputElement;
+  private readonly heightInput: HTMLInputElement;
   private readonly spotBlock: HTMLDivElement;
   private readonly angleInput: HTMLInputElement;
   private readonly blendInput: HTMLInputElement;
@@ -127,7 +132,14 @@ class LightTab {
     this.typeSelect.addEventListener('change', () => {
       const type = this.typeSelect.value as LightType;
       // Type change keeps color/power/cone — defaultLight is only for NEW lights.
-      this.commit('Set Light Type', (l) => { l.type = type; });
+      // Switching TO area seeds a 1×1 rectangle if this light never had one.
+      this.commit('Set Light Type', (l) => {
+        l.type = type;
+        if (type === 'area') {
+          if (l.width === undefined) l.width = 1;
+          if (l.height === undefined) l.height = 1;
+        }
+      });
     });
     this.body.append(this.labelledRow('Type', this.typeSelect));
 
@@ -180,6 +192,40 @@ class LightTab {
     });
     this.radiusRow = this.labelledRow('Radius', this.radiusInput);
     this.body.append(this.radiusRow);
+
+    // Area-only: rectangle Width / Height (world units) ---------------------
+    this.areaBlock = document.createElement('div');
+    this.areaBlock.className = 'light-tab-area';
+
+    this.widthInput = document.createElement('input');
+    this.widthInput.type = 'number';
+    this.widthInput.className = 'light-tab-input';
+    this.widthInput.dataset.field = 'width';
+    this.widthInput.min = String(AREA_MIN_SIZE);
+    this.widthInput.step = '0.1';
+    this.widthInput.addEventListener('change', () => {
+      const raw = parseFloat(this.widthInput.value);
+      if (!Number.isFinite(raw)) return this.refresh();
+      const width = Math.max(AREA_MIN_SIZE, raw);
+      this.commit('Set Area Width', (l) => { l.width = width; });
+    });
+    this.areaBlock.append(this.labelledRow('Width', this.widthInput));
+
+    this.heightInput = document.createElement('input');
+    this.heightInput.type = 'number';
+    this.heightInput.className = 'light-tab-input';
+    this.heightInput.dataset.field = 'height';
+    this.heightInput.min = String(AREA_MIN_SIZE);
+    this.heightInput.step = '0.1';
+    this.heightInput.addEventListener('change', () => {
+      const raw = parseFloat(this.heightInput.value);
+      if (!Number.isFinite(raw)) return this.refresh();
+      const height = Math.max(AREA_MIN_SIZE, raw);
+      this.commit('Set Area Height', (l) => { l.height = height; });
+    });
+    this.areaBlock.append(this.labelledRow('Height', this.heightInput));
+
+    this.body.append(this.areaBlock);
 
     // Spot-only: angle (degrees in UI, radians in data) + blend -------------
     this.spotBlock = document.createElement('div');
@@ -278,7 +324,8 @@ class LightTab {
       // Type-driven visibility can still follow the committed type without
       // stealing focus from whatever field the user is mid-edit in.
       this.spotBlock.hidden = obj.light.type !== 'spot';
-      this.radiusRow.hidden = obj.light.type === 'sun';
+      this.areaBlock.hidden = obj.light.type !== 'area';
+      this.radiusRow.hidden = obj.light.type === 'sun' || obj.light.type === 'area';
       return;
     }
     this.writeFields(obj.light);
@@ -291,10 +338,17 @@ class LightTab {
     const power = String(round(l.power));
     if (this.powerInput.value !== power) this.powerInput.value = power;
 
-    // Radius: shown for point/spot (world-unit sphere), hidden for sun.
-    this.radiusRow.hidden = l.type === 'sun';
+    // Radius: shown for point/spot (world-unit sphere), hidden for sun/area.
+    this.radiusRow.hidden = l.type === 'sun' || l.type === 'area';
     const radius = String(round(l.radius ?? 0.1));
     if (this.radiusInput.value !== radius) this.radiusInput.value = radius;
+
+    // Area rectangle Width/Height, shown only for area lights.
+    this.areaBlock.hidden = l.type !== 'area';
+    const width = String(round(l.width ?? 1));
+    if (this.widthInput.value !== width) this.widthInput.value = width;
+    const height = String(round(l.height ?? 1));
+    if (this.heightInput.value !== height) this.heightInput.value = height;
 
     this.spotBlock.hidden = l.type !== 'spot';
     const deg = String(round(l.spotAngle * DEG_PER_RAD));

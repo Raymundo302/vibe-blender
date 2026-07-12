@@ -1,6 +1,7 @@
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack, Command } from '../core/undo/UndoStack';
-import type { CameraData } from '../core/scene/objectData';
+import type { CameraData, GlareSettings } from '../core/scene/objectData';
+import { cloneGlare, defaultGlare, clampFStop, F_STOP_MIN, F_STOP_MAX } from '../core/scene/objectData';
 import { registerPropertiesTab } from './propertiesEditor';
 import './cameraTab.css';
 
@@ -22,9 +23,10 @@ import './cameraTab.css';
 
 // --- Pure helpers (unit-tested indirectly via objectData / cameraFrustum) -----
 
-/** Shallow clone of CameraData (all fields are primitives). */
+/** Clone of CameraData. All fields are primitives EXCEPT `glare` (UR10-2), which
+ *  is deep-copied so the undo before/after snapshots never share a reference. */
 export function cloneCamera(c: CameraData): CameraData {
-  return { ...c };
+  return { ...c, glare: c.glare ? cloneGlare(c.glare) : undefined };
 }
 
 // --- Undo commands ------------------------------------------------------------
@@ -116,6 +118,14 @@ class CameraTab {
   private readonly nearInput: HTMLInputElement;
   private readonly farInput: HTMLInputElement;
   private readonly lockInput: HTMLInputElement;
+  /** DoF (UR10-2 Part C): enable checkbox + F-Stop numeric. */
+  private readonly dofInput: HTMLInputElement;
+  private readonly fStopInput: HTMLInputElement;
+  /** Glare (UR10-2 Part B): enable checkbox + 3 numerics. */
+  private readonly glareInput: HTMLInputElement;
+  private readonly glareThresholdInput: HTMLInputElement;
+  private readonly glareStrengthInput: HTMLInputElement;
+  private readonly glareRadiusInput: HTMLInputElement;
   private readonly focusSelect: HTMLSelectElement;
   private readonly lookAtSelect: HTMLSelectElement;
   private readonly lookAtWarning: HTMLDivElement;
@@ -205,6 +215,78 @@ class CameraTab {
     lockLabel.style.marginBottom = '0';
     lockRow.append(lockLabel, this.lockInput);
     this.body.append(lockRow);
+
+    // Depth of Field (UR10-2 Part C) — enable + F-Stop. F-Stop replaces the raw
+    // aperture UI: smaller = wider aperture = blurrier. aperture 0 ⇔ DoF off.
+    const dofTitle = document.createElement('div');
+    dofTitle.className = 'properties-group-title';
+    dofTitle.textContent = 'Depth of Field';
+    this.body.append(dofTitle);
+
+    this.dofInput = document.createElement('input');
+    this.dofInput.type = 'checkbox';
+    this.dofInput.className = 'camera-tab-dof';
+    this.dofInput.dataset.field = 'dof';
+    this.dofInput.addEventListener('change', () => {
+      const on = this.dofInput.checked;
+      this.commit('Toggle Depth of Field', (c) => { c.dof = on; });
+    });
+    const dofRow = document.createElement('label');
+    dofRow.className = 'camera-tab-row camera-tab-lock-row';
+    const dofLabel = document.createElement('span');
+    dofLabel.className = 'properties-group-title camera-tab-label';
+    dofLabel.textContent = 'Enable';
+    dofLabel.style.marginBottom = '0';
+    dofRow.append(dofLabel, this.dofInput);
+    this.body.append(dofRow);
+
+    this.fStopInput = this.numberInput('fStop', F_STOP_MIN, F_STOP_MAX, 0.1);
+    this.fStopInput.title = 'Lens f-stop — smaller = wider aperture = blurrier depth of field';
+    this.fStopInput.addEventListener('change', () => {
+      const raw = parseFloat(this.fStopInput.value);
+      if (!Number.isFinite(raw)) return this.refresh();
+      const f = clampFStop(raw);
+      this.commit('Set F-Stop', (c) => { c.fStop = f; });
+    });
+    this.body.append(this.labelledRow('F-Stop', this.fStopInput));
+
+    // Glare / bloom (UR10-2 Part B) — enable + threshold/strength/radius.
+    const glareTitle = document.createElement('div');
+    glareTitle.className = 'properties-group-title';
+    glareTitle.textContent = 'Glare';
+    this.body.append(glareTitle);
+
+    this.glareInput = document.createElement('input');
+    this.glareInput.type = 'checkbox';
+    this.glareInput.className = 'camera-tab-glare';
+    this.glareInput.dataset.field = 'glareEnabled';
+    this.glareInput.addEventListener('change', () => {
+      const on = this.glareInput.checked;
+      this.commit('Toggle Glare', (c) => { this.ensureGlare(c).enabled = on; });
+    });
+    const glareRow = document.createElement('label');
+    glareRow.className = 'camera-tab-row camera-tab-lock-row';
+    const glareLabel = document.createElement('span');
+    glareLabel.className = 'properties-group-title camera-tab-label';
+    glareLabel.textContent = 'Enable';
+    glareLabel.style.marginBottom = '0';
+    glareRow.append(glareLabel, this.glareInput);
+    this.body.append(glareRow);
+
+    this.glareThresholdInput = this.numberInput('glareThreshold', 0, undefined, 0.05);
+    this.glareThresholdInput.title = 'Luminance above which pixels bloom';
+    this.glareThresholdInput.addEventListener('change', () => this.commitGlareNum('threshold', this.glareThresholdInput, 0));
+    this.body.append(this.labelledRow('Threshold', this.glareThresholdInput));
+
+    this.glareStrengthInput = this.numberInput('glareStrength', 0, undefined, 0.05);
+    this.glareStrengthInput.title = 'Bloom intensity added back';
+    this.glareStrengthInput.addEventListener('change', () => this.commitGlareNum('strength', this.glareStrengthInput, 0));
+    this.body.append(this.labelledRow('Strength', this.glareStrengthInput));
+
+    this.glareRadiusInput = this.numberInput('glareRadius', 0, 1, 0.01);
+    this.glareRadiusInput.title = 'Blur radius as a fraction of image height';
+    this.glareRadiusInput.addEventListener('change', () => this.commitGlareNum('radius', this.glareRadiusInput, 0));
+    this.body.append(this.labelledRow('Radius', this.glareRadiusInput));
 
     // Focus Object (DoF) + Look At (orientation) object pickers (UR5-7) --------
     // Dropdowns of None + every OTHER scene object by name. Value is the object
@@ -374,6 +456,21 @@ class CameraTab {
     this.writeFields(obj.camera);
   }
 
+  /** Get-or-create the camera's glare payload (first edit lazily materializes it
+   *  with defaults, so pre-UR10-2 cameras stay glare-free until touched). */
+  private ensureGlare(c: CameraData): GlareSettings {
+    if (!c.glare) c.glare = defaultGlare();
+    return c.glare;
+  }
+
+  /** Commit one glare numeric field (clamped ≥ min) via the undoable command. */
+  private commitGlareNum(field: 'threshold' | 'strength' | 'radius', input: HTMLInputElement, min: number): void {
+    const raw = parseFloat(input.value);
+    if (!Number.isFinite(raw)) return this.refresh();
+    const v = Math.max(min, raw);
+    this.commit(`Set Glare ${field}`, (c) => { this.ensureGlare(c)[field] = v; });
+  }
+
   private writeFields(c: CameraData): void {
     const focal = String(round(c.focalLength));
     if (this.focalInput.value !== focal) this.focalInput.value = focal;
@@ -383,6 +480,20 @@ class CameraTab {
     if (this.farInput.value !== far) this.farInput.value = far;
     const lock = !!c.lockToView;
     if (this.lockInput.checked !== lock) this.lockInput.checked = lock;
+    // DoF (UR10-2 Part C).
+    const dof = !!c.dof;
+    if (this.dofInput.checked !== dof) this.dofInput.checked = dof;
+    const fStop = String(round(c.fStop ?? 2.8));
+    if (this.fStopInput.value !== fStop) this.fStopInput.value = fStop;
+    // Glare (UR10-2 Part B) — reflect current or default values.
+    const g = c.glare ?? defaultGlare();
+    if (this.glareInput.checked !== g.enabled) this.glareInput.checked = g.enabled;
+    const thr = String(round(g.threshold));
+    if (this.glareThresholdInput.value !== thr) this.glareThresholdInput.value = thr;
+    const str = String(round(g.strength));
+    if (this.glareStrengthInput.value !== str) this.glareStrengthInput.value = str;
+    const rad = String(round(g.radius));
+    if (this.glareRadiusInput.value !== rad) this.glareRadiusInput.value = rad;
   }
 
   private isPanelFocused(): boolean {

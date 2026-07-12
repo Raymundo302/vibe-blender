@@ -60,9 +60,13 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     const rs = ctx.scene.renderSettings;
     win.resize(rs.width, rs.height);
     const snapshot = buildSnapshot(ctx.scene, ctx.camera);
-    // Depth of field: aperture from the render window, focus distance from the
-    // window if the user set one, else the snapshot's auto (bounding-box) value.
-    snapshot.camera.aperture = win.aperture;
+    // Depth of field (UR10-2 Part C): the active camera's DoF (fStop) already
+    // seeded snapshot.camera.aperture in buildSnapshot. The render window's manual
+    // aperture field overrides only when the user opened it (> 0) — mainly for the
+    // viewport-view case where there is no active camera to carry an fStop.
+    if (win.aperture > 0) snapshot.camera.aperture = win.aperture;
+    // Camera Glare (UR10-2 Part B): post-process applied in the tonemap seam.
+    win.glare = ctx.scene.activeCamera?.camera?.glare ?? null;
     win.showAutoFocus(snapshot.camera.focusDistance ?? 5);
     // A Focus Object (UR5-7) locks the distance per render — the manual field only
     // applies when no focus object is set.

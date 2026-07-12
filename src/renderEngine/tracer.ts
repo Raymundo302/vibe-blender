@@ -16,6 +16,18 @@ import '../core/nodes/builtins';
  *     then bounce — cosine-weighted diffuse, or a roughness-jittered mirror
  *     reflection with probability = metallic (documented approximation of a
  *     GGX glossy lobe).
+ *   - Glass (UR10-3): a material with transmission > 0 traces a DIELECTRIC BSDF
+ *     with probability = transmission. At the hit it picks reflect vs refract by
+ *     the real-IOR Fresnel (Schlick), refracts across the interface via Snell
+ *     (inside/outside tracked by the geometric-normal flip), handles total
+ *     internal reflection, and TINTS transmitted rays by baseColor (Beer-lite:
+ *     one multiply per pass-through, NO distance attenuation in v1). Rough glass
+ *     (roughness > 0) jitters the chosen direction with the same GGX-ish lobe as
+ *     metal — a cheap frosted look, documented as an approximation. The diffuse
+ *     direct-light + emitter-NEE contribution is weighted by (1 − transmission)
+ *     so full glass shows no diffuse sheen. GLASS BLOCKS SHADOW RAYS LIKE AN
+ *     OPAQUE surface (its tris stay in the BVH) — a standard cheap v1 choice; no
+ *     transparent shadows / caustics yet (revisit with NEE-aware transmission).
  *   - Max depth 4, Russian roulette after depth 2.
  *   - Misses return the sky gradient so unlit scenes aren't a void.
  *
@@ -371,6 +383,10 @@ const _b2: [number, number, number] = [0, 0, 0];
  * numbers are drawn and the center is used, so the result is byte-identical to
  * the hard-shadow path.
  *
+ * Area lights (type 3, UR10-1): a rectangle emitter sampled at a uniform-random
+ * point per shadow ray (its center when no rng); one-sided along the aim face
+ * normal; received radiance = energy·cosθ_light/d² (see the area branch).
+ *
  * `wrap` (0..1) softens the NdotL term toward (NdotL+1)/2 — the cheap wrapped-
  * diffuse used for the subsurface approximation. It is energy-normalized:
  * nl = max(0, (NdotL + wrap) / (1 + wrap)).
@@ -403,7 +419,42 @@ export function directLighting(
     const soft = rng !== undefined && radius > 0;
     let lx: number, ly: number, lz: number, dist: number;
     let rr: number, rg: number, rb: number;
-    if (l.type === 1) {
+    if (l.type === 3) {
+      // Area light (UR10-1): a rectangle emitter in the light's local XY plane,
+      // emitting along its face normal = the aim direction (local -Z). Sample a
+      // uniform-random point on the rect per shadow ray (center when no rng, so
+      // the result stays deterministic for tests) — progressive spp accumulates
+      // many samples → soft penumbrae for free.
+      const dx = l.direction[0], dy = l.direction[1], dz = l.direction[2];
+      let ex = l.position[0], ey = l.position[1], ez = l.position[2];
+      if (rng !== undefined) {
+        const ux = l.uAxis?.[0] ?? 1, uy = l.uAxis?.[1] ?? 0, uz = l.uAxis?.[2] ?? 0;
+        const vx = l.vAxis?.[0] ?? 0, vy = l.vAxis?.[1] ?? 1, vz = l.vAxis?.[2] ?? 0;
+        const su = (rng() - 0.5) * (l.width ?? 1);
+        const sv = (rng() - 0.5) * (l.height ?? 1);
+        ex += ux * su + vx * sv;
+        ey += uy * su + vy * sv;
+        ez += uz * su + vz * sv;
+      }
+      lx = ex - px; ly = ey - py; lz = ez - pz;
+      const d2 = lx * lx + ly * ly + lz * lz;
+      dist = Math.sqrt(d2);
+      const inv = 1 / dist;
+      lx *= inv; ly *= inv; lz *= inv;
+      // One-sided emission: the rect lights only the half-space in front of its
+      // -Z face. cosθ_light = dot(emitter→surface, face normal) = -(L·direction).
+      // A shading point behind the face (cosLight ≤ 0) gets zero contribution.
+      const cosLight = -(lx * dx + ly * dy + lz * dz);
+      if (cosLight <= 0) continue;
+      // Solid-angle / pdf weighting: sampling a point uniformly on the rect
+      // (pdf = 1/A) turns the emitted radiance Le = energy/(w·h) into a received
+      // radiance Le·A·cosθ_light/d² — the area A cancels, leaving
+      // energy·cosθ_light/d² (energy already = color·power/4π, matching a point
+      // light's premultiply so an area light of the same power reads at a similar
+      // brightness). Bigger rects only soften shadows, not overall brightness.
+      const f = cosLight / Math.max(d2, 1e-6);
+      rr = l.energy[0] * f; rg = l.energy[1] * f; rb = l.energy[2] * f;
+    } else if (l.type === 1) {
       // sun: L points toward the light = -direction, no falloff.
       lx = -l.direction[0]; ly = -l.direction[1]; lz = -l.direction[2];
       const inv = 1 / Math.hypot(lx, ly, lz);
@@ -683,6 +734,167 @@ export function applyBumpMap(
 }
 
 // ---------------------------------------------------------------------------
+// Emissive mesh lights (UR10-2 Part A) — next-event estimation.
+//
+// Every triangle whose material has emissiveStrength > 0 (flat emissive only —
+// node-graph emission keeps the old bounce-found glow, documented) becomes a
+// SAMPLED area light: an area-weighted CDF over the emitter triangles is built
+// once at prepareScene time, and at each diffuse shading point one emitter point
+// is sampled directly (shadow-ray gated) so a glowing plane converges to a soft,
+// room-filling illumination instead of relying on a lucky diffuse bounce.
+//
+// Double-count avoidance uses the classic "skip emitter radiance on NEE-sampled
+// bounces" bookkeeping (NOT full MIS): emission is added on a bounce hit only
+// when the previous bounce was specular/mirror (where NEE could not sample the
+// light) or on the camera ray; after a diffuse/SSS bounce the emission is already
+// accounted for by the NEE at that vertex, so it is not added again.
+// ---------------------------------------------------------------------------
+
+/** Prebuilt emitter list for NEE: triangle indices, an area CDF, and per-emitter
+ *  radiance (emissive × strength). null when the scene has no emissive geometry. */
+export interface EmitterList {
+  /** Triangle indices (into TraceScene.tris) of the emitter triangles. */
+  tris: Int32Array;
+  /** Cumulative NORMALIZED area, ascending, last entry = 1. Parallel to `tris`. */
+  cdf: Float32Array;
+  /** Emitted radiance per emitter (3 floats each), parallel to `tris`. */
+  radiance: Float32Array;
+  /** Sum of all emitter triangle areas (world units²). */
+  totalArea: number;
+}
+
+/**
+ * Build the emitter CDF from the scene triangles + materials. Returns null when
+ * no triangle carries flat emission (so the tracer's NEE + emission-gating stay
+ * completely off and non-emissive renders are byte-identical). Exported for the
+ * emitter-sampling unit test.
+ */
+export function buildEmitters(
+  tris: Float32Array,
+  triMat: Int32Array,
+  materials: SnapMaterial[],
+): EmitterList | null {
+  const idx: number[] = [];
+  const areas: number[] = [];
+  const rad: number[] = [];
+  const count = (tris.length / 9) | 0;
+  let total = 0;
+  for (let t = 0; t < count; t++) {
+    const m = materials[triMat[t]] ?? materials[0];
+    // Node-graph emission is per-hit-evaluated → not an analytic mesh light.
+    if (!m || m.nodeGraph || m.emissiveStrength <= 0) continue;
+    const er = m.emissive[0] * m.emissiveStrength;
+    const eg = m.emissive[1] * m.emissiveStrength;
+    const eb = m.emissive[2] * m.emissiveStrength;
+    if (er <= 0 && eg <= 0 && eb <= 0) continue;
+    const o = t * 9;
+    const e1x = tris[o + 3] - tris[o], e1y = tris[o + 4] - tris[o + 1], e1z = tris[o + 5] - tris[o + 2];
+    const e2x = tris[o + 6] - tris[o], e2y = tris[o + 7] - tris[o + 1], e2z = tris[o + 8] - tris[o + 2];
+    const cx = e1y * e2z - e1z * e2y;
+    const cy = e1z * e2x - e1x * e2z;
+    const cz = e1x * e2y - e1y * e2x;
+    const area = 0.5 * Math.hypot(cx, cy, cz);
+    if (!(area > 0)) continue;
+    idx.push(t);
+    areas.push(area);
+    rad.push(er, eg, eb);
+    total += area;
+  }
+  if (idx.length === 0 || total <= 0) return null;
+  const cdf = new Float32Array(idx.length);
+  let acc = 0;
+  for (let i = 0; i < idx.length; i++) {
+    acc += areas[i];
+    cdf[i] = acc / total;
+  }
+  cdf[cdf.length - 1] = 1; // guard float drift
+  return {
+    tris: Int32Array.from(idx),
+    cdf,
+    radiance: Float32Array.from(rad),
+    totalArea: total,
+  };
+}
+
+/**
+ * One NEE sample of the emitter set at surface point (px,py,pz) with normal
+ * (nx,ny,nz) and diffuse albedo. Picks an emitter triangle proportional to area,
+ * samples a uniform point on it, and adds the shadow-ray-gated direct
+ * contribution into `out` (accumulated, NOT reset). Two-sided emission (matches
+ * the emission-on-hit term). Draws exactly 3 rng values, so callers must guard on
+ * a non-null emitter list to keep non-emissive scenes' RNG stream identical.
+ *
+ * Estimator (uniform area pdf = 1/totalArea): contribution =
+ *   albedo/π · Le · cosθ_surf · cosθ_light · totalArea / dist².
+ * Exported for the emitter unit test.
+ */
+export function sampleEmitters(
+  root: BVHNode | null,
+  tris: Float32Array,
+  emitters: EmitterList,
+  px: number, py: number, pz: number,
+  nx: number, ny: number, nz: number,
+  albedo: readonly [number, number, number],
+  rng: Rng,
+  out: [number, number, number],
+  offN?: readonly [number, number, number],
+): void {
+  // Select an emitter triangle via the area CDF (linear scan — emitter counts are
+  // small at demo scale; a binary search is a drop-in if that changes).
+  const u = rng();
+  const cdf = emitters.cdf;
+  let e = 0;
+  while (e < cdf.length - 1 && u > cdf[e]) e++;
+  const tri = emitters.tris[e];
+  const o = tri * 9;
+  const ax = tris[o], ay = tris[o + 1], az = tris[o + 2];
+  const bx = tris[o + 3], by = tris[o + 4], bz = tris[o + 5];
+  const cx = tris[o + 6], cy = tris[o + 7], cz = tris[o + 8];
+  // Uniform barycentric point on the triangle.
+  const r1 = rng(), r2 = rng();
+  const su = Math.sqrt(r1);
+  const w0 = 1 - su, w1 = su * (1 - r2), w2 = su * r2;
+  const sx = ax * w0 + bx * w1 + cx * w2;
+  const sy = ay * w0 + by * w1 + cy * w2;
+  const sz = az * w0 + bz * w1 + cz * w2;
+  // Emitter geometric normal.
+  const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+  const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+  let enx = e1y * e2z - e1z * e2y;
+  let eny = e1z * e2x - e1x * e2z;
+  let enz = e1x * e2y - e1y * e2x;
+  const eninv = 1 / Math.max(1e-12, Math.hypot(enx, eny, enz));
+  enx *= eninv; eny *= eninv; enz *= eninv;
+  // Direction to the sampled point.
+  let lx = sx - px, ly = sy - py, lz = sz - pz;
+  const d2 = lx * lx + ly * ly + lz * lz;
+  const dist = Math.sqrt(d2);
+  if (dist < 1e-6) return;
+  const inv = 1 / dist;
+  lx *= inv; ly *= inv; lz *= inv;
+  const cosSurf = nx * lx + ny * ly + nz * lz;
+  if (cosSurf <= 0) return;
+  // Two-sided emitter: |cos| so a plane lights both half-spaces (matches the
+  // emission-on-hit term, which is orientation-agnostic).
+  const cosLight = Math.abs(-(lx * enx + ly * eny + lz * enz));
+  if (cosLight <= 0) return;
+  const onx = offN ? offN[0] : nx;
+  const ony = offN ? offN[1] : ny;
+  const onz = offN ? offN[2] : nz;
+  // Shadow ray toward the point; the emitter triangle itself sits at t≈dist and
+  // is excluded by occluded()'s (maxDist - EPS) margin, so it never self-shadows.
+  if (root && occluded(root, tris, px + onx * EPS, py + ony * EPS, pz + onz * EPS, lx, ly, lz, dist)) {
+    return;
+  }
+  const ro = e * 3;
+  const G = (cosSurf * cosLight) / Math.max(d2, 1e-6);
+  const k = (G * emitters.totalArea) / Math.PI;
+  out[0] += albedo[0] * emitters.radiance[ro] * k;
+  out[1] += albedo[1] * emitters.radiance[ro + 1] * k;
+  out[2] += albedo[2] * emitters.radiance[ro + 2] * k;
+}
+
+// ---------------------------------------------------------------------------
 // Prepared scene + full path trace.
 // ---------------------------------------------------------------------------
 
@@ -702,6 +914,9 @@ export interface TraceScene {
   world: SnapWorld;
   /** null when the scene has no geometry (sky-only render). */
   bvh: BVHNode | null;
+  /** Emissive mesh lights (UR10-2 Part A) — null when no emissive geometry, so
+   *  the NEE + emission-gating stay off and non-emissive renders are unchanged. */
+  emitters: EmitterList | null;
 }
 
 export function prepareScene(snap: Snapshot): TraceScene {
@@ -717,6 +932,7 @@ export function prepareScene(snap: Snapshot): TraceScene {
     // byte-identical to the pre-P10-4 tracer.
     world: snap.world ?? defaultSnapWorld(),
     bvh: snap.tris.length >= 9 ? buildBVH(snap.tris) : null,
+    emitters: buildEmitters(snap.tris, snap.triMat, snap.materials),
   };
 }
 
@@ -741,6 +957,59 @@ function cosineHemisphere(
   out[0] = x * t1x + y * t2x + z * nx;
   out[1] = x * t1y + y * t2y + z * ny;
   out[2] = x * t1z + y * t2z + z * nz;
+}
+
+/**
+ * Dielectric (glass) scatter (UR10-3). Given the incoming ray direction `d`
+ * (normalized) and the RAW geometric normal `ng` (as stored), plus whether the
+ * ray is ENTERING the surface (frontFace: geometric normal opposes the ray),
+ * choose reflect vs refract at a smooth interface of index `ior` using the
+ * real-IOR Schlick Fresnel, and write the outgoing direction to `out`.
+ *
+ * `u` ∈ [0,1) selects reflect (u < Fresnel reflectance) vs refract. Snell's law
+ * is applied across the interface (eta = 1/ior entering, ior exiting); total
+ * internal reflection (no transmitted ray) is detected and reflects instead.
+ *
+ * Returns `refracted` (true when the ray transmitted through — the caller tints
+ * it by baseColor) and `tir` (true when the choice was forced by total internal
+ * reflection). Pure + deterministic — exported for the fresnel/snell unit tests.
+ */
+export function dielectricScatter(
+  dx: number, dy: number, dz: number,
+  ngx: number, ngy: number, ngz: number,
+  frontFace: boolean,
+  ior: number,
+  u: number,
+  out: [number, number, number],
+): { refracted: boolean; tir: boolean } {
+  // nl = geometric normal oriented AGAINST the ray. ddn = d·nl ≤ 0.
+  const nlx = frontFace ? ngx : -ngx;
+  const nly = frontFace ? ngy : -ngy;
+  const nlz = frontFace ? ngz : -ngz;
+  const nnt = frontFace ? 1 / ior : ior;
+  const ddn = dx * nlx + dy * nly + dz * nlz;
+  const cos2t = 1 - nnt * nnt * (1 - ddn * ddn);
+  if (cos2t < 0) {
+    out[0] = dx - 2 * ddn * nlx; out[1] = dy - 2 * ddn * nly; out[2] = dz - 2 * ddn * nlz;
+    return { refracted: false, tir: true };
+  }
+  const a = ior - 1, b = ior + 1;
+  const R0 = (a * a) / (b * b);
+  const sq = Math.sqrt(cos2t);
+  const sign = frontFace ? 1 : -1;
+  let tdx = dx * nnt - ngx * (sign * (ddn * nnt + sq));
+  let tdy = dy * nnt - ngy * (sign * (ddn * nnt + sq));
+  let tdz = dz * nnt - ngz * (sign * (ddn * nnt + sq));
+  const tinv = 1 / Math.max(1e-6, Math.hypot(tdx, tdy, tdz));
+  tdx *= tinv; tdy *= tinv; tdz *= tinv;
+  const cf = 1 - (frontFace ? -ddn : tdx * ngx + tdy * ngy + tdz * ngz);
+  const Re = R0 + (1 - R0) * cf * cf * cf * cf * cf;
+  if (u < Re) {
+    out[0] = dx - 2 * ddn * nlx; out[1] = dy - 2 * ddn * nly; out[2] = dz - 2 * ddn * nlz;
+    return { refracted: false, tir: false };
+  }
+  out[0] = tdx; out[1] = tdy; out[2] = tdz;
+  return { refracted: true, tir: false };
 }
 
 /**
@@ -774,6 +1043,12 @@ export function traceRay(
   const uv1: [number, number] = [0, 0];
   const uv2: [number, number] = [0, 0];
   const genV: [number, number, number] = [0, 0, 0]; // interpolated GENERATED coord
+  const emit: [number, number, number] = [0, 0, 0]; // emitter NEE contribution
+  // Emission-on-hit is counted only on the camera ray or after a SPECULAR bounce
+  // (NEE cannot sample a mirror direction); after a diffuse/SSS bounce the mesh
+  // emission is already gathered by the NEE at that vertex, so skip it to avoid
+  // double counting. Irrelevant when there are no emitters (flag never consulted).
+  let countEmission = true;
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     let hit = scene.bvh
@@ -848,6 +1123,13 @@ export function traceRay(
     // so the no-map bounce below is byte-identical.
     let matRough = mat.roughness;
     let matMetal = mat.metallic;
+    // Glass (UR10-3): transmission drives the dielectric BSDF probability below;
+    // its diffuse-weight (1 − transmission) fades out the surface's diffuse
+    // direct-light + emitter NEE so full glass shows no milky sheen. Nodes don't
+    // override transmission (v1). Non-glass materials (transmission 0) leave dw=1
+    // and never draw the dielectric RNG, so their render is byte-identical.
+    const transmission = mat.transmission ?? 0;
+    const dw = 1 - transmission;
     if (hasRoughMap && scene.triUV) {
       sampleImageBilinear(mat.roughImage!, uu, vv, mapSamp);
       matRough = Math.min(1, Math.max(0.04, matRough * mapSamp[0]));
@@ -885,7 +1167,12 @@ export function traceRay(
       emR = nodeSample.emissive[0]; emG = nodeSample.emissive[1]; emB = nodeSample.emissive[2];
       es = nodeSample.emissiveStrength;
     }
-    if (es > 0) {
+    // A flat-emissive material that is in the emitter list (UR10-2 Part A) is
+    // NEE-sampled, so its emission-on-hit is gated by countEmission to avoid
+    // double counting. Node-emissive materials (not in the list) and scenes with
+    // no emitters always add emission — byte-identical to the pre-UR10-2 path.
+    const emissiveIsMeshLight = !useNodes && scene.emitters !== null && es > 0;
+    if (es > 0 && (!emissiveIsMeshLight || countEmission)) {
       rr += tr * emR * es;
       rg += tg * emG * es;
       rb += tb * emB * es;
@@ -947,7 +1234,20 @@ export function traceRay(
       scene.bvh, scene.tris, hx, hy, hz, nx, ny, nz,
       alb, scene.lights, direct, rng, isSSS ? 1 : 0, gN,
     );
-    rr += tr * direct[0]; rg += tg * direct[1]; rb += tb * direct[2];
+    // Glass fades the diffuse surface response (dw = 1 for every opaque material,
+    // so this multiply is a no-op there — byte-identical).
+    rr += tr * direct[0] * dw; rg += tg * direct[1] * dw; rb += tb * direct[2] * dw;
+
+    // Emissive mesh lights (UR10-2 Part A) — one NEE sample of the emitter set,
+    // alongside the analytic lights. Guarded so non-emissive scenes draw no RNG.
+    if (scene.emitters) {
+      emit[0] = 0; emit[1] = 0; emit[2] = 0;
+      sampleEmitters(
+        scene.bvh, scene.tris, scene.emitters, hx, hy, hz, nx, ny, nz,
+        alb, rng, emit, gN,
+      );
+      rr += tr * emit[0] * dw; rg += tg * emit[1] * dw; rb += tb * emit[2] * dw;
+    }
 
     // Russian roulette after a couple of bounces.
     if (depth >= 2) {
@@ -956,11 +1256,38 @@ export function traceRay(
       tr /= p; tg /= p; tb /= p;
     }
 
-    // Bounce: glossy (metal) with probability = metallic, else diffuse / SSS.
-    // matMetal/matRough fold in the metal/rough maps (== the scalar params when
-    // no map, so the no-map stream is byte-identical). Ray-offset origins bias
-    // along the GEOMETRIC normal gN; the map only steers the SHADING directions.
-    if (rng() < matMetal) {
+    // Bounce: glass (dielectric) with probability = transmission, else glossy
+    // (metal) with probability = metallic, else diffuse / SSS. transmission 0
+    // short-circuits BEFORE the RNG draw, so opaque materials keep the exact
+    // pre-UR10-3 RNG stream (byte-identical). matMetal/matRough fold in the
+    // metal/rough maps. Ray-offset origins bias along the GEOMETRIC normal gN.
+    if (transmission > 0 && rng() < transmission) {
+      // Dielectric glass BSDF (UR10-3): reflect vs refract by the real-IOR Schlick
+      // Fresnel, Snell refraction, TIR-aware. inside/outside tracked by frontFace.
+      const ior = mat.ior ?? 1.45;
+      const { refracted } = dielectricScatter(
+        dx, dy, dz, hit.nx, hit.ny, hit.nz, frontFace, ior, rng(), bounceDir,
+      );
+      let ndx = bounceDir[0], ndy = bounceDir[1], ndz = bounceDir[2];
+      // Rough glass: perturb the chosen direction with the same GGX-ish jitter as
+      // the metal lobe (documented cheap frosted-glass approximation).
+      const j = matRough * matRough;
+      if (j > 0) {
+        ndx += (rng() * 2 - 1) * j; ndy += (rng() * 2 - 1) * j; ndz += (rng() * 2 - 1) * j;
+      }
+      const inv = 1 / Math.max(1e-6, Math.hypot(ndx, ndy, ndz));
+      dx = ndx * inv; dy = ndy * inv; dz = ndz * inv;
+      // Beer-lite tint: transmitted rays pick up baseColor (one multiply per
+      // pass-through, no distance attenuation in v1). Reflections stay uncolored.
+      if (refracted) { tr *= alb[0]; tg *= alb[1]; tb *= alb[2]; }
+      // Offset the new origin onto the side the ray now travels (reflection stays
+      // outside, refraction crosses to the far side).
+      const os = dx * gN[0] + dy * gN[1] + dz * gN[2] >= 0 ? EPS : -EPS;
+      ox = hx + gN[0] * os; oy = hy + gN[1] * os; oz = hz + gN[2] * os;
+      // Specular event: NEE can't sample this direction, so the next hit must
+      // count emitter radiance directly.
+      countEmission = true;
+    } else if (rng() < matMetal) {
       // Roughness-jittered mirror reflection (documented GGX-ish approximation).
       const dot = dx * nx + dy * ny + dz * nz;
       let bx = dx - 2 * dot * nx, by = dy - 2 * dot * ny, bz = dz - 2 * dot * nz;
@@ -974,6 +1301,9 @@ export function traceRay(
       if (dx * nx + dy * ny + dz * nz < 0) { dx = -dx; dy = -dy; dz = -dz; }
       tr *= alb[0]; tg *= alb[1]; tb *= alb[2];
       ox = hx + gN[0] * EPS; oy = hy + gN[1] * EPS; oz = hz + gN[2] * EPS;
+      // Specular/mirror bounce: NEE cannot sample this direction, so the next hit
+      // must count the emitter's radiance directly.
+      countEmission = true;
     } else if (isSSS) {
       // Dip the continuation origin below the surface by a random distance ~
       // subsurfaceRadius, then re-emerge with a cosine-weighted direction.
@@ -987,12 +1317,17 @@ export function traceRay(
       ox = hx - gN[0] * dScatter + dx * EPS;
       oy = hy - gN[1] * dScatter + dy * EPS;
       oz = hz - gN[2] * dScatter + dz * EPS;
+      // Diffuse-like continuation: emitter radiance is covered by this vertex's
+      // NEE, so don't re-add it on the next hit.
+      countEmission = false;
     } else {
       cosineHemisphere(nx, ny, nz, rng, bounceDir);
       dx = bounceDir[0]; dy = bounceDir[1]; dz = bounceDir[2];
       // Cosine-weighted pdf cancels the cosine term → throughput *= albedo.
       tr *= alb[0]; tg *= alb[1]; tb *= alb[2];
       ox = hx + gN[0] * EPS; oy = hy + gN[1] * EPS; oz = hz + gN[2] * EPS;
+      // Diffuse bounce: NEE at this vertex already gathered the emitter light.
+      countEmission = false;
     }
   }
   out[0] = rr; out[1] = rg; out[2] = rb;

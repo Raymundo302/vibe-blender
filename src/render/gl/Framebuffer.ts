@@ -1,6 +1,6 @@
 /** Single-channel formats supported in addition to the default RGBA8. `r16f`
  *  requires EXT_color_buffer_float — check with {@link floatColorRenderable}. */
-export type FboFormat = 'rgba8' | 'r8' | 'r16f';
+export type FboFormat = 'rgba8' | 'r8' | 'r16f' | 'rgba16f';
 
 /** True once EXT_color_buffer_float has been enabled on this context (so an
  *  R16F color attachment is framebuffer-complete). Enables the extension as a
@@ -14,6 +14,7 @@ function formatTriple(gl: WebGL2RenderingContext, fmt: FboFormat):
   switch (fmt) {
     case 'r8': return { internal: gl.R8, format: gl.RED, type: gl.UNSIGNED_BYTE };
     case 'r16f': return { internal: gl.R16F, format: gl.RED, type: gl.HALF_FLOAT };
+    case 'rgba16f': return { internal: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT };
     default: return { internal: gl.RGBA8, format: gl.RGBA, type: gl.UNSIGNED_BYTE };
   }
 }

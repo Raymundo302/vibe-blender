@@ -10,14 +10,17 @@ import type { Transform } from '../math/transform';
 
 export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty' | 'text';
 
-export type LightType = 'point' | 'sun' | 'spot';
+export type LightType = 'point' | 'sun' | 'spot' | 'area';
+
+/** Minimum world-unit extent for an area light's width/height (clamp > 0.01). */
+export const AREA_MIN_SIZE = 0.01;
 
 export interface LightData {
   type: LightType;
   /** Linear RGB 0..1. */
   color: [number, number, number];
   /**
-   * Blender-style strength: watt-ish for point/spot (falls off 1/d²),
+   * Blender-style strength: watt-ish for point/spot/area (falls off 1/d²),
    * direct irradiance multiplier for sun (no falloff).
    */
   power: number;
@@ -29,28 +32,146 @@ export interface LightData {
    * Soft-shadow source size (path tracer only; raster shading stays hard).
    * Point/spot: emitter sphere radius in world units. Sun: angular radius in
    * radians. 0 = hard shadow. Optional so pre-radius scenes/tests still parse.
+   * Unused for area lights (their softness comes from the rect's width/height).
    */
   radius?: number;
+  /**
+   * Area light only (UR10-1): the emitting rectangle's width/height in world
+   * units, in the light's local X/Y plane. Emits from its face along local −Z
+   * (Blender convention, same aim as spot/sun). Clamped to > AREA_MIN_SIZE.
+   * Optional so pre-area scenes/tests parse; absent → 1×1.
+   */
+  width?: number;
+  height?: number;
 }
 
 export function defaultLight(type: LightType): LightData {
-  return {
+  const l: LightData = {
     type,
     color: [1, 1, 1],
     power: type === 'sun' ? 3 : 100,
     spotAngle: (45 * Math.PI) / 180,
     spotBlend: 0.15,
     // Sun defaults to a hard shadow (angular radius 0); point/spot get a small
-    // physical size so soft shadows are visible out of the box.
-    radius: type === 'sun' ? 0 : 0.1,
+    // physical size so soft shadows are visible out of the box. Area lights get
+    // no sphere radius (softness is the rect's extent).
+    radius: type === 'sun' || type === 'area' ? 0 : 0.1,
   };
+  // width/height are AREA-ONLY so point/spot/sun payloads stay identical to the
+  // pre-UR10-1 shape (the tab, serializer and tracer all default them to 1×1).
+  if (type === 'area') {
+    l.width = 1;
+    l.height = 1;
+  }
+  return l;
 }
+
+/**
+ * Area-light EMITTED RADIANCE scale factor (UR10-1 energy model). A Lambertian
+ * rectangle of area w·h radiating `power` has emitted radiance Le = power /
+ * (4π·w·h) per unit color — the same power→radiance premultiply as a point light
+ * (power/4π), divided by the emitter area. Consequence (Blender's feel): a bigger
+ * light at the same power is DIMMER per-area (smaller Le) but the total light a
+ * surface receives is unchanged (the solid-angle estimator multiplies Le back by
+ * the area A), so only the SHADOWS get softer. Clamps the extents like the model.
+ * Exported for the energy-formula unit test.
+ */
+export function areaEmittedRadiance(power: number, width: number, height: number): number {
+  const w = Math.max(width, AREA_MIN_SIZE);
+  const h = Math.max(height, AREA_MIN_SIZE);
+  return power / (4 * Math.PI * w * h);
+}
+
+/**
+ * Camera Glare / bloom (UR10-2 Part B). A post-process applied wherever this
+ * camera renders: F12 / Ctrl+F12 tracer output and the Rendered viewport when
+ * looking THROUGH the camera. Bright-pass (luminance ≥ threshold) → separable
+ * Gaussian at `radius` → add ×strength. Pure function of the frame — no temporal
+ * accumulation. Optional on CameraData so pre-UR10-2 scenes/tests parse unchanged
+ * (absent → no glare, byte-identical).
+ */
+export interface GlareSettings {
+  enabled: boolean;
+  /** Luminance cutoff for the bright-pass (default 1.0 — only HDR-ish pixels
+   *  above display white bloom). */
+  threshold: number;
+  /** Additive bloom scale (default 0.5). */
+  strength: number;
+  /** Gaussian blur radius as a FRACTION of image height (default 0.05). */
+  radius: number;
+}
+
+/** Fresh Glare payload (disabled, Blender-ish defaults). */
+export function defaultGlare(): GlareSettings {
+  return { enabled: false, threshold: 1.0, strength: 0.5, radius: 0.05 };
+}
+
+/** Deep copy of a GlareSettings (all fields primitive). */
+export function cloneGlare(g: GlareSettings): GlareSettings {
+  return { ...g };
+}
+
+/** F-Stop clamp range (UR10-2 Part C). Smaller = wider aperture = blurrier. */
+export const F_STOP_MIN = 0.5;
+export const F_STOP_MAX = 22;
+
+/** Clamp an f-stop into the supported range. */
+export function clampFStop(f: number): number {
+  if (!Number.isFinite(f)) return 2.8;
+  return Math.max(F_STOP_MIN, Math.min(F_STOP_MAX, f));
+}
+
+/**
+ * Thin-lens aperture (lens) radius in world units derived from the camera's
+ * DoF settings (UR10-2 Part C). Returns 0 (pinhole) when DoF is disabled.
+ *
+ *   radius = (focalLength / 1000) / (2 · fStop)
+ *
+ * UNIT ASSUMPTION: focalLength is mm; /1000 converts to metres, and the app's
+ * world unit ≈ 1 metre (the Blender convention), so the result is directly in
+ * scene units. 50mm f/2.8 ≈ 0.0089. No artificial scale factor is applied — the
+ * physical value already yields visible blur at the default scene scale (a wide
+ * f/0.5 ≈ 0.05 units is clearly blurry, f/16 ≈ 0.0016 ≈ pinhole; verified by the
+ * UR10-2 DoF e2e). If a Blender-matching feel ever needs a boost, multiply here.
+ */
+export function cameraLensRadius(cam: CameraData): number {
+  if (!cam.dof) return 0;
+  const f = clampFStop(cam.fStop ?? 2.8);
+  return (cam.focalLength / 1000) / (2 * f);
+}
+
+/**
+ * Empirical "feel like Blender" multiplier applied to the physical lens radius
+ * before the thin-lens tracer consumes it (UR10-2 Part C). The raw physical
+ * radius (0.0089 at 50mm f/2.8) produces only a sub-pixel blur at the app's
+ * typical subject distances (a few world units), so f/2.8 reads as pinhole —
+ * unlike Blender, where f/2.8 is clearly shallow. This 3× boost makes f/2.8
+ * visibly shallow and f/0.5 strongly blurred while keeping f/16 ≈ near-pinhole,
+ * matched against Blender's perceived depth of field. Applied in
+ * buildSnapshot (the tracer boundary), NOT baked into cameraLensRadius, so the
+ * documented physical formula and its unit test stay exact.
+ */
+export const DOF_APERTURE_SCALE = 3;
 
 export interface CameraData {
   /** Focal length in mm on a 36×24mm sensor (Blender default sensor). */
   focalLength: number;
   near: number;
   far: number;
+  /**
+   * Depth-of-field enable (UR10-2 Part C). false → pinhole (aperture 0). When
+   * on, the tracer's thin-lens radius is derived from `fStop` via
+   * cameraLensRadius(). Optional so pre-UR10-2 scenes parse (absent → false).
+   */
+  dof?: boolean;
+  /**
+   * Lens f-stop (UR10-2 Part C). Drives the DoF blur when `dof` is on: smaller =
+   * wider aperture = blurrier. Clamped to F_STOP_MIN..F_STOP_MAX. Optional
+   * (absent → 2.8, the default).
+   */
+  fStop?: number;
+  /** Camera Glare / bloom post-process (UR10-2 Part B). Absent → no glare. */
+  glare?: GlareSettings;
   /**
    * Blender's "Lock Camera to View": while looking through this camera
    * (Numpad0), viewport navigation MOVES the camera instead of exiting the
@@ -79,7 +200,7 @@ export interface CameraData {
 }
 
 export function defaultCamera(): CameraData {
-  return { focalLength: 50, near: 0.1, far: 500, lockToView: false };
+  return { focalLength: 50, near: 0.1, far: 500, lockToView: false, dof: false, fStop: 2.8 };
 }
 
 /**
@@ -247,6 +368,22 @@ export function objectForward(t: Transform): Vec3 {
 
 // --- Materials ---------------------------------------------------------------
 
+/** IOR clamp range (UR10-3). Below 1.0 is unphysical; 2.5 covers diamond. */
+export const IOR_MIN = 1.0;
+export const IOR_MAX = 2.5;
+
+/** Clamp an index of refraction into the supported range (default 1.45). */
+export function clampIor(v: number): number {
+  if (!Number.isFinite(v)) return 1.45;
+  return Math.max(IOR_MIN, Math.min(IOR_MAX, v));
+}
+
+/** Clamp transmission into 0..1 (default 0). */
+export function clampTransmission(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(1, v));
+}
+
 export interface Material {
   /** Stable id, unique within the scene (referenced by SceneObject.materialId). */
   readonly id: number;
@@ -257,6 +394,20 @@ export interface Material {
   metallic: number;
   /** 0 = mirror, 1 = fully rough. */
   roughness: number;
+  /**
+   * Transmission (UR10-3, glass): 0 = fully opaque, 1 = fully transmissive
+   * dielectric. Above 0 the F12 tracer traces a dielectric BSDF (Fresnel
+   * reflect / Snell refract, TIR-aware) and the Rendered viewport draws the
+   * surface as an alpha-blended, Fresnel-rimmed glass approximation. Optional so
+   * pre-UR10-3 materials serialize/deserialize byte-identically (absent → 0).
+   */
+  transmission?: number;
+  /**
+   * Index of refraction (UR10-3), clamped 1.0–2.5 (CLAMP_IOR). Drives the glass
+   * Fresnel + Snell refraction when transmission > 0. Default 1.45 (typical
+   * glass). Optional; absent → 1.45.
+   */
+  ior?: number;
   /** Linear RGB emission color. */
   emissive: [number, number, number];
   emissiveStrength: number;
@@ -339,6 +490,8 @@ export const DEFAULT_MATERIAL: Readonly<Material> = Object.freeze({
   baseColor: [0.8, 0.8, 0.8] as [number, number, number],
   metallic: 0,
   roughness: 0.5,
+  transmission: 0,
+  ior: 1.45,
   emissive: [0, 0, 0] as [number, number, number],
   emissiveStrength: 0,
   subsurfaceWeight: 0,
@@ -363,6 +516,8 @@ export function makeMaterial(id: number, name: string): Material {
     baseColor: [0.8, 0.8, 0.8],
     metallic: 0,
     roughness: 0.5,
+    transmission: 0,
+    ior: 1.45,
     emissive: [0, 0, 0],
     emissiveStrength: 0,
     subsurfaceWeight: 0,

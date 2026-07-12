@@ -157,7 +157,8 @@ export class NewMaterialCommand implements Command {
 
 /** Which scalar/vector field of a Material an edit command targets. */
 export type MaterialFieldKey =
-  | 'name' | 'baseColor' | 'metallic' | 'roughness' | 'emissive' | 'emissiveStrength'
+  | 'name' | 'baseColor' | 'metallic' | 'roughness' | 'transmission' | 'ior'
+  | 'emissive' | 'emissiveStrength'
   | 'subsurfaceWeight' | 'subsurfaceRadius' | 'bakeRes';
 
 type MaterialFieldValue = string | number | [number, number, number];
@@ -303,6 +304,59 @@ export class AlwaysTexturedEditCommand implements Command {
   redo(): void { this.material.alwaysTextured = this.after; }
 }
 
+/** The field cluster a UR10-3 preset (Glass / Metal) sets in one shot. */
+export interface MaterialPresetState {
+  baseColor: [number, number, number];
+  metallic: number;
+  roughness: number;
+  transmission: number;
+  ior: number;
+}
+
+/** Read the preset-relevant fields off a material into a fresh snapshot. */
+export function readPresetState(mat: Material): MaterialPresetState {
+  return {
+    baseColor: cloneRgb(mat.baseColor),
+    metallic: mat.metallic,
+    roughness: mat.roughness,
+    transmission: mat.transmission ?? 0,
+    ior: mat.ior ?? 1.45,
+  };
+}
+
+/**
+ * Apply a whole material preset (Glass / Metal) as ONE undo entry (UR10-3). The
+ * command name is the preset label so undo reads "Apply Glass Preset". Convention:
+ * caller has NOT yet mutated the material — perform() snapshots the before-state,
+ * writes the after-state, and returns the command ready to push.
+ */
+export class MaterialPresetCommand implements Command {
+  private constructor(
+    readonly name: string,
+    private readonly material: Material,
+    private readonly before: MaterialPresetState,
+    private readonly after: MaterialPresetState,
+  ) {}
+
+  static perform(name: string, material: Material, after: MaterialPresetState): MaterialPresetCommand {
+    const before = readPresetState(material);
+    const cmd = new MaterialPresetCommand(name, material, before, after);
+    cmd.write(after);
+    return cmd;
+  }
+
+  private write(s: MaterialPresetState): void {
+    this.material.baseColor = cloneRgb(s.baseColor);
+    this.material.metallic = s.metallic;
+    this.material.roughness = s.roughness;
+    this.material.transmission = s.transmission;
+    this.material.ior = s.ior;
+  }
+
+  undo(): void { this.write(this.before); }
+  redo(): void { this.write(this.after); }
+}
+
 // ------------------------------------------------------------- color helpers --
 
 /** 0..1 RGB floats → lowercase "#rrggbb". */
@@ -331,6 +385,10 @@ class MaterialTab {
   private metallicNum!: HTMLSpanElement;
   private roughnessInput!: HTMLInputElement;
   private roughnessNum!: HTMLSpanElement;
+  private transmissionInput!: HTMLInputElement;
+  private transmissionNum!: HTMLSpanElement;
+  private iorInput!: HTMLInputElement;
+  private iorRow!: HTMLElement;
   private emissiveInput!: HTMLInputElement;
   private emissiveStrengthInput!: HTMLInputElement;
   private subsurfaceInput!: HTMLInputElement;
@@ -406,6 +464,11 @@ class MaterialTab {
       loadTexture: (dataUrl: string) => this.loadTextureFromDataUrl(dataUrl),
       setMap: (slot: MapSlot, dataUrl: string) => this.loadMapFromDataUrl(slot, dataUrl),
       clearMap: (slot: MapSlot) => this.onMapClear(slot),
+      // UR10-3: drive the Glass/Metal preset buttons (same path as a click).
+      applyPreset: (kind: 'glass' | 'metal') => this.applyPreset(kind),
+      // The preset button elements (for an e2e that clicks the real DOM).
+      presetButton: (kind: 'glass' | 'metal') =>
+        this.fields.querySelector(kind === 'glass' ? '.material-tab-preset-glass' : '.material-tab-preset-metal'),
     };
 
     this.update();
@@ -453,6 +516,53 @@ class MaterialTab {
     this.fields.append(this.fieldRow('Roughness', this.roughnessInput, this.roughnessNum,
       this.keyButton('material-tab-key-roughness', 'Insert Roughness keyframe', ['material.roughness'])));
 
+    // Transmission (slider 0..1) + numeric readout — glass amount (UR10-3).
+    this.transmissionNum = document.createElement('span');
+    this.transmissionNum.className = 'material-tab-num';
+    this.transmissionInput = this.slider('material-tab-transmission');
+    this.wireField(this.transmissionInput, 'transmission',
+      () => parseFloat(this.transmissionInput.value),
+      () => this.material()?.transmission ?? 0,
+      () => {
+        this.transmissionNum.textContent = Number(this.transmissionInput.value).toFixed(2);
+        // Live-enable the IOR row so it tracks the slider without a rebuild.
+        this.iorInput.disabled = parseFloat(this.transmissionInput.value) <= 0;
+      });
+    this.fields.append(this.fieldRow('Transmission', this.transmissionInput, this.transmissionNum));
+
+    // IOR (number 1.0–2.5) — enabled only when transmission > 0.
+    this.iorInput = document.createElement('input');
+    this.iorInput.type = 'number';
+    this.iorInput.className = 'material-tab-ior properties-input';
+    this.iorInput.min = '1';
+    this.iorInput.max = '2.5';
+    this.iorInput.step = '0.01';
+    this.iorInput.title = 'Index of refraction (1.0–2.5). Used when Transmission > 0.';
+    this.wireField(this.iorInput, 'ior',
+      () => Math.max(1, Math.min(2.5, parseFloat(this.iorInput.value))),
+      () => this.material()?.ior ?? 1.45);
+    this.iorRow = this.fieldRow('IOR', this.iorInput);
+    this.fields.append(this.iorRow);
+
+    // Presets (UR10-3): one click each sets the whole glass / metal cluster in a
+    // single undo step.
+    const presetRow = document.createElement('div');
+    presetRow.className = 'material-tab-presets';
+    const glassBtn = document.createElement('button');
+    glassBtn.type = 'button';
+    glassBtn.className = 'material-tab-preset-glass';
+    glassBtn.textContent = 'Glass';
+    glassBtn.title = 'Transmission 1, IOR 1.45, smooth, clear glass';
+    glassBtn.addEventListener('click', () => this.applyPreset('glass'));
+    const metalBtn = document.createElement('button');
+    metalBtn.type = 'button';
+    metalBtn.className = 'material-tab-preset-metal';
+    metalBtn.textContent = 'Metal';
+    metalBtn.title = 'Metallic 1, low roughness — chrome/gold (uses the current base color as tint)';
+    metalBtn.addEventListener('click', () => this.applyPreset('metal'));
+    presetRow.append(glassBtn, metalBtn);
+    this.fields.append(presetRow);
+
     // Emissive color
     this.emissiveInput = document.createElement('input');
     this.emissiveInput.type = 'color';
@@ -467,9 +577,13 @@ class MaterialTab {
     this.emissiveStrengthInput.type = 'number';
     this.emissiveStrengthInput.className = 'material-tab-emissive-strength properties-input';
     this.emissiveStrengthInput.min = '0';
+    // UR10-2 Part A: emission acts as a light source — allow strengths up to 100
+    // so a surface can glow bright enough to light a room (was effectively ~1).
+    this.emissiveStrengthInput.max = '100';
     this.emissiveStrengthInput.step = '0.1';
+    this.emissiveStrengthInput.title = 'Emission strength (0–100). Above 0 the surface acts as a mesh light in F12 renders.';
     this.wireField(this.emissiveStrengthInput, 'emissiveStrength',
-      () => Math.max(0, parseFloat(this.emissiveStrengthInput.value)),
+      () => Math.max(0, Math.min(100, parseFloat(this.emissiveStrengthInput.value))),
       () => this.material()?.emissiveStrength ?? 0);
     this.fields.append(this.fieldRow('Emit Strength', this.emissiveStrengthInput));
 
@@ -672,6 +786,31 @@ class MaterialTab {
     if (before === after) return;
     mat.alwaysTextured = after;
     this.undo.push(new AlwaysTexturedEditCommand(mat, before, after));
+    this.lastSig = null;
+  }
+
+  /** Apply a Glass or Metal preset to the active material (one undo entry). */
+  private applyPreset(kind: 'glass' | 'metal'): void {
+    const mat = this.material();
+    if (!mat) return;
+    let after: MaterialPresetState;
+    let name: string;
+    if (kind === 'glass') {
+      // Clear, smooth glass: full transmission, typical glass IOR, no metal,
+      // mirror-smooth, near-white base (the transmitted-ray Beer tint).
+      after = { baseColor: [0.95, 0.95, 0.95], metallic: 0, roughness: 0, transmission: 1, ior: 1.45 };
+      name = 'Apply Glass Preset';
+    } else {
+      // Chrome/gold: full metallic, slightly rough mirror, no transmission. Keep
+      // the existing base color as the reflection tint (grey → chrome, yellow →
+      // gold) and the existing IOR (unused while opaque).
+      after = {
+        baseColor: cloneRgb(mat.baseColor),
+        metallic: 1, roughness: 0.15, transmission: 0, ior: mat.ior ?? 1.45,
+      };
+      name = 'Apply Metal Preset';
+    }
+    this.undo.push(MaterialPresetCommand.perform(name, mat, after));
     this.lastSig = null;
   }
 
@@ -958,7 +1097,7 @@ class MaterialTab {
       obj!.id,
       obj!.materialId,
       this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
-      mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
+      mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${mat.transmission ?? 0}:${mat.ior ?? 1.45}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
       mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}:${mat.alwaysTextured === true}:${mat.alphaBlend === true}` : '-',
       mat ? `${mat.normalDataUrl ? mat.normalDataUrl.length : 0}:${mat.normalIsBump}:${mat.normalStrength}:${mat.roughDataUrl ? mat.roughDataUrl.length : 0}:${mat.metalDataUrl ? mat.metalDataUrl.length : 0}` : '-',
       mat ? `${mat.bakeRes ?? 128}` : '-',
@@ -1001,6 +1140,11 @@ class MaterialTab {
     this.metallicNum.textContent = mat.metallic.toFixed(2);
     this.roughnessInput.value = String(mat.roughness);
     this.roughnessNum.textContent = mat.roughness.toFixed(2);
+    const transmission = mat.transmission ?? 0;
+    this.transmissionInput.value = String(transmission);
+    this.transmissionNum.textContent = transmission.toFixed(2);
+    this.iorInput.value = String(mat.ior ?? 1.45);
+    this.iorInput.disabled = transmission <= 0;
     this.emissiveInput.value = rgbToHex(mat.emissive);
     this.emissiveStrengthInput.value = String(mat.emissiveStrength);
     this.subsurfaceInput.value = String(mat.subsurfaceWeight);

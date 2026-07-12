@@ -4,7 +4,7 @@ import '../core/nodes/builtins';
 import { Vec3 } from '../core/math/vec3';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
-import { cameraFovY, objectForward, DEFAULT_MATERIAL } from '../core/scene/objectData';
+import { cameraFovY, cameraLensRadius, DOF_APERTURE_SCALE, objectForward, DEFAULT_MATERIAL, AREA_MIN_SIZE } from '../core/scene/objectData';
 import type { HdriImage } from '../core/scene/worldData';
 
 /**
@@ -21,6 +21,11 @@ export interface SnapMaterial {
   baseColor: [number, number, number];
   metallic: number;
   roughness: number;
+  /** Transmission (UR10-3): 0 = opaque, 1 = full dielectric glass. Above 0 the
+   *  tracer traces a Fresnel-reflect / Snell-refract dielectric BSDF. Default 0. */
+  transmission?: number;
+  /** Index of refraction for the glass BSDF (UR10-3). Default 1.45. */
+  ior?: number;
   /** Linear RGB emission (pre-strength). */
   emissive: [number, number, number];
   emissiveStrength: number;
@@ -61,12 +66,23 @@ export interface SnapMaterial {
   nodeImages?: Map<string, { width: number; height: number; pixels: Float32Array }> | null;
 }
 
-/** 0 = point, 1 = sun, 2 = spot (matches renderedPass type codes). */
+/** 0 = point, 1 = sun, 2 = spot, 3 = area (matches renderedPass type codes). */
 export interface SnapLight {
-  type: 0 | 1 | 2;
+  type: 0 | 1 | 2 | 3;
   position: [number, number, number];
-  /** Aim direction (local -Z rotated), for sun/spot. */
+  /** Aim direction (local -Z rotated), for sun/spot/area (= area's face normal). */
   direction: [number, number, number];
+  /**
+   * Area light only (type 3): the emitting rectangle's world-space basis and
+   * size. `uAxis`/`vAxis` are unit local X/Y rotated into world; width/height are
+   * the extents along them. A shadow-ray sample point on the rect is
+   * position + (su·width)·uAxis + (sv·height)·vAxis for su,sv ∈ [-0.5, 0.5].
+   * Absent for non-area lights.
+   */
+  uAxis?: [number, number, number];
+  vAxis?: [number, number, number];
+  width?: number;
+  height?: number;
   /**
    * color × power, premultiplied per type exactly like collectLights():
    * point/spot → color·power/(4π) (radiance = energy/d²), sun → color·power.
@@ -167,6 +183,8 @@ function toMat(m: {
   baseColor: readonly [number, number, number];
   metallic: number;
   roughness: number;
+  transmission?: number;
+  ior?: number;
   emissive: readonly [number, number, number];
   emissiveStrength: number;
   subsurfaceWeight?: number;
@@ -188,6 +206,8 @@ function toMat(m: {
     baseColor: [m.baseColor[0], m.baseColor[1], m.baseColor[2]],
     metallic: m.metallic,
     roughness: m.roughness,
+    transmission: m.transmission ?? 0,
+    ior: m.ior ?? 1.45,
     emissive: [m.emissive[0], m.emissive[1], m.emissive[2]],
     emissiveStrength: m.emissiveStrength,
     subsurfaceWeight: m.subsurfaceWeight ?? 0,
@@ -337,15 +357,25 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     const scale = l.type === 'sun' ? 1 : 1 / (4 * Math.PI);
     const outer = l.spotAngle / 2;
     const inner = outer * (1 - l.spotBlend);
-    lights.push({
-      type: l.type === 'point' ? 0 : l.type === 'sun' ? 1 : 2,
+    const snap: SnapLight = {
+      type: l.type === 'point' ? 0 : l.type === 'sun' ? 1 : l.type === 'spot' ? 2 : 3,
       position: [p.x, p.y, p.z],
       direction: [d.x, d.y, d.z],
       energy: [l.color[0] * l.power * scale, l.color[1] * l.power * scale, l.color[2] * l.power * scale],
       cosInner: Math.cos(inner),
       cosOuter: Math.cos(outer),
-      radius: l.radius ?? (l.type === 'sun' ? 0 : 0.1),
-    });
+      radius: l.radius ?? (l.type === 'sun' || l.type === 'area' ? 0 : 0.1),
+    };
+    if (l.type === 'area') {
+      // World-space rect basis: local X/Y rotated by the light's world rotation.
+      const u = pose.rotation.rotate(new Vec3(1, 0, 0));
+      const v = pose.rotation.rotate(new Vec3(0, 1, 0));
+      snap.uAxis = [u.x, u.y, u.z];
+      snap.vAxis = [v.x, v.y, v.z];
+      snap.width = Math.max(AREA_MIN_SIZE, l.width ?? 1);
+      snap.height = Math.max(AREA_MIN_SIZE, l.height ?? 1);
+    }
+    lights.push(snap);
   }
 
   const tris = new Float32Array(triPos);
@@ -432,6 +462,11 @@ function buildCamera(scene: Scene, orbit: OrbitCamera): SnapCamera {
       right,
       up,
       fovY: cameraFovY(active.camera),
+      // F-Stop DoF (UR10-2 Part C): the physical thin-lens radius from the active
+      // camera's dof/fStop, times the empirical DOF_APERTURE_SCALE "feel" factor.
+      // 0 (pinhole) when DoF is off. The render window's manual aperture (init.ts)
+      // still overrides for the viewport-view case.
+      aperture: cameraLensRadius(active.camera) * DOF_APERTURE_SCALE,
     };
   }
   // Viewport OrbitCamera: derive an orthonormal basis from eye→target.

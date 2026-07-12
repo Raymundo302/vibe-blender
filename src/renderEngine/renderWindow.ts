@@ -1,4 +1,6 @@
 import './renderWindow.css';
+import { applyGlare } from './glare';
+import type { GlareSettings } from '../core/scene/objectData';
 
 /**
  * Reinhard tonemap + gamma 1/2.2 of an averaged path-tracer accumulation buffer
@@ -7,13 +9,35 @@ import './renderWindow.css';
  * (updateFrame below) and the headless Render-Animation path (animRender.ts) map
  * traced radiance to pixels identically — the "headless driver seam" the anim
  * renderer reuses instead of forking the tracer's presentation math.
+ *
+ * Camera Glare (UR10-2 Part B) plugs in HERE, once, for both F12 and Ctrl+F12:
+ * when `glare` is enabled the buffer is averaged into a linear HDR scratch, glare
+ * is applied on that TRUE HDR radiance (bright emissives >1 bloom), then tonemap
+ * runs. With no glare the original inline path is untouched (byte-identical to
+ * every existing render / animRender test).
  */
 export function tonemapAccumToRgba(
   accum: Float32Array,
   sample: number,
   out: Uint8ClampedArray,
+  glareOpts?: { width: number; height: number; glare: GlareSettings | null | undefined },
 ): void {
   const inv = sample > 0 ? 1 / sample : 1;
+  if (glareOpts && glareOpts.glare && glareOpts.glare.enabled) {
+    // Average → glare on linear HDR → tonemap. (Extra buffer only when glaring.)
+    const lin = new Float32Array(accum.length);
+    for (let i = 0; i < accum.length; i++) lin[i] = accum[i] * inv;
+    applyGlare(lin, glareOpts.width, glareOpts.height, glareOpts.glare);
+    for (let i = 0, j = 0; i < lin.length; i += 3, j += 4) {
+      let r = lin[i], g = lin[i + 1], b = lin[i + 2];
+      r = r / (r + 1); g = g / (g + 1); b = b / (b + 1); // Reinhard
+      out[j] = Math.min(255, Math.pow(r, 1 / 2.2) * 255);
+      out[j + 1] = Math.min(255, Math.pow(g, 1 / 2.2) * 255);
+      out[j + 2] = Math.min(255, Math.pow(b, 1 / 2.2) * 255);
+      out[j + 3] = 255;
+    }
+    return;
+  }
   for (let i = 0, j = 0; i < accum.length; i += 3, j += 4) {
     let r = accum[i] * inv;
     let g = accum[i + 1] * inv;
@@ -56,6 +80,9 @@ export class RenderWindow {
    */
   aperture = 0;
   focusDistance: number | null = null;
+  /** Active camera's Glare settings (UR10-2 Part B), set by init.ts before each
+   *  render. null → no glare (byte-identical presentation). */
+  glare: GlareSettings | null = null;
   /** Fired when the user clicks × (init.ts wires this to close+terminate). */
   onClose: () => void = () => {};
   /** Fired when aperture / focus distance change (init.ts re-renders). */
@@ -212,7 +239,8 @@ export class RenderWindow {
    */
   updateFrame(accum: Float32Array, sample: number, elapsedMs: number): void {
     this.sample = sample;
-    tonemapAccumToRgba(accum, sample, this.imageData.data);
+    tonemapAccumToRgba(accum, sample, this.imageData.data,
+      { width: this.width, height: this.height, glare: this.glare });
     this.ctx.putImageData(this.imageData, 0, 0);
     this.readout.textContent = `Sample ${sample} · ${(elapsedMs / 1000).toFixed(1)}s`;
   }

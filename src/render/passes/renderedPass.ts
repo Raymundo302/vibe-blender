@@ -24,9 +24,9 @@ export interface LightSet {
   directions: Float32Array;
   /** color × power, premultiplied per type (see collectLights). */
   energies: Float32Array;
-  /** 0 point, 1 sun, 2 spot. */
+  /** 0 point, 1 sun, 2 spot, 3 area. */
   types: Float32Array;
-  /** cos(inner), cos(outer) per light (spot cone). */
+  /** cos(inner), cos(outer) per light (spot cone); (width, height) for area. */
   spots: Float32Array;
 }
 
@@ -59,10 +59,16 @@ export function collectLights(scene: Scene): LightSet {
       [l.color[0] * l.power * scale, l.color[1] * l.power * scale, l.color[2] * l.power * scale],
       i * 3,
     );
-    set.types[i] = l.type === 'point' ? 0 : l.type === 'sun' ? 1 : 2;
+    set.types[i] = l.type === 'point' ? 0 : l.type === 'sun' ? 1 : l.type === 'spot' ? 2 : 3;
     const outer = l.spotAngle / 2;
     const inner = outer * (1 - l.spotBlend);
-    set.spots.set([Math.cos(inner), Math.cos(outer)], i * 2);
+    if (l.type === 'area') {
+      // Area lights reuse the spot vec2 slot to carry (width, height) so the
+      // shader can wrap N·L by the rect size (UR10-1). No cone math applies.
+      set.spots.set([l.width ?? 1, l.height ?? 1], i * 2);
+    } else {
+      set.spots.set([Math.cos(inner), Math.cos(outer)], i * 2);
+    }
   }
   return set;
 }
@@ -70,7 +76,9 @@ export function collectLights(scene: Scene): LightSet {
 /**
  * Which lights cast real-time shadows this frame: suns and spots in scene
  * order, up to `slots`. Returns their light indices; the array position IS the
- * shadow-map slot. Point lights are skipped (no cube maps in the viewport).
+ * shadow-map slot. Point lights are skipped (no cube maps in the viewport);
+ * area lights (type 3) are skipped too — the viewport area approximation has no
+ * shadow map in v1 (UR10-1), only cube/spot-map casters get one.
  */
 export function shadowCasterIndices(lights: LightSet, slots: number): number[] {
   const out: number[] = [];
@@ -140,8 +148,8 @@ uniform int u_lightCount;
 uniform vec3 u_lightPos[${MAX_LIGHTS}];
 uniform vec3 u_lightDir[${MAX_LIGHTS}];
 uniform vec3 u_lightEnergy[${MAX_LIGHTS}];
-uniform float u_lightType[${MAX_LIGHTS}]; // 0 point, 1 sun, 2 spot
-uniform vec2 u_spot[${MAX_LIGHTS}];       // cos(inner), cos(outer)
+uniform float u_lightType[${MAX_LIGHTS}]; // 0 point, 1 sun, 2 spot, 3 area
+uniform vec2 u_spot[${MAX_LIGHTS}];       // cos(inner), cos(outer); (w,h) for area
 
 // Shadow maps (units 4-7). u_shadowSlot[i] = which map light i casts through
 // (suns/spots, first-come), or -1 for no shadow. GLSL ES 3.0 forbids dynamic
@@ -165,6 +173,7 @@ uniform float u_metallic;
 uniform float u_roughness;
 uniform vec3 u_emissive;
 uniform int u_shadeless;   // 1 = output base/texture color directly (no BRDF)
+uniform float u_transmission; // UR10-3 glass: >0 → alpha-blend + Fresnel rim
 uniform vec3 u_ambient; // flat world-derived ambient (avg world color × strength × 0.3)
 uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
 uniform vec2 u_aoTexel;
@@ -288,20 +297,35 @@ void main() {
     if (i >= u_lightCount) break;
     vec3 L;
     vec3 radiance;
+    // Area lights (type 3, UR10-1) are approximated as a point light at the rect
+    // CENTER with a clamped-distance falloff plus an N·L WRAP scaled by the rect
+    // size (softens the terminator so a big soft light doesn't read as a hard
+    // point). NO shadow map (skipped in renderShadows) — this is the v1 stopgap
+    // until LTC. u_spot carries (width, height) for area lights.
+    float ndlWrap = 0.0;
     if (u_lightType[i] > 0.5 && u_lightType[i] < 1.5) { // sun
       L = -u_lightDir[i];
       radiance = u_lightEnergy[i];
     } else {
       vec3 toLight = u_lightPos[i] - v_worldPos;
-      float d2 = max(dot(toLight, toLight), 1e-4);
+      float minD2 = 1e-4;
+      if (u_lightType[i] > 2.5) { // area: clamp falloff + wrap by rect size
+        float sz = 0.5 * (u_spot[i].x + u_spot[i].y);
+        minD2 = max(minD2, sz * sz * 0.25);
+        ndlWrap = clamp(sz * 0.25, 0.0, 0.5);
+      }
+      float d2 = max(dot(toLight, toLight), minD2);
       L = toLight * inversesqrt(d2);
       radiance = u_lightEnergy[i] / d2;
-      if (u_lightType[i] > 1.5) { // spot cone falloff
+      if (u_lightType[i] > 1.5 && u_lightType[i] < 2.5) { // spot cone falloff
         float cd = dot(-L, u_lightDir[i]);
         radiance *= smoothstep(u_spot[i].y, u_spot[i].x, cd);
       }
     }
-    float NdotL = max(dot(N, L), 0.0);
+    float rawNdotL = dot(N, L);
+    float NdotL = ndlWrap > 0.0
+      ? max((rawNdotL + ndlWrap) / (1.0 + ndlWrap), 0.0)
+      : max(rawNdotL, 0.0);
     if (NdotL <= 0.0) continue;
     int slot = int(u_shadowSlot[i]);
     if (slot >= 0) {
@@ -327,11 +351,27 @@ void main() {
   }
   // SSAO darkens the lit result but never self-lit emission.
   color *= texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
-  color += u_emissive;
 
-  color = color / (color + vec3(1.0));   // Reinhard tonemap
+  color = color / (color + vec3(1.0));   // Reinhard tonemap (lit only)
   color = pow(color, vec3(1.0 / 2.2));   // gamma
-  outColor = vec4(color, 1.0);
+  // UR10-2 Part A: emission is added AFTER tonemap as HDR-ish — a glowing surface
+  // reads full-bright (emissive·strength clamps to white in the 8-bit viewport),
+  // and when Camera Glare (Part B) captures the frame to a float target its >1
+  // values survive so the bright-pass can bloom them.
+  color += u_emissive;
+  // UR10-3 glass approximation (viewport only — no refraction): a transmission
+  // material draws alpha-blended so whatever is behind shows through, with a
+  // view-angle (Fresnel) rim highlight so the silhouette reads as glass. alpha ≈
+  // 1 − 0.85·transmission at face-on, rising to fully opaque at the grazing rim;
+  // the rim also adds a bright specular sheen. Opaque materials (u_transmission
+  // 0) keep alpha 1 and no rim — byte-identical.
+  float alpha = 1.0;
+  if (u_transmission > 0.0) {
+    float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
+    alpha = mix(1.0 - 0.85 * u_transmission, 1.0, fres);
+    color += vec3(fres * u_transmission * 0.4);
+  }
+  outColor = vec4(color, alpha);
 }`;
 
 /** Forward PBR solid pass driven by the scene's light objects + materials. */
@@ -430,6 +470,7 @@ export class RenderedPass {
     );
     s.setInt('u_texKind', mat.texKind === 'checker' ? 1 : mat.texKind === 'image' ? 2 : 0);
     s.setInt('u_shadeless', mat.shadeless ? 1 : 0);
+    s.setFloat('u_transmission', mat.transmission ?? 0);
     s.setFloat('u_normStrength', mat.normalStrength);
   }
 

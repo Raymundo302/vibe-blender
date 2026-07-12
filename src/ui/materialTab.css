@@ -99,3 +99,35 @@
   flex: 1;
   min-width: 0;
 }
+
+/* UR10-3 glass: transmission slider + IOR + preset buttons */
+.material-tab-field input[type='range'].material-tab-transmission {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-field input[type='number'].material-tab-ior {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-tab-presets {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.material-tab-presets button {
+  flex: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  font: inherit;
+  color: #ddd;
+  background: #3a3a3a;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.material-tab-presets button:hover {
+  background: #484848;
+}

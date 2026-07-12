@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 12,
+  "version": 18,
   "camera": {
     "target": [
       -0.092805,
@@ -37905,7 +37905,9 @@
         "focalLength": 50,
         "near": 0.1,
         "far": 500,
-        "lockToView": false
+        "lockToView": false,
+        "dof": false,
+        "fStop": 2.8
       }
     },
     {

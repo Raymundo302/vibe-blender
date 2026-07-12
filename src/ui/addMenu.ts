@@ -18,6 +18,7 @@ const LIGHTS: { name: string; type: LightType }[] = [
   { name: 'Point', type: 'point' },
   { name: 'Sun', type: 'sun' },
   { name: 'Spot', type: 'spot' },
+  { name: 'Area', type: 'area' },
 ];
 
 /** How long the flyout lingers after the pointer leaves it (gap-forgiveness). */

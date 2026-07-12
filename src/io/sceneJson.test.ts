@@ -175,7 +175,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(15);
+    expect(parsed.version).toBe(18);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -329,6 +329,54 @@ describe('sceneJson format v3 lights / cameras / materials', () => {
     expect(spot.light!.power).toBe(250);
     expect(spot.light!.color).toEqual([0.2, 0.4, 0.9]);
     expect(spot.light!.spotAngle).toBeCloseTo((60 * Math.PI) / 180, 6);
+  });
+
+  it('round-trips an area light (UR10-1) with custom width/height, incl. id gaps', () => {
+    const src = new Scene();
+    src.add('Cube', makeCube());
+    const area = src.addLight('Area', 'area');
+    area.light!.width = 2.5;
+    area.light!.height = 0.75;
+    area.light!.power = 300;
+    // Introduce an id GAP: remove the cube so the only surviving object's id is
+    // non-contiguous — exercises the index-based re-id path on load.
+    const cube = src.objects.find((o) => o.kind === 'mesh')!;
+    src.remove(cube.id);
+
+    const s1 = serializeScene(src, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    const s2 = serializeScene(dst, new OrbitCamera());
+    expect(s2).toBe(s1); // byte-identical round trip
+
+    const loaded = dst.objects.find((o) => o.kind === 'light')!;
+    expect(loaded.light!.type).toBe('area');
+    expect(loaded.light!.width).toBeCloseTo(2.5, 6);
+    expect(loaded.light!.height).toBeCloseTo(0.75, 6);
+    expect(loaded.light!.power).toBe(300);
+  });
+
+  it('tolerant-loads an area light with missing width/height → 1×1', () => {
+    const scene = new Scene();
+    const raw = JSON.stringify({
+      format: 'vibe-blender-scene', version: 16,
+      camera: { target: [0, 0, 0], distance: 8, yaw: 0, pitch: 0 },
+      activeCameraId: null, materials: [],
+      objects: [{
+        id: 0, name: 'Area', kind: 'light', visible: true, shadeSmooth: false,
+        color: [0.69, 0.69, 0.69], materialId: null,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] },
+        mesh: { verts: [], faces: [] }, modifiers: [],
+        light: { type: 'area', color: [1, 1, 1], power: 100, spotAngle: 0.5, spotBlend: 0.1 },
+      }],
+    });
+    applySceneJson(raw, scene, new OrbitCamera());
+    const l = scene.objects[0].light!;
+    expect(l.type).toBe('area');
+    expect(l.width).toBe(1);
+    expect(l.height).toBe(1);
+    // Area lights have no sphere radius.
+    expect(l.radius).toBe(0);
   });
 
   it('restores camera payloads and remaps the active camera', () => {
@@ -796,7 +844,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(15);
+    expect(json.version).toBe(18);
   });
 
   it('round-trips a shadeless material', () => {
@@ -827,6 +875,53 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const dst = new Scene();
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
     expect(dst.materials[0].shadeless).toBe(false);
+  });
+});
+
+describe('sceneJson transmission / IOR (v18 / UR10-3)', () => {
+  it('round-trips a glass material', () => {
+    const scene = new Scene();
+    const cube = scene.add('Cube', makeCube());
+    const mat = scene.addMaterial('Glass');
+    mat.transmission = 1;
+    mat.ior = 1.52;
+    cube.materialId = mat.id;
+
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.materials[0].transmission).toBe(1);
+    expect(dst.materials[0].ior).toBe(1.52);
+  });
+
+  it('omits transmission / ior from the file when opaque (byte-identical)', () => {
+    const scene = new Scene();
+    scene.addMaterial('Lit'); // transmission defaults to 0
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    expect('transmission' in json.materials[0]).toBe(false);
+    expect('ior' in json.materials[0]).toBe(false);
+  });
+
+  it('clamps a wild IOR on load', () => {
+    const scene = new Scene();
+    const mat = scene.addMaterial('Diamondish');
+    mat.transmission = 0.5;
+    mat.ior = 9; // written clamped to 2.5 by the serializer
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.materials[0].ior).toBe(2.5);
+  });
+
+  it('tolerates absence (pre-v18 files) → transmission 0, ior 1.45', () => {
+    const scene = new Scene();
+    scene.addMaterial('Old');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    delete json.materials[0].transmission;
+    delete json.materials[0].ior;
+    json.version = 17;
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.materials[0].transmission).toBe(0);
+    expect(dst.materials[0].ior).toBe(1.45);
   });
 });
 
@@ -924,7 +1019,7 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
 
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(15);
+    expect(json.version).toBe(18);
     expect(json.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });
@@ -1016,5 +1111,51 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
     json.objects[0].html = { kind: 'nope', source: '<i/>' };
     expect(() => applySceneJson(JSON.stringify(json), new Scene(), new OrbitCamera())).toThrow(/html\.kind/);
+  });
+});
+
+describe('sceneJson camera DoF + Glare (v17 / UR10-2)', () => {
+  it('round-trips fStop / dof and a glare payload', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const cam = scene.addCamera('Cam');
+    cam.camera!.dof = true;
+    cam.camera!.fStop = 5.6;
+    cam.camera!.glare = { enabled: true, threshold: 1.2, strength: 0.75, radius: 0.08 };
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    const rc = dst.objects.find((o) => o.kind === 'camera')!.camera!;
+    expect(rc.dof).toBe(true);
+    expect(rc.fStop).toBeCloseTo(5.6, 6);
+    expect(rc.glare).toEqual({ enabled: true, threshold: 1.2, strength: 0.75, radius: 0.08 });
+    // Byte-identical re-serialize.
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+
+  it('a camera with no glare serializes without a glare key (pre-UR10-2 shape)', () => {
+    const scene = new Scene();
+    scene.addCamera('Cam');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    const camObj = json.objects.find((o: { kind: string }) => o.kind === 'camera');
+    expect(camObj.camera.glare).toBeUndefined();
+    expect(camObj.camera.dof).toBe(false);
+    expect(camObj.camera.fStop).toBeCloseTo(2.8, 6);
+  });
+
+  it('MIGRATION: a raw aperture loads as fStop = focal/(2000·aperture), DoF on', () => {
+    const scene = new Scene();
+    scene.addCamera('Cam');
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    const camObj = json.objects.find((o: { kind: string }) => o.kind === 'camera');
+    // Simulate an old save that stored a thin-lens aperture radius, no fStop/dof.
+    delete camObj.camera.fStop;
+    delete camObj.camera.dof;
+    camObj.camera.aperture = 0.02; // focal 50 → fStop = 50/(2000·0.02) = 1.25
+    const dst = new Scene();
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    const rc = dst.objects.find((o) => o.kind === 'camera')!.camera!;
+    expect(rc.dof).toBe(true);
+    expect(rc.fStop).toBeCloseTo(1.25, 6);
   });
 });
