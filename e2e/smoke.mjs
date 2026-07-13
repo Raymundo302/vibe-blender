@@ -109,8 +109,8 @@ try {
   const [dragX, dragY] = [cubeX + 100, cubeY]; // move target
   const status = () => evaluate('document.getElementById("status").textContent');
 
-  check('default cube exists and is selected',
-    await evaluate('window.__app.scene.objects.length === 1 && window.__app.scene.selection.has(window.__app.scene.objects[0].id)'));
+  check('default scene (Cube + Camera + Spot), cube selected',
+    await evaluate('window.__app.scene.objects.length === 3 && window.__app.scene.objects[0].name === "Cube" && window.__app.scene.selection.has(window.__app.scene.objects[0].id)'));
 
   const start = await pos();
   check('cube starts at origin', start.every((v) => v === 0), start.join(','));

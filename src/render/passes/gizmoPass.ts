@@ -53,8 +53,9 @@ export function gizmoScreenScale(eye: Vec3, origin: Vec3, fovY: number, k = 0.18
 }
 
 /** Model matrix placing a unit +X arrow onto `axis` at `origin`, scaled by `scale`. */
-export function gizmoModelMatrix(origin: Vec3, scale: number, axis: GizmoAxis): Mat4 {
+export function gizmoModelMatrix(origin: Vec3, scale: number, axis: GizmoAxis, orient: Mat4 = Mat4.identity()): Mat4 {
   return Mat4.translation(origin)
+    .mul(orient) // transform-orientation basis (identity = Global/world axes)
     .mul(Mat4.scaling(new Vec3(scale, scale, scale)))
     .mul(AXIS_ROT[axis]);
 }
@@ -149,14 +150,14 @@ export class GizmoPass {
    * the gizmo wins over everything. Uniform-color flat shading, no cull (the
    * cone/line are thin and viewed from all sides).
    */
-  render(viewProj: Mat4, origin: Vec3, scale: number): void {
+  render(viewProj: Mat4, origin: Vec3, scale: number, orient: Mat4 = Mat4.identity()): void {
     const gl = this.gl;
     this.shader.use();
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.DEPTH_TEST);
     gl.depthMask(true);
     for (const axis of GIZMO_AXES) {
-      const mvp = viewProj.mul(gizmoModelMatrix(origin, scale, axis));
+      const mvp = viewProj.mul(gizmoModelMatrix(origin, scale, axis, orient));
       const [r, g, b] = AXIS_COLOR[axis];
       this.shader.setMat4('u_mvp', mvp);
       this.shader.setVec4('u_color', r, g, b, 1);
@@ -247,12 +248,12 @@ export class GizmoPass {
    * Draw the fat pick boxes into the picking FBO (already bound & begun). Caller
    * clears the pick depth buffer first so handles win over objects behind them.
    */
-  renderPick(picking: PickingPass, viewProj: Mat4, origin: Vec3, scale: number): void {
+  renderPick(picking: PickingPass, viewProj: Mat4, origin: Vec3, scale: number, orient: Mat4 = Mat4.identity()): void {
     const gl = this.gl;
     gl.disable(gl.CULL_FACE);
     for (let i = 0; i < GIZMO_AXES.length; i++) {
       const axis = GIZMO_AXES[i];
-      picking.drawObject(viewProj.mul(gizmoModelMatrix(origin, scale, axis)), GIZMO_PICK_BASE + i);
+      picking.drawObject(viewProj.mul(gizmoModelMatrix(origin, scale, axis, orient)), GIZMO_PICK_BASE + i);
       this.pickBox.draw(gl.TRIANGLES);
     }
     gl.enable(gl.CULL_FACE);

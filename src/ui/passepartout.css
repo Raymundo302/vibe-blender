@@ -16,12 +16,23 @@
 
 .passepartout-mask {
   position: absolute;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.38); /* lighter dim — the scene stays readable outside the frame */
   pointer-events: none;
 }
 
 .passepartout-frame {
   position: absolute;
-  border: 1px solid var(--vb-border, #3d3d3d);
+  border: 1px dashed var(--vb-text-dim, #8a8a8a);
   pointer-events: none;
+}
+
+/* Thin clickable strips over the frame's 4 edges — clicking selects the active
+ * camera. pointer-events:auto only here; the frame interior stays interactive. */
+.passepartout-edge {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.passepartout-edge:hover {
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 30%, transparent);
 }

@@ -31,6 +31,7 @@ uniform vec2 u_aoTexel;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
+  if (!gl_FrontFacing) n = -n; // two-sided solid shading — light the back face too
   // Blender-studiolight-style rig: WRAPPED key + fill so shading rolls off
   // gently past the terminator, plus a hemispheric ambient. Hard N.L with a
   // small constant ambient left any face perpendicular to both lights nearly

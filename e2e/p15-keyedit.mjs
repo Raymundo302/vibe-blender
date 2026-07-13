@@ -99,7 +99,7 @@ runE2e(async (t) => {
   })()`);
   t.check('X deleted every channel at frame 24', anyAt24 === false);
   const objStillThere = await t.evaluate(`window.__app.scene.objects.length`);
-  t.check('X did NOT delete the object (timeline claimed the key)', objStillThere === 1, `objs=${objStillThere}`);
+  t.check('X did NOT delete the object (timeline claimed the key)', objStillThere === 3, `objs=${objStillThere}`);
 
   // Undo restores frame 24.
   await t.key('z', 'KeyZ', 2);

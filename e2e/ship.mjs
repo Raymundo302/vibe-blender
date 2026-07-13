@@ -19,7 +19,7 @@ runE2e(async (t) => {
   t.check('format + version are correct',
     parsed.format === 'vibe-blender-scene' && parsed.version === CURRENT_FORMAT_VERSION);
   t.check('the default Cube is serialized',
-    parsed.objects.length === 1 && parsed.objects[0].name === 'Cube');
+    parsed.objects.length === 3 && parsed.objects[0].name === 'Cube');
 
   // Mutate: move the cube and add a second object; also move the camera.
   const afterMutate = await t.evaluate(`(() => {
@@ -31,7 +31,7 @@ runE2e(async (t) => {
     return { count: scene.objects.length, x: scene.objects[0].transform.position.x };
   })()`);
   t.check('scene mutated (2 objects, cube moved)',
-    afterMutate.count === 2 && Math.abs(afterMutate.x - 5) < 1e-6);
+    afterMutate.count === 4 && Math.abs(afterMutate.x - 5) < 1e-6);
 
   // Push an undo entry so we can prove load clears history.
   await t.evaluate(`window.__app.undo.push({ name: 'dummy', undo() {}, redo() {} })`);
@@ -43,7 +43,7 @@ runE2e(async (t) => {
     return { count: scene.objects.length, name: cube.name,
              x: cube.transform.position.x, dist: window.__app.camera.distance };
   })()`);
-  t.check('apply restores object count', afterApply.count === 1);
+  t.check('apply restores object count', afterApply.count === 3);
   t.check('apply restores the Cube', afterApply.name === 'Cube');
   t.check('apply restores position', Math.abs(afterApply.x) < 1e-6);
   t.check('apply restores camera distance', Math.abs(afterApply.dist - 8) < 1e-6);
@@ -88,11 +88,11 @@ runE2e(async (t) => {
   // The four file actions collapsed into one "File ▾" popover; the standalone
   // Save/Open/Export/Import chips no longer exist.
   const openFileMenu = async () => {
-    await t.evaluate(`document.querySelector('.topbar-btn[data-action="file-menu"]').click()`);
+    await t.evaluate(`document.querySelector('[data-action="file-menu"]').click()`);
     await t.sleep(40);
   };
   t.check('File menu button present',
-    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="file-menu"]')`));
+    await t.evaluate(`!!document.querySelector('[data-action="file-menu"]')`));
   await openFileMenu();
   t.check('File menu opens a popover', await t.evaluate(`!!document.querySelector('.topbar-menu')`));
   for (const [action, label] of [['save-scene', 'Save'], ['open-scene', 'Open'],
@@ -800,8 +800,8 @@ runE2e(async (t) => {
   await t.reload();
   await t.sleep(200);
   // Fresh boot shows the default cube...
-  t.check('boot starts from the default single-Cube scene',
-    await t.evaluate('window.__app.scene.objects.length') === 1);
+  t.check('boot starts from the default scene (Cube + Camera + Spot)',
+    await t.evaluate('window.__app.scene.objects.length') === 3);
   // ...and the restore toast (autosave differs from default).
   t.check('restore toast appears when a differing autosave exists',
     await t.until(`!!document.querySelector('.restore-toast')`, 5000));
@@ -816,7 +816,7 @@ runE2e(async (t) => {
              names: scene.objects.map((o) => o.name) };
   })()`);
   t.check('Restore brings the mutation back (2 objects, cube at X=7)',
-    restored.count === 2 && Math.abs(restored.x - 7) < 1e-6 && restored.names.includes('Autosaved'));
+    restored.count === 4 && Math.abs(restored.x - 7) < 1e-6 && restored.names.includes('Autosaved'));
   t.check('toast is gone after Restore',
     await t.evaluate(`!document.querySelector('.restore-toast')`));
   t.check('Restore clears undo history',
@@ -842,7 +842,7 @@ runE2e(async (t) => {
              key: localStorage.getItem('vibe-blender-autosave') };
   })()`);
   t.check('Discard leaves the default cube scene (1 obj, Cube at origin)',
-    discarded.count === 1 && discarded.name === 'Cube' && Math.abs(discarded.x) < 1e-6);
+    discarded.count === 3 && discarded.name === 'Cube' && Math.abs(discarded.x) < 1e-6);
   t.check('Discard removes the autosave key', discarded.key === null);
   t.check('toast is gone after Discard',
     await t.evaluate(`!document.querySelector('.restore-toast')`));
@@ -885,7 +885,7 @@ runE2e(async (t) => {
     return { count: s.objects.length, sel: s.selection.size, activeVerts: s.activeObject.mesh.verts.size };
   })()`);
   t.check('P7-1 setup: 2 objects, both selected, active cube has 8 verts',
-    p71before.count === 2 && p71before.sel === 2 && p71before.activeVerts === 8);
+    p71before.count === 4 && p71before.sel === 2 && p71before.activeVerts === 8);
 
   // Ctrl+J merges the moved cube into the active cube.
   await t.key('j', 'KeyJ', 2); // ctrl+j
@@ -895,7 +895,7 @@ runE2e(async (t) => {
     return { count: s.objects.length, evalVerts: s.activeObject.evaluatedMesh().verts.size,
              status: document.getElementById('status').textContent };
   })()`);
-  t.check('Ctrl+J merges into a single object', p71joined.count === 1);
+  t.check('Ctrl+J merges into a single object', p71joined.count === 3);
   t.check('joined object evaluates to 16 verts (two cubes baked)', p71joined.evalVerts === 16);
   t.check('Ctrl+J reports a Join status', p71joined.status.includes('Joined'));
 
@@ -916,7 +916,7 @@ runE2e(async (t) => {
     return { count: s.objects.length, activeVerts: s.activeObject.mesh.verts.size,
              movedX: moved ? moved.transform.position.x : null };
   })()`);
-  t.check('Ctrl+Z restores 2 objects', p71undo.count === 2);
+  t.check('Ctrl+Z restores 2 objects', p71undo.count === 4);
   t.check('Ctrl+Z restores the active mesh to 8 verts', p71undo.activeVerts === 8);
   t.check('Ctrl+Z restores the moved cube at X=3', Math.abs(p71undo.movedX - 3) < 1e-6);
 
@@ -933,7 +933,7 @@ runE2e(async (t) => {
     c.transform = c.transform.withPosition(new c.transform.position.constructor(0, 0, 0));
     s.selectOnly(c.id);
   })()`);
-  const snapChip = () => t.evaluate(`(() => { const b = document.querySelector('[data-action="snap-toggle"]'); return b ? b.getAttribute('aria-pressed') : null; })()`);
+  const snapChip = () => t.evaluate(`(() => { const b = document.querySelector('.vh-snap'); return b ? String(b.classList.contains('vh-on')) : null; })()`);
   const cubePos = () => t.evaluate(`(() => { const p = window.__app.scene.objects[0].transform.position; return { x: p.x, y: p.y, z: p.z }; })()`);
   const isMul = (v, step = 0.5) => Math.abs(v / step - Math.round(v / step)) < 1e-6;
 

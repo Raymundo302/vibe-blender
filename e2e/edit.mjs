@@ -20,7 +20,7 @@ runE2e(async (t) => {
   t.check('Tab enters edit mode on the cube', (await mode()) === 'edit');
   t.check('defaults to vert select', (await editSel('e.elementMode')) === 'vert');
   t.check('topbar chip shows edit mode',
-    await t.evaluate(`document.querySelector('.topbar-chip').textContent.startsWith('Edit Mode')`));
+    await t.evaluate(`document.querySelector('.vh-mode').value === 'edit'`));
 
   await t.key('2', 'Digit2');
   t.check('2 switches to edge select', (await editSel('e.elementMode')) === 'edge');

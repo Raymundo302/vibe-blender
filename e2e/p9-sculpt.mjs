@@ -24,7 +24,7 @@ runE2e(async (t) => {
   await t.key('Escape', 'Escape', 0); // dismiss splash
   await t.sleep(80);
 
-  const chip = () => t.evaluate(`document.querySelector('.topbar-chip').textContent`);
+  const chip = () => t.evaluate(`window.__app.sculpt()`);
 
   // ------------------------------------------------------------------
   // Build a flat, finely subdivided plane on the y=0 plane (all vertex
@@ -82,7 +82,7 @@ runE2e(async (t) => {
   // ------------------------------------------------------------------
   await t.key('i', 'KeyI', 8); // Shift+I → inflate brush ON
   await t.sleep(80);
-  t.check('Shift+I turns on the Inflate brush (topbar chip)', (await chip()) === 'Sculpt · inflate');
+  t.check('Shift+I turns on the Inflate brush (topbar chip)', (await chip()) === 'inflate');
 
   const cId = await t.evaluate('window.__cId');
   const corners = await t.evaluate('window.__corners');
@@ -121,7 +121,7 @@ runE2e(async (t) => {
   // ------------------------------------------------------------------
   await t.key('g', 'KeyG', 8); // Shift+G → grab brush ON
   await t.sleep(80);
-  t.check('Shift+G switches to the Grab brush (topbar chip)', (await chip()) === 'Sculpt · grab');
+  t.check('Shift+G switches to the Grab brush (topbar chip)', (await chip()) === 'grab');
 
   const before = await t.evaluate(`(() => {
     const v = window.__app.scene.editObject.mesh.verts.get(${cId}).co; return { x: v.x, y: v.y, z: v.z };
@@ -152,7 +152,7 @@ runE2e(async (t) => {
   // ------------------------------------------------------------------
   await t.key('Tab', 'Tab', 0);
   await t.sleep(100);
-  t.check('Tab exits to Object Mode (brush cleared)', (await chip()) === 'Object Mode');
+  t.check('Tab exits to Object Mode (brush cleared)', (await t.evaluate(`!window.__app.scene.editMode && window.__app.sculpt() === 'none'`)) === true);
   t.check('editMode is null after Tab', (await t.evaluate('window.__app.scene.editMode')) === null);
 
   await t.evaluate(`window.__app.scene.selectOnly(window.__app.scene.objects.find(o => o.name === 'SculptPlane').id)`);

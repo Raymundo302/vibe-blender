@@ -63,7 +63,7 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 1); // Alt+Z
   await t.sleep(80);
   t.check('Alt+Z lights the topbar X-ray chip',
-    (await t.evaluate(`document.querySelector('[data-action="xray-toggle"]').classList.contains('topbar-btn-on')`)) === true);
+    (await t.evaluate(`document.querySelector('.vh-xray').classList.contains('vh-on')`)) === true);
 
   await t.evaluate(`window.__app.scene.editMode.clearSelection()`);
   await t.click(backVert.px, backVert.py, 'left', 0);
@@ -75,7 +75,7 @@ runE2e(async (t) => {
   await t.key('z', 'KeyZ', 1);
   await t.sleep(60);
   t.check('Alt+Z toggles the X-ray chip back off',
-    (await t.evaluate(`document.querySelector('[data-action="xray-toggle"]').classList.contains('topbar-btn-on')`)) === false);
+    (await t.evaluate(`document.querySelector('.vh-xray').classList.contains('vh-on')`)) === false);
 
   // ========================================================================
   // 2. Shift+E crease — drag sets crease > 0 on selected edges; Ctrl+Z clears.
@@ -113,6 +113,11 @@ runE2e(async (t) => {
   // ========================================================================
   // 3. Camera-to-view — Ctrl+Alt+Numpad0 snaps/creates the active camera.
   // ========================================================================
+  // The default scene now ships with a Camera; remove it so this section
+  // exercises the CREATE-from-nothing path it was written to test.
+  await t.evaluate(`(() => { const s = window.__app.scene;
+    for (const o of [...s.objects]) if (o.kind === 'camera') s.remove(o.id);
+  })()`);
   t.check('scene has no camera to start', (await t.evaluate('window.__app.scene.activeCamera')) === null);
 
   await t.key('0', 'Numpad0', 3); // Ctrl(2)+Alt(1) + Numpad0

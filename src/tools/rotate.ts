@@ -81,15 +81,22 @@ export class RotateOperator implements Operator {
 
   /** Recompute every target's transform from its `before` state. */
   private apply(ctx: OperatorContext): void {
+    // Axis in the active transform orientation (Global → world, Local/Normal →
+    // active object's basis); no lock → rotate about the view axis.
+    const oq = ctx.scene.orientationQuat();
     const axisDir =
-      this.axis === 'x' ? Vec3.X : this.axis === 'y' ? Vec3.Y : this.axis === 'z' ? Vec3.Z : ctx.camera.forward;
+      this.axis === 'x' ? oq.rotate(Vec3.X) : this.axis === 'y' ? oq.rotate(Vec3.Y) : this.axis === 'z' ? oq.rotate(Vec3.Z) : ctx.camera.forward;
     const numeric = this.numeric.value;
     const angle = numeric !== null ? (numeric * Math.PI) / 180 : this.pointerAngle;
     const q = Quat.fromAxisAngle(axisDir, angle);
 
+    // Individual Origins: each object rotates about its OWN origin (pivot = its
+    // own position → zero offset, so it spins in place).
+    const individual = ctx.scene.pivotMode === 'individual';
     for (const t of this.targets) {
-      const offset = t.beforeWorld.position.sub(this.pivot);
-      const pos = this.pivot.add(q.rotate(offset));
+      const pivot = individual ? t.beforeWorld.position : this.pivot;
+      const offset = t.beforeWorld.position.sub(pivot);
+      const pos = pivot.add(q.rotate(offset));
       const rot = q.mul(t.beforeWorld.rotation);
       writeWorldPosRot(t, pos, rot);
     }

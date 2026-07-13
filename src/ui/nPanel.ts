@@ -60,6 +60,7 @@ export class NPanel {
   private readonly viewBody: HTMLDivElement;
   private readonly lensInput: HTMLInputElement;
   private readonly ppInput: HTMLInputElement;
+  private readonly lockInput: HTMLInputElement;
   private readonly camSection: HTMLDivElement;
   private readonly camFocalInput: HTMLInputElement;
   private readonly camLocInputs: [HTMLInputElement, HTMLInputElement, HTMLInputElement];
@@ -226,6 +227,24 @@ export class NPanel {
     camHeading.className = 'properties-group-title';
     camHeading.textContent = 'Camera';
     this.camSection.appendChild(camHeading);
+
+    // Lock Camera to View — while ON, viewport navigation FLIES the through-camera
+    // (Blender's "Lock Camera to View"). Toggles the camera's own lockToView flag.
+    this.lockInput = document.createElement('input');
+    this.lockInput.type = 'checkbox';
+    this.lockInput.className = 'n-panel-check';
+    this.lockInput.dataset.action = 'lock-camera-to-view';
+    this.lockInput.addEventListener('change', () => {
+      const obj = this.cameraViewObject();
+      if (obj?.camera) obj.camera.lockToView = this.lockInput.checked;
+      this.updateView();
+    });
+    const lockRow = document.createElement('label');
+    lockRow.className = 'n-panel-check-row';
+    const lockLabel = document.createElement('span');
+    lockLabel.textContent = 'Lock Camera to View';
+    lockRow.append(this.lockInput, lockLabel);
+    this.camSection.appendChild(lockRow);
 
     this.camFocalInput = this.numberInput('cam-focal', 1, 300, 1);
     this.camFocalInput.addEventListener('change', () => {
@@ -502,6 +521,7 @@ export class NPanel {
       return;
     }
     this.camSection.style.display = '';
+    if (this.lockInput.checked !== !!obj.camera.lockToView) this.lockInput.checked = !!obj.camera.lockToView;
     const focused = document.activeElement instanceof HTMLInputElement
       && this.camSection.contains(document.activeElement);
     if (focused) return; // don't clobber a field mid-edit

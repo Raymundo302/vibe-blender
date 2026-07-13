@@ -1,0 +1,63 @@
+/* -------------------------------------------------- 3D Viewport area header */
+/* The viewport header spans the whole area header (between the "3D Viewport ▾"
+ * editor-type selector and the fullscreen/menu buttons). :has() scopes the
+ * flex-grow override to the viewport slot only — other editors keep the default
+ * right-aligned (margin-left:auto) header-extra behaviour. */
+.wsp-area-header-extra:has(.viewport-header) {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+}
+
+.viewport-header {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vh-left,
+.vh-center,
+.vh-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Flexible gaps push center to the middle and right group to the far edge. */
+.vh-spacer { flex: 1 1 auto; }
+
+.vh-select {
+  background: var(--vb-panel, #2b2b2b);
+  color: var(--vb-text, #d0d0d0);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 4px;
+  cursor: pointer;
+  max-width: 140px;
+}
+
+.vh-btn {
+  background: var(--vb-panel, #2b2b2b);
+  color: var(--vb-text, #d0d0d0);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vh-btn:hover {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+}
+.vh-btn.vh-on {
+  border-color: var(--vb-accent, #fe730f);
+  color: var(--vb-accent, #fe730f);
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 18%, var(--vb-panel, #2b2b2b));
+}

@@ -90,15 +90,26 @@ export function railGuideSegments(base: Vec3, rails: VertRails): { a: Vec3; b: V
 }
 
 /**
- * Slide a vert from its start position `base` by factor t. t > 0 moves toward
- * rail A's far vert by t × railLength; t < 0 toward rail B's by |t| × railLength.
- * t is NOT clamped to [-1, 1] (UR4-2): |t| > 1 extrapolates LINEARLY along the
- * rail's extension, past the far vert, collinearly. A missing rail for the
- * requested sign → the vert stays.
+ * Slide a vert from its start position `base` by factor t. With BOTH rails, t > 0
+ * moves toward rail A's far vert by t × railLength; t < 0 toward rail B's by
+ * |t| × railLength. t is NOT clamped to [-1, 1] (UR4-2): |t| > 1 extrapolates
+ * LINEARLY along the rail's extension, past the far vert, collinearly.
+ *
+ * A SINGLE-rail vert now slides BIDIRECTIONALLY along that rail's infinite line
+ * (UR4-slide-outward): with only rail A, `base + A.dir·(t·len)` for ALL t — t > 0
+ * toward the far vert, t < 0 OUTWARD past the base, away from the neighbour. With
+ * only rail B it mirrors: `base + B.dir·(-t·len)` for ALL t (t < 0 toward B's far,
+ * t > 0 outward), keeping B as the negative-t side. Zero rails → the vert stays.
  */
 export function slidePosition(base: Vec3, rails: VertRails, t: number): Vec3 {
-  if (t >= 0) return rails.a ? base.add(rails.a.dir.scale(t * rails.a.length)) : base;
-  return rails.b ? base.add(rails.b.dir.scale(-t * rails.b.length)) : base;
+  if (rails.a && rails.b) {
+    return t >= 0
+      ? base.add(rails.a.dir.scale(t * rails.a.length))
+      : base.add(rails.b.dir.scale(-t * rails.b.length));
+  }
+  if (rails.a) return base.add(rails.a.dir.scale(t * rails.a.length));
+  if (rails.b) return base.add(rails.b.dir.scale(-t * rails.b.length));
+  return base;
 }
 
 /**

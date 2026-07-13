@@ -63,6 +63,8 @@
   font-weight: 700;
   color: var(--vb-text, #d0d0d0);
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex: none;
 }
 .topbar-chip {
   padding: 2px 8px;
@@ -71,7 +73,11 @@
   background: var(--vb-panel, #2b2b2b);
   color: var(--vb-text-dim, #8a8a8a);
   font-size: 11px;
+  white-space: nowrap;
 }
+/* The brand + menu-bar cluster never shrinks its buttons or wraps its labels. */
+.topbar-cluster[data-cluster="cl-brand"] { flex: none; }
+.topbar-cluster[data-cluster="cl-brand"] .topbar-menu-btn { flex: none; }
 .topbar-chip-edit {
   border-color: var(--vb-accent, #fe730f);
   color: var(--vb-accent, #fe730f);
@@ -128,7 +134,8 @@
 
 /* UR14-1 item 18: dirty dot on Save. A small accent dot before the label when
  * the undo position differs from the last save/load. */
-.topbar-btn.topbar-dirty::before {
+.topbar-btn.topbar-dirty::before,
+.topbar-menu-btn.topbar-dirty::before {
   content: '';
   display: inline-block;
   width: 6px; height: 6px;
@@ -136,6 +143,24 @@
   border-radius: 50%;
   background: var(--vb-accent, #fe730f);
   vertical-align: middle;
+}
+
+/* Flat menu-bar buttons (File · Edit · Render · Window · Help) — borderless text
+ * that highlights on hover, distinct from the pill-shaped .topbar-btn chips. */
+.topbar-menu-btn {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--vb-text, #d0d0d0);
+  font: var(--vb-font);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.topbar-menu-btn:hover {
+  background: color-mix(in srgb, var(--vb-accent, #fe730f) 16%, transparent);
+  color: var(--vb-accent, #fe730f);
 }
 
 /* ------------------------------------------------------------- shell panels */
@@ -456,21 +481,34 @@
   pointer-events: none; user-select: none; opacity: 0.7;
 }
 
-/* --------------------------------------------------- modal-key hint bar (UR14-1) */
-/* One-line keymap strip along the viewport bottom that rewrites per context.
- * Muted, non-interactive — it never intercepts viewport pointers. */
-#hint-bar {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: 24px; line-height: 24px;
-  padding: 0 12px;
-  text-align: center;
+/* --------------------------------------------------- app status bar (UR-bottom) */
+/* Full-width footer at the very bottom of #app, taking its own space (not an
+ * overlay). Left: the modal-key hint strip; right: the running app version. */
+#statusbar {
+  display: flex; align-items: center; gap: 12px;
+  height: 26px; padding: 0 12px;
   font: var(--vb-font); font-size: 11px;
   color: var(--vb-text-dim, #8a8a8a);
-  background: rgba(20, 20, 20, 0.72);
+  background: var(--vb-panel, #262626);
   border-top: 1px solid var(--vb-border, #3d3d3d);
+  user-select: none;
+}
+#statusbar:empty { display: none; }
+
+/* Modal-key keymap strip (UR14-1) — now the left segment of the status bar; it
+ * rewrites per context. Non-interactive so it never intercepts pointers. */
+#hint-bar {
+  flex: 1 1 auto; min-width: 0;
+  text-align: left;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  pointer-events: none; user-select: none;
-  z-index: 15;
+  pointer-events: none;
+}
+
+/* Running version, pinned to the right end of the status bar. */
+#statusbar-version {
+  flex: none; margin-left: auto;
+  color: var(--vb-text, #d0d0d0); opacity: 0.85;
+  letter-spacing: 0.5px;
 }
 
 /* ------------------------------------------------------- one mode chip (UR14-1) */

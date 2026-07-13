@@ -106,14 +106,12 @@ runE2e(async (t) => {
   // --- Pivot dropdown -----------------------------------------------------
   t.check('pivotMode starts as median',
     (await t.evaluate(`window.__app.scene.pivotMode`)) === 'median');
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="pivot"]').click()`);
-  await t.sleep(120);
-  await t.evaluate(`document.querySelector('.topbar-menu-row[data-pivot="cursor"]').click()`);
+  await t.evaluate(`(() => { const s = document.querySelector('.vh-pivot'); s.value = 'cursor'; s.dispatchEvent(new Event('change')); })()`);
   await t.sleep(120);
   t.check('choosing 3D Cursor writes scene.pivotMode = cursor',
     (await t.evaluate(`window.__app.scene.pivotMode`)) === 'cursor');
-  t.check('pivot button label reflects the mode',
-    (await t.evaluate(`document.querySelector('.topbar-btn[data-action="pivot"]').textContent`)).includes('3D Cursor'));
+  t.check('pivot select reflects the mode',
+    (await t.evaluate(`document.querySelector('.vh-pivot').value`)) === 'cursor');
 
   // --- 💡 Lights master toggle -------------------------------------------
   // Add a second light so we exercise the all-on/all-off logic across many.

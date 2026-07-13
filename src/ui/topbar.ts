@@ -1,12 +1,10 @@
 import type { Scene } from '../core/scene/Scene';
-import { snapState } from '../core/snap';
-import { xrayState } from '../render/passes/elementPickPass';
-import { sculptState } from '../tools/sculptBrushes';
 import { openThemePicker } from './themePicker';
 import type { CursorOverlay } from './cursorOverlay';
 import { overlays, saveOverlayPrefs, type OverlayPrefs } from '../render/overlayPrefs';
 import { autoKeyState } from './timeline';
 import { setTip } from './tooltip';
+import { APP_VERSION } from '../version';
 import './overlaysMenu.css';
 
 /**
@@ -24,6 +22,9 @@ export interface TopbarActions {
   toggleRender(): void;
   /** Open the Render Animation modal (WebM / PNG-sequence export, Ctrl+F12). */
   toggleRenderAnimation(): void;
+  /** Undo / redo the last command (Edit menu; mirrors Ctrl+Z / Ctrl+Shift+Z). */
+  undo(): void;
+  redo(): void;
 }
 
 /**
@@ -37,10 +38,6 @@ export interface TopbarActions {
  */
 export class Topbar {
   private readonly statusEl: HTMLSpanElement;
-  private readonly chipEl: HTMLSpanElement;
-  private readonly snapEl: HTMLButtonElement;
-  private readonly xrayEl: HTMLButtonElement;
-  private readonly pivotEl: HTMLButtonElement;
   private readonly lightsEl: HTMLButtonElement;
   private readonly autoKeyEl: HTMLButtonElement;
   private readonly fileEl: HTMLButtonElement;
@@ -59,42 +56,12 @@ export class Topbar {
     title.className = 'topbar-title';
     title.textContent = 'Vibe Blender';
 
-    const chip = document.createElement('span');
-    chip.className = 'topbar-chip';
-    this.chipEl = chip;
-
-    // Snap chip: 🧲 magnet toggling grid snapping (also Shift+Tab). Clickable;
-    // its highlighted state mirrors snapState.enabled (updated every frame).
-    const snap = Topbar.makeButton('🧲 Snap', 'snap-toggle', () => {
-      snapState.enabled = !snapState.enabled;
-      this.update();
-    });
-    setTip(snap, 'Grid snapping', 'Shift+Tab');
-    this.snapEl = snap;
-
-    // X-ray chip: select-through toggle (also Alt+Z). Highlighted state mirrors
-    // xrayState.enabled (updated every frame).
-    const xray = Topbar.makeButton('👓 X-ray', 'xray-toggle', () => {
-      xrayState.enabled = !xrayState.enabled;
-      this.update();
-    });
-    setTip(xray, 'X-ray / select-through', 'Alt+Z');
-    this.xrayEl = xray;
-
     // Overlays dropdown (P12-2): a checkbox popover toggling viewport
     // decorations (grid / origin points / icons / frustums / 3D cursor).
     const overlaysBtn = Topbar.makeButton('⬒ Overlays', 'overlays', () => {
       this.toggleOverlaysMenu(overlaysBtn);
     });
     setTip(overlaysBtn, 'Viewport overlays');
-
-    // Pivot dropdown (P12-2): median point ↔ 3D cursor. A viewport setting
-    // (like shading mode) — writes scene.pivotMode, never undoable.
-    const pivot = Topbar.makeButton('Pivot: Median ▾', 'pivot', () => {
-      this.togglePivotMenu(pivot);
-    });
-    setTip(pivot, 'Transform pivot point');
-    this.pivotEl = pivot;
 
     // 💡 Lights toggle (P12-2): flips visibility on ALL light objects at once.
     // Off if any light is on (turn them all off), else turn them all on. Not
@@ -116,13 +83,21 @@ export class Topbar {
     setTip(autoKey, 'Auto-Keying: insert keyframes on transform');
     this.autoKeyEl = autoKey;
 
-    // UR14-2 item 5: Save / Open / Import OBJ / Export OBJ collapse into ONE
-    // "File ▾" menu button (the topbar popover pattern, like Overlays/Pivot).
-    // The dirty dot (UR14-1 item 18) moves onto this button — it's now the home
-    // for save-state.
-    const fileBtn = Topbar.makeButton('File ▾', 'file-menu', () => this.toggleFileMenu(fileBtn));
+    // Blender-style top menu bar (File · Edit · Render · Window · Help), pinned
+    // to the far left. Each is a dropdown built with the shared popover machinery
+    // (like Overlays/Pivot). The dirty dot (UR14-1 item 18) lives on File — the
+    // home for save-state.
+    const fileBtn = Topbar.makeMenuButton('File', 'file-menu', () => this.toggleFileMenu(fileBtn));
     setTip(fileBtn, 'File — Save / Open / Import / Export');
     this.fileEl = fileBtn;
+    const editBtn = Topbar.makeMenuButton('Edit', 'edit-menu', () => this.toggleEditMenu(editBtn));
+    setTip(editBtn, 'Edit — Undo / Redo');
+    const renderMenuBtn = Topbar.makeMenuButton('Render', 'render-menu', () => this.toggleRenderMenu(renderMenuBtn));
+    setTip(renderMenuBtn, 'Render — Image / Animation');
+    const windowBtn = Topbar.makeMenuButton('Window', 'window-menu', () => this.toggleWindowMenu(windowBtn));
+    setTip(windowBtn, 'Window — Fullscreen / Theme');
+    const helpMenuBtn = Topbar.makeMenuButton('Help', 'help-menu', () => this.toggleHelpMenu(helpMenuBtn));
+    setTip(helpMenuBtn, 'Help — Shortcuts / About');
 
     // 🎬 opens the path-traced render window. Also bound to F12, but browsers
     // reserve F12 for devtools, so the button is the reliable entry point.
@@ -145,20 +120,23 @@ export class Topbar {
     const spacer = document.createElement('div');
     spacer.className = 'topbar-spacer';
 
-    // UR14-2 item 5: four visually separated clusters (spacing + hairline).
-    //   [Workspace tabs] · [Mode + viewport toggles] · [File] · [Render]
+    // Visually separated clusters (spacing + hairline):
+    //   [Brand + menu bar] · [Workspace tabs] · [Mode + toggles] · [Render]
     //   … spacer … [status] · [theme / help]
-    // The workspace tab strip is injected into the first cluster by mountTabs().
-    const clWorkspace = Topbar.cluster('cl-workspace', title);
-    const clView = Topbar.cluster('cl-view', chip, snap, xray, overlaysBtn, pivot, lights, autoKey);
-    const clFile = Topbar.cluster('cl-file', fileBtn);
+    // The menu bar (File/Edit/Render/Window/Help) sits on the far left next to
+    // the title; the workspace tab strip is injected into cl-tabs by mountTabs().
+    const clBrand = Topbar.cluster('cl-brand', title, fileBtn, editBtn, renderMenuBtn, windowBtn, helpMenuBtn);
+    const clTabs = Topbar.cluster('cl-tabs');
+    // Mode chip, Snap, X-ray and Pivot moved into the 3D Viewport header
+    // (viewportHeader.ts); the topbar keeps the scene-wide toggles.
+    const clView = Topbar.cluster('cl-view', overlaysBtn, lights, autoKey);
     const clRender = Topbar.cluster('cl-render', renderBtn, renderAnimBtn);
     const clRight = Topbar.cluster('cl-right', themeBtn, helpBtn);
 
     root.append(
-      clWorkspace, Topbar.sep(),
+      clBrand, Topbar.sep(),
+      clTabs, Topbar.sep(),
       clView, Topbar.sep(),
-      clFile, Topbar.sep(),
       clRender,
       spacer, this.statusEl, Topbar.sep(),
       clRight,
@@ -182,11 +160,12 @@ export class Topbar {
     return el;
   }
 
-  /** Insert the workspace tab strip into the first cluster, after the title. */
+  /** Insert the workspace tab strip into its dedicated cluster (right of the
+   *  brand + menu bar). */
   mountTabs(tabs: HTMLElement): void {
     const root = document.getElementById('topbar') as HTMLElement;
-    const title = root.querySelector('.topbar-title');
-    title?.after(tabs);
+    const clTabs = root.querySelector('[data-cluster="cl-tabs"]');
+    clTabs?.appendChild(tabs);
   }
 
   // --- UR14-2 File menu ------------------------------------------------------
@@ -218,6 +197,70 @@ export class Topbar {
       });
       root.appendChild(btn);
     }
+  }
+
+  /** Shared label→action dropdown builder for the Edit / Render / Window / Help
+   *  menus (File keeps its own so its per-row action ids stay stable). Each row
+   *  fires its `run` then closes the menu; `disabled` greys a row out. */
+  private simpleMenu(
+    anchor: HTMLElement,
+    heading: string,
+    items: { label: string; action: string; run: () => void; disabled?: boolean }[],
+  ): void {
+    if (this.openMenu) { this.openMenu.close(); return; }
+    const root = this.popover(anchor);
+    const h = document.createElement('div');
+    h.className = 'topbar-menu-heading';
+    h.textContent = heading;
+    root.appendChild(h);
+    for (const it of items) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'topbar-menu-row';
+      btn.dataset.action = it.action;
+      btn.textContent = it.label;
+      if (it.disabled) btn.disabled = true;
+      btn.addEventListener('click', () => { this.openMenu?.close(); it.run(); });
+      root.appendChild(btn);
+    }
+  }
+
+  /** Edit menu: Undo / Redo (mirrors Ctrl+Z / Ctrl+Shift+Z). */
+  private toggleEditMenu(anchor: HTMLElement): void {
+    this.simpleMenu(anchor, 'Edit', [
+      { label: 'Undo', action: 'edit-undo', run: () => this.actions.undo() },
+      { label: 'Redo', action: 'edit-redo', run: () => this.actions.redo() },
+    ]);
+  }
+
+  /** Render menu: still image (F12) / animation (Ctrl+F12). */
+  private toggleRenderMenu(anchor: HTMLElement): void {
+    this.simpleMenu(anchor, 'Render', [
+      { label: 'Render Image', action: 'render-image', run: () => this.actions.toggleRender() },
+      { label: 'Render Animation', action: 'render-anim', run: () => this.actions.toggleRenderAnimation() },
+    ]);
+  }
+
+  /** Window menu: browser fullscreen + theme picker. */
+  private toggleWindowMenu(anchor: HTMLElement): void {
+    this.simpleMenu(anchor, 'Window', [
+      { label: 'Toggle Fullscreen', action: 'toggle-fullscreen', run: () => Topbar.toggleFullscreen() },
+      { label: 'Theme…', action: 'open-theme', run: () => openThemePicker(anchor) },
+    ]);
+  }
+
+  /** Help menu: keyboard shortcuts + an About row carrying the version. */
+  private toggleHelpMenu(anchor: HTMLElement): void {
+    this.simpleMenu(anchor, 'Help', [
+      { label: 'Keyboard Shortcuts', action: 'help-shortcuts', run: () => this.actions.toggleHelp() },
+      { label: `About — Vibe Blender v${APP_VERSION}`, action: 'help-about', run: () => this.actions.toggleHelp() },
+    ]);
+  }
+
+  /** Enter/exit browser fullscreen (best-effort; ignored where unsupported). */
+  private static toggleFullscreen(): void {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void document.documentElement.requestFullscreen().catch(() => {});
   }
 
   // --- P12-2 dropdowns -------------------------------------------------------
@@ -295,33 +338,6 @@ export class Topbar {
     }
   }
 
-  private togglePivotMenu(anchor: HTMLElement): void {
-    if (this.openMenu) { this.openMenu.close(); return; }
-    const root = this.popover(anchor);
-    const heading = document.createElement('div');
-    heading.className = 'topbar-menu-heading';
-    heading.textContent = 'Pivot Point';
-    root.appendChild(heading);
-
-    const options: [Scene['pivotMode'], string][] = [
-      ['median', 'Median Point'],
-      ['cursor', '3D Cursor'],
-    ];
-    for (const [mode, label] of options) {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'topbar-menu-row' + (this.scene.pivotMode === mode ? ' topbar-menu-active' : '');
-      btn.dataset.pivot = mode;
-      btn.textContent = (this.scene.pivotMode === mode ? '✓ ' : '') + label;
-      btn.addEventListener('click', () => {
-        this.scene.pivotMode = mode; // viewport setting — no undo entry
-        this.openMenu?.close();
-        this.update();
-      });
-      root.appendChild(btn);
-    }
-  }
-
   /** Flip visibility on every light: all off if any is on, else all on. */
   private toggleAllLights(): void {
     const lights = this.scene.objects.filter((o) => o.kind === 'light');
@@ -333,6 +349,17 @@ export class Topbar {
   private static makeButton(label: string, action: string, onClick: () => void): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.className = 'topbar-btn';
+    btn.dataset.action = action;
+    btn.textContent = label;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  /** A flat menu-bar button (File/Edit/Render/Window/Help) — borderless text, not
+   *  the pill-shaped chip that {@link makeButton} produces. */
+  private static makeMenuButton(label: string, action: string, onClick: () => void): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.className = 'topbar-menu-btn';
     btn.dataset.action = action;
     btn.textContent = label;
     btn.addEventListener('click', onClick);
@@ -359,16 +386,9 @@ export class Topbar {
   update(): void {
     const active = this.scene.activeObject;
     const count = this.scene.objects.length;
-    const edit = this.scene.editMode;
-    // A sculpt brush is a tool overlay inside Edit Mode — the chip reflects it.
-    const sculpt = edit && sculptState.tool !== 'none' ? sculptState.tool : null;
-    const mode = edit
-      ? sculpt ? `Sculpt · ${sculpt}` : `Edit Mode · ${edit.elementMode}`
-      : 'Object Mode';
-    const pivot = this.scene.pivotMode;
     const lights = this.scene.objects.filter((o) => o.kind === 'light');
     const lightsOn = lights.some((l) => l.visible);
-    const sig = `${active ? active.name : ''}#${count}#${mode}#${snapState.enabled}#${xrayState.enabled}#${pivot}#${lightsOn}#${autoKeyState.enabled}`;
+    const sig = `${active ? active.name : ''}#${count}#${lightsOn}#${autoKeyState.enabled}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
@@ -377,16 +397,9 @@ export class Topbar {
     this.autoKeyEl.setAttribute('aria-pressed', String(autoKeyState.enabled));
     this.autoKeyEl.style.color = autoKeyState.enabled ? '#ff3b30' : '';
 
-    this.pivotEl.textContent = pivot === 'cursor' ? 'Pivot: 3D Cursor ▾' : 'Pivot: Median ▾';
     this.lightsEl.classList.toggle('topbar-btn-on', lightsOn);
     this.lightsEl.setAttribute('aria-pressed', String(lightsOn));
 
-    this.chipEl.textContent = mode;
-    this.chipEl.classList.toggle('topbar-chip-edit', !!edit);
-    this.snapEl.classList.toggle('topbar-btn-on', snapState.enabled);
-    this.snapEl.setAttribute('aria-pressed', String(snapState.enabled));
-    this.xrayEl.classList.toggle('topbar-btn-on', xrayState.enabled);
-    this.xrayEl.setAttribute('aria-pressed', String(xrayState.enabled));
     const noun = count === 1 ? 'object' : 'objects';
     this.statusEl.textContent = active
       ? `${active.name} — ${count} ${noun}`

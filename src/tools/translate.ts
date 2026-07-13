@@ -55,8 +55,12 @@ export class TranslateOperator implements Operator {
 
     if (!this.axis) return rayPlane(ray, this.pivot, forward);
 
-    // Axis lock: use the plane containing the axis that faces the camera most
-    const axisDir = this.axis === 'x' ? Vec3.X : this.axis === 'y' ? Vec3.Y : Vec3.Z;
+    // Axis lock: use the plane containing the axis that faces the camera most.
+    // The axis is taken in the active transform orientation (Global → world,
+    // Local/Normal → the active object's basis), so a locked drag / gizmo handle
+    // follows the oriented axis.
+    const oq = ctx.scene.orientationQuat();
+    const axisDir = this.axis === 'x' ? oq.rotate(Vec3.X) : this.axis === 'y' ? oq.rotate(Vec3.Y) : oq.rotate(Vec3.Z);
     const planeNormal = axisDir.cross(forward).cross(axisDir).normalize();
     const hit = rayPlane(ray, this.pivot, planeNormal);
     if (!hit) return null;

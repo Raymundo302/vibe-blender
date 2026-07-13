@@ -4,6 +4,12 @@ import { Scene } from './core/scene/Scene';
 import { OrbitCamera } from './camera/OrbitCamera';
 import { UndoStack } from './core/undo/UndoStack';
 import { makeCube } from './core/mesh/primitives';
+import { cameraTransformFromView, quatFromBasis } from './tools/cameraToView';
+import { Vec3 } from './core/math/vec3';
+import { Transform } from './core/math/transform';
+import { configureRigFromCamera } from './input/InputManager';
+import { cameraFovY } from './core/scene/objectData';
+import { APP_VERSION } from './version';
 import { InputManager } from './input/InputManager';
 import { WorkspaceManager, type EditorFactory, type WorkspaceConfig } from './ui/workspace';
 import { OutlinerPanel } from './ui/outliner';
@@ -39,6 +45,7 @@ import { loadOverlayPrefs, overlays } from './render/overlayPrefs';
 import { loadShadePrefs, shadePrefs } from './render/shadePrefs';
 import { ShadingMenu } from './ui/shadingMenu';
 import './ui/shadingMenu.css';
+import { ViewportHeader } from './ui/viewportHeader';
 import { Splash } from './ui/splash';
 import { HintBar } from './ui/hintBar';
 import { ModeChip } from './ui/modeChip';
@@ -51,6 +58,7 @@ import { exportObj, parseObj } from './io/obj';
 import { EditableMesh } from './core/mesh/EditableMesh';
 import { AddObjectsCommand } from './core/undo/objectCommands';
 import { createNodesApi } from './core/nodes/api';
+import { sculptState } from './tools/sculptBrushes';
 import type { OperatorContext } from './core/operator/Operator';
 import './ui/theme.css';
 import { applyStoredTheme } from './ui/themes';
@@ -69,6 +77,9 @@ const renderer = new Renderer(ctx);
 // hands its element to whichever area hosts the 3D viewport).
 const shadingMenu = new ShadingMenu(renderer);
 const scene = new Scene();
+// Full viewport header (mode · orientation · pivot · snap · x-ray · shading);
+// wraps the shading menu and is handed to the viewport editor as its headerExtra.
+const viewportHeader = new ViewportHeader(scene, shadingMenu);
 const camera = new OrbitCamera();
 const undo = new UndoStack();
 
@@ -80,8 +91,15 @@ const undo = new UndoStack();
 let savedUndoPosition = undo.position;
 function markClean(): void { savedUndoPosition = undo.position; }
 
-// The classic starting scene
+// The classic starting scene: a cube, a camera framing the default viewport
+// view, and a spot light — so the scene already has something to look at /
+// render (Numpad0 through the camera, F12) the moment it opens.
 const cube = scene.add('Cube', makeCube());
+const startCamera = scene.addCamera('Camera');
+startCamera.transform = cameraTransformFromView(camera.eye, camera.forward, Vec3.Z);
+const spot = scene.addLight('Spot', 'spot');
+const spotPos = new Vec3(4, -4, 6); // upper-front-right, Blender-ish key light
+spot.transform = cameraTransformFromView(spotPos, spotPos.scale(-1).normalize(), Vec3.Z);
 scene.selectOnly(cube.id);
 
 const opCtx: OperatorContext = {
@@ -252,9 +270,15 @@ const inputManager = new InputManager(canvas, opCtx, renderer, { save: saveScene
 // lives inside #viewport-wrap; updated in the frame loop below.
 const toolbar = new Toolbar(viewportWrap, scene, undo, inputManager, opCtx.setStatus);
 
-// Modal-key hint bar (UR14-1 item 1) + one mode chip (item 15). Both live inside
-// #viewport-wrap, are non-interactive, and re-read state every frame.
-const hintBar = new HintBar(viewportWrap, scene, inputManager);
+// Modal-key hint bar (UR14-1 item 1) now lives in the full-width bottom status
+// bar (#statusbar), left segment; the running version pins to its right.
+const statusbar = document.getElementById('statusbar') as HTMLElement;
+const hintBar = new HintBar(statusbar, scene, inputManager);
+const versionEl = document.createElement('span');
+versionEl.id = 'statusbar-version';
+versionEl.textContent = `Vibe Blender v${APP_VERSION}`;
+statusbar.appendChild(versionEl);
+// The mode chip stays a viewport overlay (item 15), re-read state every frame.
 const modeChip = new ModeChip(viewportWrap, scene, renderer);
 
 // Orientation gizmo (UR14-4 item 14): top-right axis widget that tracks the
@@ -366,12 +390,12 @@ const editorFactories: EditorFactory[] = [
     type: 'viewport',
     title: '3D Viewport',
     singleton: true,
-    // The shading dropdown lives on the RIGHT side of the viewport's area
-    // header (Blender's shading popover) and travels with the editor.
+    // Full Blender-style viewport header (mode · orientation · pivot · snap ·
+    // x-ray · shading), spanning the area header and travelling with the editor.
     create: () => ({
       element: viewportWrap,
-      headerExtra: shadingMenu.element,
-      update: () => shadingMenu.update(),
+      headerExtra: viewportHeader.element,
+      update: () => viewportHeader.update(),
     }),
   },
   {
@@ -472,6 +496,8 @@ const topbar = new Topbar(scene, {
   toggleHelp: () => helpOverlay.toggle(),
   toggleRender: () => renderEngine.toggle(),
   toggleRenderAnimation: () => animRender.toggle(),
+  undo: () => { const n = undo.undo(); opCtx.setStatus(n ? `Undo: ${n}` : 'Nothing to undo'); },
+  redo: () => { const n = undo.redo(); opCtx.setStatus(n ? `Redo: ${n}` : 'Nothing to redo'); },
 }, cursorOverlay);
 topbar.mountTabs(workspaces.createTabs());
 
@@ -537,6 +563,9 @@ topbar.mountTabs(workspaces.createTabs());
     saveNow: () => autosave.saveNow(),
     clear: () => autosave.clear(),
   },
+  // Active sculpt brush ('none' when not sculpting) — e2e hook (the sculpt name
+  // used to live in the topbar chip, now moved out; see viewportHeader).
+  sculpt: () => sculptState.tool,
   io: {
     serialize: () => serializeScene(scene, camera),
     apply: (json: string) => loadSceneJson(json),
@@ -545,9 +574,49 @@ topbar.mountTabs(workspaces.createTabs());
   },
 };
 
+// --- Camera view input sync -------------------------------------------------
+// While looking through a camera (Numpad0), the renderer draws from that camera
+// (Renderer.resolveView), but every input path — picking, the 3D cursor, and
+// G/R/S transforms — unprojects through `camera` (the OrbitCamera). Without this
+// they disagree the moment the user has orbited away from the camera: the cursor
+// lands nowhere near the mouse and moves don't follow it. Sync the OrbitCamera's
+// pose + effective FOV to the active camera's frame each tick so they agree.
+// The render ignores `camera` in camera view, so this has NO visual effect on
+// the image — only on input. Navigation never orbits `camera` while in camera
+// view (it flies the camera or exits first — see InputManager), so we never
+// fight the user; we save/restore only the FOV so exiting keeps the user's lens.
+let camViewPrevId: number | null = null;
+let camViewSavedFovY = camera.fovY;
+function syncInputCameraToView(): void {
+  const id = renderer.cameraViewId;
+  if (id !== camViewPrevId) {
+    if (id !== null && camViewPrevId === null) camViewSavedFovY = camera.fovY; // entering
+    else if (id === null) camera.fovY = camViewSavedFovY;                      // exiting
+    camViewPrevId = id;
+  }
+  if (id === null) return;
+  const camObj = scene.get(id);
+  if (!camObj || camObj.kind !== 'camera' || !camObj.camera) return;
+  // Pose from the central world matrix (respects parenting + Look At), so input
+  // aims exactly like the through-camera view.
+  const m = scene.cameraWorldMatrix(camObj).m;
+  const pos = new Vec3(m[12], m[13], m[14]);
+  const rot = quatFromBasis(new Vec3(m[0], m[1], m[2]), new Vec3(m[4], m[5], m[6]), new Vec3(m[8], m[9], m[10]));
+  configureRigFromCamera(camera, new Transform(pos, rot));
+  // Effective vertical FOV so OrbitCamera.projMatrix(canvasAspect) matches the
+  // renderer's letterboxed camera frame (cameraFrameProjMatrix) — pointer rays
+  // then line up with the rendered frame exactly, letterbox/pillarbox included.
+  const rs = scene.renderSettings;
+  const canvasAspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+  const renderAspect = rs.height > 0 ? rs.width / rs.height : canvasAspect;
+  const sy = renderAspect > canvasAspect ? canvasAspect / renderAspect : 1;
+  camera.fovY = 2 * Math.atan(Math.tan(cameraFovY(camObj.camera) / 2) / sy);
+}
+
 function frame(): void {
   htmlDriver.tick();
   textDriver.tick();
+  syncInputCameraToView();
   renderer.render(scene, camera);
   workspaces.update();
   topbar.update();

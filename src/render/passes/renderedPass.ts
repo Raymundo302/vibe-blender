@@ -247,6 +247,7 @@ float cubeShadowFactor(int slot, vec3 lightPos, float NdotL) {
 
 void main() {
   vec3 N = normalize(v_normal);
+  if (!gl_FrontFacing) N = -N; // two-sided solid shading — light the back face too
   vec3 V = normalize(u_eye - v_worldPos);
 
   // P13: perturb N by the normal/bump map using a screen-space-derivative TBN

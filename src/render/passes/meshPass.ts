@@ -29,6 +29,7 @@ uniform vec2 u_aoTexel;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(v_viewNormal);
+  if (!gl_FrontFacing) n = -n; // two-sided solid shading — light the back face too
   vec2 uv = n.xy * 0.495 + 0.5;
   float ao = texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
   outColor = vec4(texture(u_matcap, uv).rgb * 2.0 * u_color * v_tint * ao, 1.0);

@@ -21,9 +21,10 @@ runE2e(async (t) => {
   await t.key('Escape', 'Escape', 0); // dismiss splash
   t.check('app booted', await t.until('!!window.__app'));
 
-  // Default scene: one cube at the origin, selected.
+  // Default scene: Cube + Camera + Spot; the cube (objects[0]) is selected.
   t.check('default cube exists and is selected', await t.evaluate(
-    'window.__app.scene.objects.length === 1 && ' +
+    'window.__app.scene.objects.length === 3 && ' +
+    'window.__app.scene.objects[0].name === "Cube" && ' +
     'window.__app.scene.selection.has(window.__app.scene.objects[0].id)'));
 
   const rect = await t.evaluate(

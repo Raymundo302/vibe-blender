@@ -45,6 +45,14 @@ export function captureWorldTargets(scene: Scene, objects: SceneObject[]): World
  */
 export function transformPivot(scene: Scene, targets: WorldTarget[]): Vec3 {
   if (scene.pivotMode === 'cursor') return scene.cursor;
+  // Active Element: pivot on the active (last-selected) object — it acts as a
+  // temporary parent for the rest of the selection.
+  if (scene.pivotMode === 'active') {
+    const at = targets.find((t) => t.object.id === scene.activeId);
+    if (at) return at.beforeWorld.position;
+  }
+  // Median (and the shared fallback for Individual Origins — the per-object
+  // pivot for 'individual' is applied inside the rotate/scale operators).
   let sum = Vec3.ZERO;
   for (const t of targets) sum = sum.add(t.beforeWorld.position);
   return targets.length ? sum.scale(1 / targets.length) : Vec3.ZERO;

@@ -2,6 +2,7 @@ import { EditableMesh } from '../mesh/EditableMesh';
 import { Transform } from '../math/transform';
 import { Mat4 } from '../math/mat4';
 import { Vec3 } from '../math/vec3';
+import { Quat } from '../math/quat';
 import { EditModeState } from './EditMode';
 import { CurveEditState } from '../curve/CurveEdit';
 import { defaultWorld, type World } from './worldData';
@@ -148,8 +149,21 @@ export class Scene {
   world: World = defaultWorld();
   /** 3D cursor position, world space (P12). Shift+RightClick places it. */
   cursor: Vec3 = Vec3.ZERO;
-  /** R/S pivot: selection median (default) or the 3D cursor (P12). */
-  pivotMode: 'median' | 'cursor' = 'median';
+  /**
+   * Transform pivot point (Blender's `.`/comma pie). `median` = selection median
+   * (default), `cursor` = the 3D cursor (P12), `individual` = each object/element
+   * about its OWN origin, `active` = the active object's/element's origin (the
+   * last-selected acts like a temporary parent). The gizmo sits at this point.
+   */
+  pivotMode: 'median' | 'cursor' | 'individual' | 'active' = 'median';
+
+  /**
+   * Transform orientation (Blender's orientation dropdown). `global` = world
+   * axes (default), `local` = the active object's rotation basis, `normal` =
+   * (edit mode) the selected element normal frame. Drives the gizmo orientation
+   * and the axis-lock basis in G/R/S.
+   */
+  transformOrientation: 'global' | 'local' | 'normal' = 'global';
   /** Timeline (P15). frameCurrent is applied by the sampler on scrub/play. */
   frameStart = 1;
   frameEnd = 120;
@@ -531,6 +545,41 @@ export class Scene {
 
   get selectedObjects(): SceneObject[] {
     return this.objects.filter((o) => this.selection.has(o.id));
+  }
+
+  /**
+   * Object-mode transform pivot point (where the gizmo sits, world space),
+   * resolved from {@link pivotMode}: `cursor` → the 3D cursor; `active` → the
+   * active object's origin (last-selected acts as a temporary parent);
+   * `median`/`individual` → the median of the selected objects' origins (for
+   * Individual Origins the gizmo shows the median; the per-object pivoting is
+   * applied by the transform operators). Falls back to the cursor when nothing
+   * is selected.
+   */
+  pivotPoint(): Vec3 {
+    if (this.pivotMode === 'cursor') return this.cursor;
+    const sel = this.selectedObjects;
+    if (sel.length === 0) return this.cursor;
+    if (this.pivotMode === 'active') {
+      const a = this.activeObject;
+      if (a) return this.worldTransformOf(a).position;
+    }
+    let sum = Vec3.ZERO;
+    for (const o of sel) sum = sum.add(this.worldTransformOf(o).position);
+    return sum.scale(1 / sel.length);
+  }
+
+  /**
+   * Transform-orientation rotation (object mode), used to orient the gizmo and
+   * the axis-lock basis in G/R/S. `global` → identity (world axes); `local` and
+   * `normal` → the active object's world rotation (in object mode Normal behaves
+   * like Local — Blender). Edit-mode `normal` element frames are resolved by the
+   * edit transform operators, not here.
+   */
+  orientationQuat(): Quat {
+    if (this.transformOrientation === 'global') return Quat.identity();
+    const a = this.activeObject;
+    return a ? this.worldTransformOf(a).rotation : Quat.identity();
   }
 
   get activeObject(): SceneObject | null {

@@ -109,10 +109,38 @@ describe('slidePosition', () => {
     expect(slidePosition(base, rails, 3).x).toBeCloseTo(4, 6);
   });
 
-  it('a single-rail vert only slides for the matching (positive) sign', () => {
+  it('a single-rail (A-only) vert slides toward the far vert for +t', () => {
     const one = { a: rails.a, b: null };
-    expect(slidePosition(base, one, 0.5).x).toBeCloseTo(1.5, 6);
-    expect(slidePosition(base, one, -0.5).equalsApprox(base)).toBe(true);
+    expect(slidePosition(base, one, 0.5).x).toBeCloseTo(1.5, 6); // toward +X far vert
+  });
+
+  it('a single-rail (A-only) vert slides OUTWARD past the base for -t (new)', () => {
+    // Rail A is +X (far vert at x=2). t<0 must extrapolate along A's line AWAY
+    // from the far vert, out past the base, collinearly — NOT stay put.
+    const one = { a: rails.a, b: null };
+    const p = slidePosition(base, one, -0.5);
+    expect(p.x).toBeCloseTo(0.5, 6); // 1 + 1·(-0.5), opposite the neighbour
+    expect(p.y).toBeCloseTo(0, 6);
+    expect(p.z).toBeCloseTo(0, 6);
+    // Keeps extrapolating linearly further out.
+    expect(slidePosition(base, one, -2).x).toBeCloseTo(-1, 6);
+    // Collinear with the far vert's line (opposite direction).
+    const far = mesh.verts.get(4)!.co; // +X neighbour
+    expect(p.sub(base).normalize().equalsApprox(far.sub(base).normalize().scale(-1))).toBe(true);
+  });
+
+  it('a single-rail (B-only) vert slides OUTWARD past the base for +t (mirror)', () => {
+    // Rail B is -X (far vert at x=0). +t must extrapolate OUTWARD (toward +X, away
+    // from B's far vert); -t goes toward B's far vert.
+    const one = { a: null, b: rails.b };
+    expect(slidePosition(base, one, 0.5).x).toBeCloseTo(1.5, 6); // outward, +X
+    expect(slidePosition(base, one, -0.5).x).toBeCloseTo(0.5, 6); // toward B far
+  });
+
+  it('a zero-rail vert always stays put', () => {
+    const none = { a: null, b: null };
+    expect(slidePosition(base, none, 0.7).equalsApprox(base)).toBe(true);
+    expect(slidePosition(base, none, -0.7).equalsApprox(base)).toBe(true);
   });
 });
 

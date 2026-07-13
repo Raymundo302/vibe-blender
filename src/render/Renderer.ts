@@ -46,6 +46,7 @@ import { meshIntersectionSegments } from '../core/mesh/intersect';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import { Mat4 } from '../core/math/mat4';
+import { Quat } from '../core/math/quat';
 import { Vec3 } from '../core/math/vec3';
 
 interface GpuMesh {
@@ -96,7 +97,10 @@ function iconShape(obj: SceneObject): IconShape {
  */
 function selectionColor(scene: Scene, obj: SceneObject): [number, number, number] {
   if (!scene.selection.has(obj.id)) return [0.85, 0.85, 0.85];
-  return scene.activeId === obj.id ? [1, 0.66, 0.25] : [0.95, 0.55, 0.2];
+  // Active (last-selected) glows a bright near-white orange so it reads clearly
+  // as the "active" object among a multi-selection (it acts as the pivot/parent
+  // for Active-Element transforms); the rest get a duller, darker orange.
+  return scene.activeId === obj.id ? [1, 0.82, 0.5] : [0.82, 0.4, 0.12];
 }
 
 export class Renderer {
@@ -347,7 +351,7 @@ export class Renderer {
    *  otherwise the object's own display color. */
   private curveColor(scene: Scene, obj: SceneObject): Vec3 {
     if (scene.selection.has(obj.id)) {
-      return scene.activeId === obj.id ? new Vec3(1, 0.66, 0.25) : new Vec3(0.95, 0.55, 0.2);
+      return scene.activeId === obj.id ? new Vec3(1, 0.82, 0.5) : new Vec3(0.82, 0.4, 0.12);
     }
     return new Vec3(obj.color[0], obj.color[1], obj.color[2]);
   }
@@ -1008,12 +1012,14 @@ export class Renderer {
       }
       gl.disable(gl.BLEND);
     } else if (this.shadingMode === 'studio') {
+      gl.disable(gl.CULL_FACE); // two-sided solid shading (see matcap branch)
       this.studioPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
         if (texturedSet.has(obj)) continue; // drawn shadeless-textured below
         this.studioPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+      gl.enable(gl.CULL_FACE);
       this.drawTexturedObjects(scene, texturedObjs, view, proj, aoTex);
     } else if (this.shadingMode === 'rendered') {
       // World environment as the backdrop (flat / gradient / HDRI), then the
@@ -1048,6 +1054,7 @@ export class Renderer {
       this.renderedPass.begin(view, proj, eye, lights,
         new Vec3(amb[0] * k, amb[1] * k, amb[2] * k), this.shadowPass.textures, casters,
         this.shadowPass.cubeTextures, cubeCasters, aoTex, canvas.width, canvas.height);
+      gl.disable(gl.CULL_FACE); // two-sided solid shading (see matcap branch)
       for (const obj of opaqueMeshes) {
         const mat = scene.materialOf(obj);
         // P14 shader nodes: bake the graph (idempotent per version) and view
@@ -1082,6 +1089,7 @@ export class Renderer {
         );
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+      gl.enable(gl.CULL_FACE); // restore before the glass/alpha passes
       // UR10-3: glass meshes over the opaque result — same RenderedPass shader
       // (so lighting/nodes/maps all apply), blended back-to-front with depth-test
       // ON, depth-WRITE OFF so multiple glass surfaces layer correctly.
@@ -1108,12 +1116,17 @@ export class Renderer {
       // (shadeless textured — transparent HTML/image cutouts are emit planes).
       this.drawTexturedObjects(scene, alphaMeshes, view, proj, aoTex);
     } else {
+      // Two-sided solid shading: draw backfaces too (the shader flips the normal
+      // for them) so flat/open geometry — e.g. a Plane rotated past edge-on —
+      // stays visible instead of appearing to "stop" when its front turns away.
+      gl.disable(gl.CULL_FACE);
       this.meshPass.begin(view, proj, aoTex, canvas.width, canvas.height);
       for (const obj of visible) {
         if (texturedSet.has(obj)) continue; // drawn shadeless-textured below
         this.meshPass.setObject(scene.worldMatrix(obj), view, obj.color);
         this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
       }
+      gl.enable(gl.CULL_FACE);
       this.drawTexturedObjects(scene, texturedObjs, view, proj, aoTex);
     }
 
@@ -1264,7 +1277,7 @@ export class Renderer {
     const gz = this.gizmoTransform(scene, eye, fovY);
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT);
-      this.gizmoPass.render(proj.mul(view), gz.origin, gz.scale);
+      this.gizmoPass.render(proj.mul(view), gz.origin, gz.scale, Mat4.fromQuat(gz.quat));
     }
 
     // Locked-axis indicator — the one gizmo arrow + guide line that stays on
@@ -1326,13 +1339,16 @@ export class Renderer {
 
   /** Gizmo placement (active object's position) + constant-screen-size scale (from
    *  the current viewpoint's eye/fovY), or null when hidden. */
-  private gizmoTransform(scene: Scene, eye: Vec3, fovY: number): { origin: Vec3; scale: number } | null {
+  private gizmoTransform(scene: Scene, eye: Vec3, fovY: number): { origin: Vec3; scale: number; quat: Quat } | null {
     if (!this.gizmoVisible) return null;
     if (scene.editMode || scene.curveEdit) return null; // no object gizmo in edit/curve-edit mode
     const active = scene.activeObject;
     if (!active || !active.visible) return null;
-    const origin = scene.worldTransformOf(active).position;
-    return { origin, scale: gizmoScreenScale(eye, origin, fovY) };
+    // Origin follows the transform pivot (median / individual→median / active /
+    // 3D cursor); orientation follows the transform orientation (global → world
+    // axes, local/normal → the active object's basis).
+    const origin = scene.pivotPoint();
+    return { origin, scale: gizmoScreenScale(eye, origin, fovY), quat: scene.orientationQuat() };
   }
 
   /** The view-projection of whatever is on screen right now (orbit camera or
@@ -1369,7 +1385,7 @@ export class Renderer {
     const gz = this.gizmoTransform(scene, eye, fovY);
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT); // pick FBO still bound: gizmo handles win
-      this.gizmoPass.renderPick(this.pickingPass, viewProj, gz.origin, gz.scale);
+      this.gizmoPass.renderPick(this.pickingPass, viewProj, gz.origin, gz.scale, Mat4.fromQuat(gz.quat));
     }
     // Light/camera icons — drawn last (iconPass switches GL programs, and
     // pickingPass.drawObject assumes the picking shader is still active). The

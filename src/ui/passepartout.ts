@@ -45,6 +45,8 @@ export class Passepartout {
   private readonly left: HTMLDivElement;
   private readonly right: HTMLDivElement;
   private readonly frame: HTMLDivElement;
+  /** Clickable strips over the frame's 4 edges (top/right/bottom/left). */
+  private readonly edges: HTMLDivElement[];
 
   constructor(
     host: HTMLElement,
@@ -60,6 +62,18 @@ export class Passepartout {
     this.left = this.pane('passepartout-mask');
     this.right = this.pane('passepartout-mask');
     this.frame = this.pane('passepartout-frame');
+    // Clicking the dashed border selects the camera being looked through.
+    const selectCamera = (e: PointerEvent): void => {
+      if (e.button !== 0) return; // left-click only — don't swallow MMB navigation
+      e.stopPropagation();
+      const id = this.renderer.cameraViewId;
+      if (id !== null) this.scene.selectOnly(id);
+    };
+    this.edges = [0, 1, 2, 3].map(() => {
+      const el = this.pane('passepartout-edge');
+      el.addEventListener('pointerdown', selectCamera);
+      return el;
+    });
     host.append(this.root);
   }
 
@@ -91,6 +105,13 @@ export class Passepartout {
     place(this.left, 0, r.y, r.x, r.h);
     place(this.right, r.x + r.w, r.y, w - (r.x + r.w), r.h);
     place(this.frame, r.x, r.y, r.w, r.h);
+
+    // Clickable border strips straddling the frame's 4 edges (T·R·B·L), ~8px.
+    const T = 8;
+    place(this.edges[0], r.x - T / 2, r.y - T / 2, r.w + T, T);         // top
+    place(this.edges[1], r.x + r.w - T / 2, r.y - T / 2, T, r.h + T);   // right
+    place(this.edges[2], r.x - T / 2, r.y + r.h - T / 2, r.w + T, T);   // bottom
+    place(this.edges[3], r.x - T / 2, r.y - T / 2, T, r.h + T);         // left
   }
 }
 

@@ -82,9 +82,13 @@ export class ScaleOperator implements Operator {
     const sy = !this.axis || this.axis === 'y' ? f : 1;
     const sz = !this.axis || this.axis === 'z' ? f : 1;
 
+    // Individual Origins: each object scales about its OWN origin (stays put,
+    // only its scale grows) instead of moving out from a shared pivot.
+    const individual = ctx.scene.pivotMode === 'individual';
     for (const t of this.targets) {
-      const off = t.beforeWorld.position.sub(this.pivot);
-      const pos = this.pivot.add(new Vec3(off.x * sx, off.y * sy, off.z * sz));
+      const pivot = individual ? t.beforeWorld.position : this.pivot;
+      const off = t.beforeWorld.position.sub(pivot);
+      const pos = pivot.add(new Vec3(off.x * sx, off.y * sy, off.z * sz));
       writeWorldPosScale(t, pos, sx, sy, sz);
     }
     this.updateStatus(ctx, f);
