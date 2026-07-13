@@ -533,6 +533,18 @@ export function evalGradientScalar(g: GradientInput, px: number, py: number, pz:
   return g.a[0] + (g.b[0] - g.a[0]) * t;
 }
 
+/** The emit shader's LIGHT strength at a surface (UR16-4). The emit shader emits
+ *  its COLOR SOCKET × this strength: strength 1 = exact pixels (a screen showing
+ *  its image), strength > 1 = a glowing surface that also lights the room (a TV in
+ *  a dark room). Only the 'emit' shader is driven by the stored strength; any OTHER
+ *  shadeless material (a legacy UR4-3 super+shadeless ref plane) emits at 1 so it
+ *  still shows exact pixels. Emit materials are created/migrated with
+ *  emissiveStrength defaulting to 1 (see makeMaterial / createImagePlane / the v20
+ *  migration), so a fresh or loaded emit image plane shows exact pixels. */
+export function emitStrengthOf(mat: Pick<Material, 'shader' | 'emissiveStrength'>): number {
+  return materialShader(mat) === 'emit' ? mat.emissiveStrength : 1;
+}
+
 /** Named-shader BRDF overrides (UR16-1): metal→metallic 1, glass→transmission 1
  *  (+ metallic 0), emit→shadeless. 'diffuse'/'super'/absent honor the stored
  *  fields (so migrated + default-new materials render byte-identically). The

@@ -388,12 +388,13 @@ export class ShaderEditCommand implements Command {
   readonly name = 'Change Shader';
   constructor(
     private readonly material: Material,
-    private readonly before: { shader?: MaterialShader; shadeless?: boolean },
-    private readonly after: { shader?: MaterialShader; shadeless?: boolean },
+    private readonly before: { shader?: MaterialShader; shadeless?: boolean; emissiveStrength?: number },
+    private readonly after: { shader?: MaterialShader; shadeless?: boolean; emissiveStrength?: number },
   ) {}
-  private write(s: { shader?: MaterialShader; shadeless?: boolean }): void {
+  private write(s: { shader?: MaterialShader; shadeless?: boolean; emissiveStrength?: number }): void {
     this.material.shader = s.shader;
     this.material.shadeless = s.shadeless;
+    if (s.emissiveStrength !== undefined) this.material.emissiveStrength = s.emissiveStrength;
   }
   undo(): void { this.write(this.before); }
   redo(): void { this.write(this.after); }
@@ -1040,11 +1041,15 @@ class MaterialTab {
   private setShader(s: MaterialShader): void {
     const mat = this.material();
     if (!mat) return;
-    const before = { shader: mat.shader, shadeless: mat.shadeless };
-    const after = { shader: s, shadeless: s === 'emit' };
+    const before = { shader: mat.shader, shadeless: mat.shadeless, emissiveStrength: mat.emissiveStrength };
+    // UR16-4: switching TO emit defaults the light strength to 1 (exact pixels)
+    // when it was 0, so the surface shows its color socket instead of going black.
+    const emitStrength = s === 'emit' && !(mat.emissiveStrength > 0) ? 1 : mat.emissiveStrength;
+    const after = { shader: s, shadeless: s === 'emit', emissiveStrength: emitStrength };
     if (before.shader === after.shader && (before.shadeless ?? false) === after.shadeless) return;
     mat.shader = after.shader;
     mat.shadeless = after.shadeless;
+    mat.emissiveStrength = after.emissiveStrength;
     this.undo.push(new ShaderEditCommand(mat, before, after));
     this.lastSig = null;
   }

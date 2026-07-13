@@ -138,6 +138,10 @@ export function createImagePlane(
   mat.texKind = 'image';
   mat.texDataUrl = dataUrl;
   mat.shadeless = mode === 'emit';
+  // UR16-4: the emit shader's COLOR socket × strength drives its emission; default
+  // strength 1 makes the plane a "screen" that shows its exact pixels (and, above
+  // 1, a light that tints the room — a TV in a dark room).
+  if (mode === 'emit') mat.emissiveStrength = 1;
   // UR8-3 C: image + HTML planes should look like themselves in EVERY shading
   // mode — Always Textured on by default for these materials.
   mat.alwaysTextured = true;

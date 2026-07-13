@@ -44,6 +44,7 @@ import { HintBar } from './ui/hintBar';
 import { ModeChip } from './ui/modeChip';
 import { AxisGizmo, viewSnap } from './ui/axisGizmo';
 import { serializeScene, applySceneJson } from './io/sceneJson';
+import { decodeTextureDataUrl } from './ui/materialTab';
 import { Autosave } from './io/autosave';
 import { RestoreToast } from './ui/restoreToast';
 import { exportObj, parseObj } from './io/obj';
@@ -115,10 +116,27 @@ function saveScene(): void {
   opCtx.setStatus('Saved scene.vibe.json');
 }
 
+/** UR16-4: eagerly decode every image material's texImage after a scene load so
+ *  the F12/GPU tracers (which read the decoded pixels / atlas) show image + emit
+ *  planes' images WITHOUT waiting for the material tab to be opened. The Rendered
+ *  viewport uploads the data URL straight to GL and never needs this; before this,
+ *  a freshly loaded emit image plane path-traced pure WHITE until it was selected. */
+function decodeLoadedTextures(): void {
+  for (const m of scene.materials) {
+    if (m.texKind === 'image' && m.texDataUrl && !m.texImage) {
+      const url = m.texDataUrl;
+      decodeTextureDataUrl(url)
+        .then((img) => { if (m.texDataUrl === url) m.texImage = img; })
+        .catch(() => { /* tracer falls back to white — Rendered viewport unaffected */ });
+    }
+  }
+}
+
 /** Apply a saved scene string: exit edit mode, replace scene, drop undo history. */
 function loadSceneJson(json: string): void {
   if (scene.editMode) scene.exitEditMode();
   applySceneJson(json, scene, camera);
+  decodeLoadedTextures();
   undo.clear();
   // Loading a file replaces the working scene — the stale autosave no longer applies.
   autosave.clear();
@@ -323,6 +341,7 @@ if (!sceneParam && storedAutosave && storedAutosave.scene !== pristineScene) {
       try {
         if (scene.editMode) scene.exitEditMode();
         applySceneJson(storedAutosave.scene, scene, camera);
+        decodeLoadedTextures();
         undo.clear();
         markClean();
         opCtx.setStatus('Restored previous session');

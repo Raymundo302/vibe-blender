@@ -17,7 +17,7 @@ import { defaultSnapWorld } from '../snapshot';
 import { buildBVH, buildEmitters } from '../tracer';
 import {
   packScene, packTriangles, packMaterials, packLights, packUVs, packLocals, packEmitters,
-  flattenBVH, type PackedScene, type Payload,
+  packImageAtlas, flattenBVH, type PackedScene, type Payload, type ImageAtlas,
 } from './pack';
 import { VERTEX_SRC, fragmentSource } from './kernel';
 
@@ -88,6 +88,8 @@ interface GpuScene {
   emit: DataTex;
   numEmitters: number;
   emitTotalArea: number;
+  /** UR16-4 image atlas (TEXTURE_2D_ARRAY of RGBA8 layers). */
+  atlas: WebGLTexture;
   camera: SnapCamera;
   world: SnapWorld;
 }
@@ -258,12 +260,30 @@ export class GpuTracer {
     return { tex, width: p.width };
   }
 
+  /** Upload an image atlas (UR16-4) as an RGBA8 TEXTURE_2D_ARRAY, LINEAR-filtered
+   *  so the kernel's texture() sample matches the CPU bilinear. Always ≥ 1 layer. */
+  private createAtlasTexture(gl: WebGL2RenderingContext, atlas: ImageAtlas): WebGLTexture {
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+    gl.texImage3D(
+      gl.TEXTURE_2D_ARRAY, 0, gl.RGBA8, atlas.size, atlas.size, atlas.layers, 0,
+      gl.RGBA, gl.UNSIGNED_BYTE, atlas.data,
+    );
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+    return tex;
+  }
+
   private disposeScene(): void {
     const gl = this.gl;
     if (!gl || !this.scene) return;
     for (const dt of [this.scene.tris, this.scene.nodes, this.scene.triIdx, this.scene.mats, this.scene.uvs, this.scene.locals, this.scene.lights, this.scene.emit]) {
       gl.deleteTexture(dt.tex);
     }
+    gl.deleteTexture(this.scene.atlas);
     this.scene = null;
   }
 
@@ -308,6 +328,7 @@ export class GpuTracer {
         emit: this.createDataTexture(gl, packed.emitters.data),
         numEmitters: packed.emitters.count,
         emitTotalArea: packed.emitters.totalArea,
+        atlas: this.createAtlasTexture(gl, packImageAtlas(snap.materials)),
         camera: snap.camera,
         world,
       };
@@ -341,6 +362,9 @@ export class GpuTracer {
     }
     if (mat) {
       s.mats = this.reupload(gl, s.mats, packMaterials(snap.materials));
+      // UR16-4: a material change may add/replace an image → rebuild the atlas.
+      gl.deleteTexture(s.atlas);
+      s.atlas = this.createAtlasTexture(gl, packImageAtlas(snap.materials));
     }
     if (light) {
       s.lights = this.reupload(gl, s.lights, packLights(snap.lights));
@@ -447,6 +471,10 @@ export class GpuTracer {
     this.bindDataTex(gl, 6, this.scene.emit, 'uEmit', 'uEmitW');
     this.bindDataTex(gl, 8, this.scene.locals, 'uLocals', 'uLocalsW');
     gl.uniform1i(this.u('uPrevAccum'), 7);
+    // UR16-4 image atlas on unit 9 (TEXTURE_2D_ARRAY).
+    gl.activeTexture(gl.TEXTURE0 + 9);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.scene.atlas);
+    gl.uniform1i(this.u('uAtlas'), 9);
     return true;
   }
 

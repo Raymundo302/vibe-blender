@@ -37,24 +37,31 @@ export const TEX_MAX_WIDTH = 2048;
 
 /** Triangle: 3 texels. t0 = a.xyz + materialIndex(w); t1 = b.xyz; t2 = c.xyz. */
 export const TRI_TEXELS = 3;
-/** Material: 7 texels (UR16-1 extended for the color gradient + alpha channel).
+/** Material: 8 texels (UR16-1 color gradient + alpha; UR16-4 emit + image atlas).
  *  t0 = baseColor.rgb + roughness(w); t1 = metallic, transmission, ior,
  *  emissiveStrength; t2 = emissive.rgb + texKind(w: 0 none | 1 checker | 2 image);
  *  t3 = shadeless(0|1), subsurfaceWeight, subsurfaceRadius, alphaBlend(0|1);
  *  t4 = colorGradEnabled(0|1), axis(0 x|1 y|2 z), offset, scale;
- *  t5 = colorGradA.rgb, alphaValue(w);  t6 = colorGradB.rgb, 0.
+ *  t5 = colorGradA.rgb, alphaValue(w);  t6 = colorGradB.rgb, 0;
+ *  t7 = emitScale(UR16-4), imageAtlasLayer(-1 = none), 0, 0.
  *  (GPU cut, documented in kernel.ts: alpha gradient/image and roughness/metallic
  *  gradients fall back to their value — only the COLOR gradient + alpha VALUE are
  *  ported; the CPU tracer supports all, the parity harness uses only these.) */
-export const MAT_TEXELS = 7;
+export const MAT_TEXELS = 8;
 /** Object-LOCAL triangle positions (UR16-1 gradient eval): 3 texels/tri, parallel
  *  to the triangle texture. t0 = localA.xyz; t1 = localB.xyz; t2 = localC.xyz. */
 export const LOCAL_TEXELS = 3;
 /** UV: 2 texels/tri. t0 = uv0.xy, uv1.xy; t1 = uv2.xy, 0, 0. */
 export const UV_TEXELS = 2;
-/** Emitter: 2 texels/emitter (UR10-2 mesh-light NEE). t0 = triIndex, cdf, 0, 0;
- *  t1 = radiance.rgb, 0. */
+/** Emitter: 2 texels/emitter (UR10-2 mesh-light NEE). t0 = triIndex, cdf,
+ *  materialIndex (UR16-4, for per-point emit color eval), 0; t1 = radiance.rgb, 0. */
 export const EMIT_TEXELS = 2;
+
+/** GPU image atlas (UR16-4): every 'image' material with decoded pixels is
+ *  resampled into one fixed-size layer of a TEXTURE_2D_ARRAY, up to MAX_TEX_LAYERS;
+ *  the kernel samples it for texKind 2 (was a white fallback in the v1 cut). */
+export const ATLAS_SIZE = 256;
+export const MAX_TEX_LAYERS = 16;
 /** Light: 6 texels (covers all 4 types incl. area axes).
  *  t0 = position.xyz + type(w); t1 = direction.xyz + radius(w);
  *  t2 = energy.rgb + cosInner(w); t3 = cosOuter, width, height, 0;
@@ -137,9 +144,26 @@ function texKindCode(m: SnapMaterial): number {
   return m.texKind === 'checker' ? 1 : m.texKind === 'image' ? 2 : 0;
 }
 
+/** Deterministic atlas-layer assignment (UR16-4): each 'image' material with
+ *  decoded pixels claims the next layer 0..MAX_TEX_LAYERS-1 in material order;
+ *  everything else (and overflow past the cap) → -1 (kernel white fallback). Pure
+ *  function of the materials array so packMaterials and packImageAtlas agree, and
+ *  the materials signature (which drives incremental re-pack) is stable. */
+export function imageLayers(materials: SnapMaterial[]): Int32Array {
+  const out = new Int32Array(materials.length).fill(-1);
+  let layer = 0;
+  for (let i = 0; i < materials.length; i++) {
+    const m = materials[i];
+    if (m.texKind === 'image' && m.texImage && layer < MAX_TEX_LAYERS) out[i] = layer++;
+  }
+  return out;
+}
+
 export function packMaterials(materials: SnapMaterial[]): Payload {
+  const layerOf = imageLayers(materials);
   const texels: number[][] = [];
-  for (const m of materials) {
+  for (let mi = 0; mi < materials.length; mi++) {
+    const m = materials[mi];
     texels.push([m.baseColor[0], m.baseColor[1], m.baseColor[2], m.roughness]);
     texels.push([m.metallic, m.transmission ?? 0, m.ior ?? 1.45, m.emissiveStrength]);
     texels.push([m.emissive[0], m.emissive[1], m.emissive[2], texKindCode(m)]);
@@ -155,8 +179,53 @@ export function packMaterials(materials: SnapMaterial[]): Payload {
     texels.push([cg ? 1 : 0, axis, cg ? cg.offset : 0, cg ? cg.scale : 0]);
     texels.push([cg ? cg.a[0] : 0, cg ? cg.a[1] : 0, cg ? cg.a[2] : 0, m.alpha ?? 1]);
     texels.push([cg ? cg.b[0] : 0, cg ? cg.b[1] : 0, cg ? cg.b[2] : 0, 0]);
+    // t7 (UR16-4): emit light strength + the image-atlas layer (-1 = none).
+    texels.push([m.emitScale ?? 1, layerOf[mi], 0, 0]);
   }
   return buildPayload(texels, MAT_TEXELS, materials.length);
+}
+
+/** Resample every image material into a fixed-size RGBA8 TEXTURE_2D_ARRAY (UR16-4).
+ *  Values are the CPU texImage's LINEAR RGB (row 0 = top) bilinear-resampled to
+ *  ATLAS_SIZE² and quantized to 8-bit — the kernel samples it LINEAR-filtered as
+ *  the color socket for emit/diffuse image planes (the GPU's v1 white fallback is
+ *  gone). Returns { data, layers, size }; `layers ≥ 1` always so a bindable array
+ *  texture exists even with no image materials. */
+export interface ImageAtlas { data: Uint8Array; layers: number; size: number; }
+export function packImageAtlas(materials: SnapMaterial[]): ImageAtlas {
+  const layerOf = imageLayers(materials);
+  let layers = 0;
+  for (const l of layerOf) if (l >= 0 && l + 1 > layers) layers = l + 1;
+  const size = ATLAS_SIZE;
+  const data = new Uint8Array(size * size * 4 * Math.max(1, layers));
+  const q = (v: number) => (v <= 0 ? 0 : v >= 1 ? 255 : Math.round(v * 255));
+  for (let i = 0; i < materials.length; i++) {
+    const l = layerOf[i];
+    if (l < 0) continue;
+    const img = materials[i].texImage!;
+    const iw = img.width, ih = img.height, px = img.pixels;
+    const cx = (x: number) => (x < 0 ? 0 : x > iw - 1 ? iw - 1 : x);
+    const cy = (y: number) => (y < 0 ? 0 : y > ih - 1 ? ih - 1 : y);
+    const base = l * size * size * 4;
+    for (let y = 0; y < size; y++) {
+      // Match sampleImageBilinear's half-texel convention (u*w-0.5) so the GPU and
+      // CPU sample the source identically; row 0 = image top in both.
+      const fy = ((y + 0.5) / size) * ih - 0.5;
+      const y0 = Math.floor(fy), ty = fy - y0;
+      for (let x = 0; x < size; x++) {
+        const fx = ((x + 0.5) / size) * iw - 0.5;
+        const x0 = Math.floor(fx), tx = fx - x0;
+        const o = base + (y * size + x) * 4;
+        for (let k = 0; k < 3; k++) {
+          const a = px[(cy(y0) * iw + cx(x0)) * 3 + k] * (1 - tx) + px[(cy(y0) * iw + cx(x0 + 1)) * 3 + k] * tx;
+          const b = px[(cy(y0 + 1) * iw + cx(x0)) * 3 + k] * (1 - tx) + px[(cy(y0 + 1) * iw + cx(x0 + 1)) * 3 + k] * tx;
+          data[o + k] = q(a * (1 - ty) + b * ty);
+        }
+        data[o + 3] = 255;
+      }
+    }
+  }
+  return { data, layers: Math.max(1, layers), size };
 }
 
 /** Pack per-corner OBJECT-LOCAL triangle positions (UR16-1 gradients). Missing/
@@ -194,11 +263,14 @@ export interface MatRead {
   gradA: [number, number, number];
   gradB: [number, number, number];
   alpha: number;
+  emitScale: number;
+  imageLayer: number;
 }
 
 export function readMaterial(p: Payload, i: number): MatRead {
   const b0 = texelBase(p, i, 0), b1 = texelBase(p, i, 1), b2 = texelBase(p, i, 2);
   const b3 = texelBase(p, i, 3), b4 = texelBase(p, i, 4), b5 = texelBase(p, i, 5), b6 = texelBase(p, i, 6);
+  const b7 = texelBase(p, i, 7);
   const d = p.data;
   return {
     baseColor: [d[b0], d[b0 + 1], d[b0 + 2]],
@@ -220,6 +292,8 @@ export function readMaterial(p: Payload, i: number): MatRead {
     gradA: [d[b5], d[b5 + 1], d[b5 + 2]],
     alpha: d[b5 + 3],
     gradB: [d[b6], d[b6 + 1], d[b6 + 2]],
+    emitScale: d[b7],
+    imageLayer: d[b7 + 1],
   };
 }
 
@@ -264,7 +338,7 @@ export function packEmitters(emitters: EmitterList | null): PackedEmitters {
   const texels: number[][] = [];
   if (emitters) {
     for (let i = 0; i < emitters.tris.length; i++) {
-      texels.push([emitters.tris[i], emitters.cdf[i], 0, 0]);
+      texels.push([emitters.tris[i], emitters.cdf[i], emitters.matIdx[i], 0]);
       const r = i * 3;
       texels.push([emitters.radiance[r], emitters.radiance[r + 1], emitters.radiance[r + 2], 0]);
     }

@@ -4,7 +4,7 @@ import '../core/nodes/builtins';
 import { Vec3 } from '../core/math/vec3';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
-import { cameraFovY, cameraLensRadius, DOF_APERTURE_SCALE, objectForward, DEFAULT_MATERIAL, AREA_MIN_SIZE, shaderOverrides, type Material, type GradientInput } from '../core/scene/objectData';
+import { cameraFovY, cameraLensRadius, DOF_APERTURE_SCALE, objectForward, DEFAULT_MATERIAL, AREA_MIN_SIZE, shaderOverrides, emitStrengthOf, type Material, type GradientInput } from '../core/scene/objectData';
 import type { HdriImage } from '../core/scene/worldData';
 
 /**
@@ -36,6 +36,11 @@ export interface SnapMaterial {
   /** Shadeless (UR4-3): emit base×texture color and gather no further bounces
    *  (Blender "Emit"/image-plane look). Default false. */
   shadeless?: boolean;
+  /** Emit LIGHT strength (UR16-4): a shadeless surface emits colorSocket × this.
+   *  1 = exact pixels (a screen); > 1 = a glowing surface that also lights the room
+   *  via emitter NEE (a TV in a dark room). Resolved by emitStrengthOf in toMat
+   *  (emit shader = stored strength; any other shadeless material = 1). Default 1. */
+  emitScale?: number;
   /** Alpha blend (UR8-3): the base-color texture carries transparency. The tracer
    *  treats a hit whose sampled texture alpha < 0.5 as a cutout (ray passes
    *  through). Default false. */
@@ -228,6 +233,9 @@ function toMat(m: Readonly<Material>): SnapMaterial {
     subsurfaceWeight: m.subsurfaceWeight ?? 0,
     subsurfaceRadius: m.subsurfaceRadius ?? 0.05,
     shadeless: ov.shadeless ?? (m.shadeless ?? false),
+    // UR16-4: emit shader → stored strength (default 1); any other shadeless
+    // material → 1 (exact pixels). Drives the shadeless output scale + emitter NEE.
+    emitScale: emitStrengthOf(m),
     alphaBlend: m.alphaBlend ?? false,
     // UR16-1 alpha channel: value passthrough here; gradient rides in alphaGradient.
     alpha: alphaVal < 0 ? 0 : alphaVal > 1 ? 1 : alphaVal,

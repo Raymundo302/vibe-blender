@@ -834,7 +834,13 @@ function parseMaterialV20(mat: Record<string, unknown>, mi: number): MaterialDat
     transmission: mat.transmission === undefined ? 0 : clampTransmission(numField(mat.transmission, `materials[${mi}].transmission`)),
     ior: mat.ior === undefined ? 1.45 : clampIor(numField(mat.ior, `materials[${mi}].ior`)),
     emissive: mat.emissive === undefined ? [0, 0, 0] : numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
-    emissiveStrength: mat.emissiveStrength === undefined ? 0 : numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
+    // UR16-4: the emit shader's strength is its light strength (1 = exact pixels).
+    // An emit material saved with strength 0/absent (early-UR16 image planes) →
+    // default 1 so the plane shows its image instead of going black.
+    emissiveStrength: (() => {
+      const s = mat.emissiveStrength === undefined ? 0 : numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`);
+      return shader === 'emit' && !(s > 0) ? 1 : s;
+    })(),
     subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
     subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
     shadeless: mat.shadeless === true,
@@ -881,7 +887,13 @@ function parseMaterialLegacy(mat: Record<string, unknown>, mi: number): Material
     transmission: mat.transmission === undefined ? 0 : clampTransmission(numField(mat.transmission, `materials[${mi}].transmission`)),
     ior: mat.ior === undefined ? 1.45 : clampIor(numField(mat.ior, `materials[${mi}].ior`)),
     emissive: numArray(mat.emissive, 3, `materials[${mi}].emissive`) as [number, number, number],
-    emissiveStrength: numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`),
+    // UR16-4: a migrated shadeless (→ emit) plane's strength drives its emission;
+    // default it to 1 (exact pixels) when the legacy field was 0/absent, so old
+    // image/blueprint planes keep showing their image under the new emit model.
+    emissiveStrength: (() => {
+      const s = numField(mat.emissiveStrength, `materials[${mi}].emissiveStrength`);
+      return shadeless && !(s > 0) ? 1 : s;
+    })(),
     subsurfaceWeight: mat.subsurfaceWeight === undefined ? 0 : numField(mat.subsurfaceWeight, `materials[${mi}].subsurfaceWeight`),
     subsurfaceRadius: mat.subsurfaceRadius === undefined ? 0.05 : numField(mat.subsurfaceRadius, `materials[${mi}].subsurfaceRadius`),
     shadeless,

@@ -3,7 +3,7 @@ import { VertexArray } from '../gl/VertexArray';
 import { Vec3 } from '../../core/math/vec3';
 import { Mat4 } from '../../core/math/mat4';
 import type { Scene } from '../../core/scene/Scene';
-import { objectForward, type Material } from '../../core/scene/objectData';
+import { objectForward, emitStrengthOf, type Material } from '../../core/scene/objectData';
 import type { World } from '../../core/scene/worldData';
 
 /**
@@ -185,6 +185,7 @@ uniform float u_metallic;
 uniform float u_roughness;
 uniform vec3 u_emissive;
 uniform int u_shadeless;   // 1 = output base/texture color directly (no BRDF)
+uniform float u_emitStrength; // UR16-4 emit shader: shadeless output × this (1 = exact pixels)
 uniform float u_transmission; // UR10-3 glass: >0 → alpha-blend + Fresnel rim
 uniform vec3 u_ambient; // flat world-derived ambient (avg world color × strength × 0.3)
 uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
@@ -299,7 +300,11 @@ void main() {
   // is linear (image sampled from an sRGB texture); gamma-encode for display so
   // the plane reads back exactly as the source image (blueprints/refs).
   if (u_shadeless == 1) {
-    vec3 c = baseColor;
+    // UR16-4: emit radiance = colorSocket × strength. At strength 1 the gamma-
+    // encoded output equals the source image (exact pixels — a screen). Above 1 the
+    // linear color is scaled before gamma so the surface reads full-bright and
+    // Camera Glare blooms it (no real GI in the live viewport — glare sells it).
+    vec3 c = baseColor * max(u_emitStrength, 0.0);
     c *= texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
     c = pow(c, vec3(1.0 / 2.2));
     outColor = vec4(c, u_matAlpha);
@@ -489,6 +494,9 @@ export class RenderedPass {
     );
     s.setInt('u_texKind', mat.texKind === 'checker' ? 1 : mat.texKind === 'image' ? 2 : 0);
     s.setInt('u_shadeless', mat.shadeless ? 1 : 0);
+    // UR16-4: the emit shader's light strength scales the shadeless output (1 =
+    // exact pixels). Non-emit shadeless refs (legacy) emit at 1.
+    s.setFloat('u_emitStrength', emitStrengthOf(mat));
     s.setFloat('u_transmission', mat.transmission ?? 0);
     s.setFloat('u_normStrength', mat.normalStrength);
     // UR16-1: object-space color gradient + alpha channel value. A material with

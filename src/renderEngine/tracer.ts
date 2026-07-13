@@ -758,8 +758,16 @@ export interface EmitterList {
   tris: Int32Array;
   /** Cumulative NORMALIZED area, ascending, last entry = 1. Parallel to `tris`. */
   cdf: Float32Array;
-  /** Emitted radiance per emitter (3 floats each), parallel to `tris`. */
+  /** Emitted radiance per emitter (3 floats each), parallel to `tris`. For flat
+   *  emissive materials this is emissive × strength; for emit (shadeless) surfaces
+   *  it is baseColor × strength (a REPRESENTATIVE constant — sampleEmitters
+   *  overrides it with the per-point color socket eval when texUV/materials are
+   *  supplied, so a TEXTURED emit surface tints the room per pixel). */
   radiance: Float32Array;
+  /** Material index (into TraceScene.materials) per emitter, parallel to `tris`.
+   *  Lets sampleEmitters evaluate a textured/gradient emit surface's color socket
+   *  at the sampled point (UR16-4). */
+  matIdx: Int32Array;
   /** Sum of all emitter triangle areas (world units²). */
   totalArea: number;
 }
@@ -778,16 +786,33 @@ export function buildEmitters(
   const idx: number[] = [];
   const areas: number[] = [];
   const rad: number[] = [];
+  const mats: number[] = [];
   const count = (tris.length / 9) | 0;
   let total = 0;
   for (let t = 0; t < count; t++) {
-    const m = materials[triMat[t]] ?? materials[0];
+    const mi = triMat[t];
+    const m = materials[mi] ?? materials[0];
     // Node-graph emission is per-hit-evaluated → not an analytic mesh light.
-    if (!m || m.nodeGraph || m.emissiveStrength <= 0) continue;
-    const er = m.emissive[0] * m.emissiveStrength;
-    const eg = m.emissive[1] * m.emissiveStrength;
-    const eb = m.emissive[2] * m.emissiveStrength;
-    if (er <= 0 && eg <= 0 && eb <= 0) continue;
+    if (!m || m.nodeGraph) continue;
+    let er: number, eg: number, eb: number;
+    if (m.shadeless) {
+      // UR16-4: an emit (shadeless) surface is a mesh light. Its representative
+      // radiance is baseColor × strength; a textured/gradient emit surface's actual
+      // per-point color is evaluated in sampleEmitters (this constant only sets the
+      // CDF magnitude + the flat-color fallback). An image emit plane has baseColor
+      // [1,1,1] here, so it is never area-culled to zero.
+      const es = m.emitScale ?? 1;
+      if (es <= 0) continue;
+      er = m.baseColor[0] * es; eg = m.baseColor[1] * es; eb = m.baseColor[2] * es;
+      // Gradient/textured emit: keep it in the list even if baseColor is dark.
+      if (er <= 0 && eg <= 0 && eb <= 0 && !m.colorGradient && (m.texKind ?? 'none') === 'none') continue;
+    } else {
+      if (m.emissiveStrength <= 0) continue;
+      er = m.emissive[0] * m.emissiveStrength;
+      eg = m.emissive[1] * m.emissiveStrength;
+      eb = m.emissive[2] * m.emissiveStrength;
+      if (er <= 0 && eg <= 0 && eb <= 0) continue;
+    }
     const o = t * 9;
     const e1x = tris[o + 3] - tris[o], e1y = tris[o + 4] - tris[o + 1], e1z = tris[o + 5] - tris[o + 2];
     const e2x = tris[o + 6] - tris[o], e2y = tris[o + 7] - tris[o + 1], e2z = tris[o + 8] - tris[o + 2];
@@ -799,6 +824,7 @@ export function buildEmitters(
     idx.push(t);
     areas.push(area);
     rad.push(er, eg, eb);
+    mats.push(mi);
     total += area;
   }
   if (idx.length === 0 || total <= 0) return null;
@@ -813,6 +839,7 @@ export function buildEmitters(
     tris: Int32Array.from(idx),
     cdf,
     radiance: Float32Array.from(rad),
+    matIdx: Int32Array.from(mats),
     totalArea: total,
   };
 }
@@ -839,6 +866,12 @@ export function sampleEmitters(
   rng: Rng,
   out: [number, number, number],
   offN?: readonly [number, number, number],
+  /** UR16-4: per-point emit color eval. When supplied, a TEXTURED / gradient emit
+   *  (shadeless) emitter's radiance is evaluated at the SAMPLED point (its UV /
+   *  object-local pos) instead of the constant emitters.radiance — so a screen
+   *  showing a half-red/half-blue image tints the room red on one side, blue on the
+   *  other. Omitted (unit tests / callers without UVs) → the constant radiance. */
+  ptCtx?: { triUV: Float32Array | null; triLocal: Float32Array | null; materials: SnapMaterial[] },
 ): void {
   // Select an emitter triangle via the area CDF (linear scan — emitter counts are
   // small at demo scale; a binary search is a drop-in if that changes).
@@ -899,9 +932,63 @@ export function sampleEmitters(
   const ro = e * 3;
   const G = (cosSurf * cosLight) / Math.max(d2, 1e-6);
   const k = (G * emitters.totalArea) / Math.PI;
-  out[0] += albedo[0] * emitters.radiance[ro] * k;
-  out[1] += albedo[1] * emitters.radiance[ro + 1] * k;
-  out[2] += albedo[2] * emitters.radiance[ro + 2] * k;
+  // Emitter radiance at the sampled point: the constant emitters.radiance, OR — for
+  // a TEXTURED / gradient emit surface with per-point context — the color socket
+  // evaluated at (w0,w1,w2) on this triangle (UR16-4).
+  emitLe[0] = emitters.radiance[ro]; emitLe[1] = emitters.radiance[ro + 1]; emitLe[2] = emitters.radiance[ro + 2];
+  const mat = ptCtx ? ptCtx.materials[emitters.matIdx[e]] : undefined;
+  if (mat && mat.shadeless) {
+    let su = 0, sv = 0, lx = 0, ly = 0, lz = 0;
+    if (ptCtx!.triUV) {
+      const U = ptCtx!.triUV, uo = tri * 6;
+      su = U[uo] * w0 + U[uo + 2] * w1 + U[uo + 4] * w2;
+      sv = U[uo + 1] * w0 + U[uo + 3] * w1 + U[uo + 5] * w2;
+    }
+    if (ptCtx!.triLocal) {
+      const L = ptCtx!.triLocal, lo = tri * 9;
+      lx = L[lo] * w0 + L[lo + 3] * w1 + L[lo + 6] * w2;
+      ly = L[lo + 1] * w0 + L[lo + 4] * w1 + L[lo + 7] * w2;
+      lz = L[lo + 2] * w0 + L[lo + 5] * w1 + L[lo + 8] * w2;
+    }
+    emitColorAtPoint(mat, su, sv, lx, ly, lz, emitLe);
+  }
+  out[0] += albedo[0] * emitLe[0] * k;
+  out[1] += albedo[1] * emitLe[1] * k;
+  out[2] += albedo[2] * emitLe[2] * k;
+}
+/** Scratch for the emit color-socket eval in sampleEmitters (no per-call alloc). */
+const emitLe: [number, number, number] = [0, 0, 0];
+const emitTexC: [number, number, number] = [0, 0, 0];
+
+/**
+ * Emitted radiance of an emit (shadeless) material at a surface point (UR16-4):
+ * the COLOR SOCKET evaluated there × the emit strength. Color = the object-space
+ * gradient at the local position, else the image/checker texture at (u,v) times
+ * baseColor, else the flat baseColor. Writes into `out` and returns it. This is
+ * the per-point radiance a TEXTURED emit surface (a screen) contributes to the
+ * room — a half-red/half-blue image emits red where u < 0.5 and blue where
+ * u ≥ 0.5. Pure; exported for the radiance-at-point unit test.
+ */
+export function emitColorAtPoint(
+  mat: SnapMaterial,
+  u: number, v: number,
+  lx: number, ly: number, lz: number,
+  out: [number, number, number],
+): [number, number, number] {
+  const es = mat.emitScale ?? 1;
+  let cr = mat.baseColor[0], cg = mat.baseColor[1], cb = mat.baseColor[2];
+  if (mat.colorGradient) {
+    const g = mat.colorGradient;
+    const gt = gradientT(g, lx, ly, lz);
+    cr = g.a[0] + (g.b[0] - g.a[0]) * gt;
+    cg = g.a[1] + (g.b[1] - g.a[1]) * gt;
+    cb = g.a[2] + (g.b[2] - g.a[2]) * gt;
+  } else if (mat.texKind && mat.texKind !== 'none') {
+    sampleMaterialTexture(mat, u, v, emitTexC);
+    cr *= emitTexC[0]; cg *= emitTexC[1]; cb *= emitTexC[2];
+  }
+  out[0] = cr * es; out[1] = cg * es; out[2] = cb * es;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,7 +1288,16 @@ export function traceRay(
     // "Emit"/image-plane look). Non-shadeless materials skip this entirely, so
     // the pre-UR4-3 bounce is byte-identical.
     if (mat.shadeless) {
-      rr += tr * alb[0]; rg += tg * alb[1]; rb += tb * alb[2];
+      // UR16-4: emit radiance = colorSocket(alb) × strength. At strength 1 this is
+      // the pre-UR16 shadeless "exact pixels". Emit surfaces are also emitter-NEE
+      // lights (buildEmitters), so gate the on-hit emission by countEmission (skip
+      // after a diffuse NEE bounce) to avoid double counting — the camera ray and
+      // specular bounces (countEmission true) always see the full emission.
+      const es = mat.emitScale ?? 1;
+      const isMeshLight = scene.emitters !== null && es > 0;
+      if (!isMeshLight || countEmission) {
+        rr += tr * alb[0] * es; rg += tg * alb[1] * es; rb += tb * alb[2] * es;
+      }
       break;
     }
     // Roughness / metallic maps MULTIPLY the scalar params (red channel), matching
@@ -1341,6 +1437,7 @@ export function traceRay(
       sampleEmitters(
         scene.bvh, scene.tris, scene.emitters, hx, hy, hz, nx, ny, nz,
         alb, rng, emit, gN,
+        { triUV: scene.triUV, triLocal: scene.triLocal, materials: scene.materials },
       );
       rr += tr * emit[0] * dw; rg += tg * emit[1] * dw; rb += tb * emit[2] * dw;
     }

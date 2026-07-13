@@ -70,6 +70,8 @@ uniform highp sampler2D uLocals;  uniform int uLocalsW;
 uniform highp sampler2D uLights;  uniform int uLightsW;  uniform int uNumLights;
 uniform highp sampler2D uEmit;    uniform int uEmitW;
 uniform int   uNumEmitters;       uniform float uEmitTotalArea;
+// UR16-4 image atlas: one LINEAR-filtered RGBA8 layer per image material.
+uniform highp sampler2DArray uAtlas;
 
 // Camera (thin-lens; aperture 0 = pinhole).
 uniform vec3  uEye;
@@ -268,12 +270,18 @@ vec3 cosineHemisphere(vec3 n) {
 }
 
 // ---- textures (procedural checker; image falls back to white — documented) --
-vec3 sampleTexture(int texKind, vec2 uv) {
+vec3 sampleTexture(int texKind, vec2 uv, float layer) {
   if (texKind == 1) {
     float sum = floor(uv.x * 8.0) + floor(uv.y * 8.0);
     float parity = mod(mod(sum, 2.0) + 2.0, 2.0);
     float s = parity < 0.5 ? 0.2 : 1.0;
     return vec3(s);
+  }
+  // UR16-4: image kind samples the atlas layer (LINEAR-filtered linear RGB, row 0
+  // = image top → matches the CPU sampleImageBilinear). layer < 0 → no decoded
+  // image (white fallback, e.g. over the MAX_TEX_LAYERS cap).
+  if (texKind == 2 && layer >= 0.0) {
+    return texture(uAtlas, vec3(uv, layer)).rgb;
   }
   return vec3(1.0);
 }
@@ -379,11 +387,33 @@ vec3 sampleEmitters(vec3 P, vec3 N, vec3 albedo, vec3 offN) {
   vec4 e0 = fetchTexel(uEmit, uEmitW, e * EMIT_TEXELS);
   vec3 radiance = fetchTexel(uEmit, uEmitW, e * EMIT_TEXELS + 1).xyz;
   int tri = int(e0.x + 0.5);
+  int emat = int(e0.z + 0.5);      // UR16-4: emitter material (per-point color eval)
   vec3 a = triVert(tri, 0), b = triVert(tri, 1), c = triVert(tri, 2);
   float r1 = rand(), r2 = rand();
   float su = sqrt(r1);
   float w0 = 1.0 - su, w1 = su * (1.0 - r2), w2 = su * r2;
   vec3 sp = a * w0 + b * w1 + c * w2;
+  // UR16-4: a TEXTURED / gradient emit surface's radiance is its color socket
+  // evaluated at the SAMPLED point (× strength) — a screen tints the room per pixel
+  // (red on one side, blue on the other). A flat-color emit uses the packed constant.
+  vec4 em3 = matT(emat, 3);
+  if (em3.x > 0.5) { // shadeless (emit)
+    vec4 em0 = matT(emat, 2), em7 = matT(emat, 7), em4 = matT(emat, 4);
+    int emTexKind = int(em0.w + 0.5);
+    vec3 col = matT(emat, 0).rgb;
+    if (em4.x > 0.5) { // color gradient (object-space)
+      vec3 la = triLocalVert(tri, 0), lb = triLocalVert(tri, 1), lc = triLocalVert(tri, 2);
+      vec3 lp = la * w0 + lb * w1 + lc * w2;
+      float gt = gradT(lp, em4.y, em4.z, em4.w);
+      col = mix(matT(emat, 5).rgb, matT(emat, 6).rgb, gt);
+    } else if (emTexKind != 0) {
+      vec4 uvA = fetchTexel(uUVs, uUVsW, tri * UV_TEXELS);
+      vec2 uv2 = fetchTexel(uUVs, uUVsW, tri * UV_TEXELS + 1).xy;
+      vec2 euv = uvA.xy * w0 + uvA.zw * w1 + uv2 * w2;
+      col *= sampleTexture(emTexKind, euv, em7.y);
+    }
+    radiance = col * em7.x; // × emit strength
+  }
   vec3 en = normalize(cross(b - a, c - a));
   vec3 dl = sp - P;
   float d2 = dot(dl, dl);
@@ -485,6 +515,9 @@ vec4 traceRay(vec3 orig, vec3 dir) {
     float es = m1.w;
     vec3 emissive = m2.rgb;
     int texKind = int(m2.w + 0.5);
+    vec4 m7 = matT(mat, 7);
+    float emitScale = m7.x;      // UR16-4 emit light strength (1 = exact pixels)
+    float imgLayer = m7.y;       // atlas layer, -1 = none
     bool shadeless = m3.x > 0.5;
     float ssw = m3.y;
     float ssr = m3.z;
@@ -497,11 +530,18 @@ vec4 traceRay(vec3 orig, vec3 dir) {
       vec2 uv2 = fetchTexel(uUVs, uUVsW, h.tri * UV_TEXELS + 1).xy;
       float w0 = 1.0 - h.uv.x - h.uv.y;
       vec2 uv = uvA.xy * w0 + uvA.zw * h.uv.x + uv2 * h.uv.y;
-      albedo *= sampleTexture(texKind, uv);
+      albedo *= sampleTexture(texKind, uv, imgLayer);
     }
 
-    // Shadeless: emit base×texture and terminate.
-    if (shadeless) { rad += thr * albedo; break; }
+    // Shadeless (UR16-4): emit radiance = colorSocket(albedo) × strength, then
+    // terminate. Emit surfaces are also emitter-NEE lights, so gate the on-hit
+    // emission by countEmission (skip after a diffuse NEE bounce) to avoid double
+    // counting — the camera ray + specular bounces see the full emission.
+    if (shadeless) {
+      bool isMeshLight = uNumEmitters > 0 && emitScale > 0.0;
+      if (!isMeshLight || countEmission) rad += thr * albedo * emitScale;
+      break;
+    }
 
     // Emission (mesh-light-gated to avoid NEE double count).
     bool emissiveIsMeshLight = uNumEmitters > 0 && es > 0.0;
