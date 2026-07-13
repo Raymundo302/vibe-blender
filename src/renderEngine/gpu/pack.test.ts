@@ -6,6 +6,7 @@ import {
   packMaterials, readMaterial,
   packLights, readLight,
   packUVs, readUV,
+  packNormals, NORMAL_TEXELS,
   packEmitters,
   flattenBVH, readNode, readTriIndex,
   TEX_MAX_WIDTH,
@@ -124,6 +125,36 @@ describe('packUVs', () => {
     const t0 = readUV(p, 0);
     expect(t0.a).toEqual([0, 0]);
     expect(t0.c).toEqual([0, 0]);
+  });
+});
+
+describe('packNormals (UR16-5 smooth shading)', () => {
+  /** Read corner `c` (0..2) of triangle `t` back out of a normals payload. */
+  function readN(p: { data: Float32Array; width: number }, t: number, c: number): [number, number, number] {
+    const lin = t * NORMAL_TEXELS + c;
+    const base = (lin % p.width + Math.floor(lin / p.width) * p.width) * 4;
+    return [p.data[base], p.data[base + 1], p.data[base + 2]];
+  }
+
+  it('lays out 3 texels/tri with the corner normals in xyz', () => {
+    // 2 triangles: tri0 corners +X/+Y/+Z, tri1 all zero (a flat sentinel).
+    const tn = new Float32Array([
+      1, 0, 0, 0, 1, 0, 0, 0, 1,
+      0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]);
+    const p = packNormals(tn, 2);
+    expect(p.texelsPerItem).toBe(NORMAL_TEXELS);
+    expect(p.count).toBe(2);
+    expect(readN(p, 0, 0)).toEqual([1, 0, 0]);
+    expect(readN(p, 0, 1)).toEqual([0, 1, 0]);
+    expect(readN(p, 0, 2)).toEqual([0, 0, 1]);
+    expect(readN(p, 1, 0)).toEqual([0, 0, 0]);
+  });
+
+  it('missing / short input packs the zero sentinel', () => {
+    const p = packNormals(null, 3);
+    expect(p.count).toBe(3);
+    for (let t = 0; t < 3; t++) for (let c = 0; c < 3; c++) expect(readN(p, t, c)).toEqual([0, 0, 0]);
   });
 });
 

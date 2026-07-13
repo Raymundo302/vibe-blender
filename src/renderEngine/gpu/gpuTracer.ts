@@ -16,7 +16,7 @@ import type { Snapshot, SnapCamera, SnapWorld, SnapMaterial, SnapLight } from '.
 import { defaultSnapWorld } from '../snapshot';
 import { buildBVH, buildEmitters } from '../tracer';
 import {
-  packScene, packTriangles, packMaterials, packLights, packUVs, packLocals, packEmitters,
+  packScene, packTriangles, packMaterials, packLights, packUVs, packLocals, packNormals, packEmitters,
   packImageAtlas, flattenBVH, type PackedScene, type Payload, type ImageAtlas,
 } from './pack';
 import { VERTEX_SRC, fragmentSource } from './kernel';
@@ -54,10 +54,14 @@ export function combine(h1: number, h2: number): number {
   return (Math.imul(h1 ^ h2, FNV_PRIME) + 0x9e3779b1) >>> 0;
 }
 
-/** Geometry key: baked world tris + material assignment + UVs (drives BVH rebuild). */
+/** Geometry key: baked world tris + material assignment + UVs + smooth normals
+ *  (drives BVH rebuild + the geometry-parallel payloads). triNormal is folded in so
+ *  a Shade-Smooth TOGGLE — which can leave the baked world tris bit-identical —
+ *  still re-packs the per-corner normals (UR16-5). */
 export function geometrySignature(snap: Snapshot): number {
   let h = combine(hashBits(snap.tris), hashBits(snap.triMat));
   if (snap.triUV && snap.triUV.length) h = combine(h, hashBits(snap.triUV));
+  if (snap.triNormal && snap.triNormal.length) h = combine(h, hashBits(snap.triNormal));
   return h >>> 0;
 }
 export function materialsSignature(mats: SnapMaterial[]): number {
@@ -83,6 +87,8 @@ interface GpuScene {
   uvs: DataTex;
   /** Per-corner object-local positions (UR16-1 gradients). */
   locals: DataTex;
+  /** Per-corner world-space shading normals (UR16-5 smooth shading). */
+  normals: DataTex;
   lights: DataTex;
   numLights: number;
   emit: DataTex;
@@ -280,7 +286,7 @@ export class GpuTracer {
   private disposeScene(): void {
     const gl = this.gl;
     if (!gl || !this.scene) return;
-    for (const dt of [this.scene.tris, this.scene.nodes, this.scene.triIdx, this.scene.mats, this.scene.uvs, this.scene.locals, this.scene.lights, this.scene.emit]) {
+    for (const dt of [this.scene.tris, this.scene.nodes, this.scene.triIdx, this.scene.mats, this.scene.uvs, this.scene.locals, this.scene.normals, this.scene.lights, this.scene.emit]) {
       gl.deleteTexture(dt.tex);
     }
     gl.deleteTexture(this.scene.atlas);
@@ -323,6 +329,7 @@ export class GpuTracer {
         mats: this.createDataTexture(gl, packed.materials),
         uvs: this.createDataTexture(gl, packed.uvs),
         locals: this.createDataTexture(gl, packed.locals),
+        normals: this.createDataTexture(gl, packed.normals),
         lights: this.createDataTexture(gl, packed.lights),
         numLights: snap.lights.length,
         emit: this.createDataTexture(gl, packed.emitters.data),
@@ -359,6 +366,7 @@ export class GpuTracer {
       s.triIdx = this.reupload(gl, s.triIdx, flat.triIndices);
       s.uvs = this.reupload(gl, s.uvs, packUVs(snap.triUV, triCount));
       s.locals = this.reupload(gl, s.locals, packLocals(snap.triLocal, triCount));
+      s.normals = this.reupload(gl, s.normals, packNormals(snap.triNormal, triCount));
     }
     if (mat) {
       s.mats = this.reupload(gl, s.mats, packMaterials(snap.materials));
@@ -461,7 +469,8 @@ export class GpuTracer {
     gl.uniform3f(this.u('uWorldZenith'), wld.zenith[0], wld.zenith[1], wld.zenith[2]);
     gl.uniform1f(this.u('uWorldStrength'), wld.strength);
 
-    // Data textures live on units 0..6; the prev-accum on unit 7; locals on 8.
+    // Data textures live on units 0..6; the prev-accum on unit 7; locals on 8; the
+    // image atlas on 9; per-corner shading normals on 10.
     this.bindDataTex(gl, 0, this.scene.tris, 'uTris', 'uTrisW');
     this.bindDataTex(gl, 1, this.scene.nodes, 'uNodes', 'uNodesW');
     this.bindDataTex(gl, 2, this.scene.triIdx, 'uTriIdx', 'uTriIdxW');
@@ -470,6 +479,8 @@ export class GpuTracer {
     this.bindDataTex(gl, 5, this.scene.lights, 'uLights', 'uLightsW');
     this.bindDataTex(gl, 6, this.scene.emit, 'uEmit', 'uEmitW');
     this.bindDataTex(gl, 8, this.scene.locals, 'uLocals', 'uLocalsW');
+    // UR16-5 per-corner shading normals on unit 10.
+    this.bindDataTex(gl, 10, this.scene.normals, 'uNormals', 'uNormalsW');
     gl.uniform1i(this.u('uPrevAccum'), 7);
     // UR16-4 image atlas on unit 9 (TEXTURE_2D_ARRAY).
     gl.activeTexture(gl.TEXTURE0 + 9);

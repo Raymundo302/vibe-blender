@@ -1009,6 +1009,11 @@ export interface TraceScene {
    * to tris (UR16-1). null → object-space gradients fall back to the world hit
    * position. */
   triLocal: Float32Array | null;
+  /** Per-corner WORLD-space SHADING normals (3 floats × 3 corners per tri),
+   * parallel to tris (UR16-5). null → flat shading (geometric normal everywhere).
+   * A zero triple on a triangle = a flat object's corner (keep the geometric
+   * normal for that hit). */
+  triNormal: Float32Array | null;
   materials: SnapMaterial[];
   lights: SnapLight[];
   camera: SnapCamera;
@@ -1029,6 +1034,7 @@ export function prepareScene(snap: Snapshot): TraceScene {
     triUV: snap.triUV ?? null,
     triGen: snap.triGen ?? null,
     triLocal: snap.triLocal ?? null,
+    triNormal: snap.triNormal ?? null,
     materials: snap.materials,
     lights: snap.lights,
     camera: snap.camera,
@@ -1132,6 +1138,41 @@ function localAtHit(
   out[2] = triLocal[o + 2] * w0 + triLocal[o + 5] * u + triLocal[o + 8] * v;
 }
 
+/**
+ * Barycentric-interpolated SHADING normal at a hit (UR16-5 smooth shading). Reads
+ * `triNormal` (world-space per-corner normals; barycentric A=1−u−v, B=u, C=v) and
+ * writes the UNIT shading normal into `out`, already clamped into the geometric
+ * hemisphere (dot(out, Ng) ≥ 0 — flip guard for the classic shadow-terminator
+ * black-splotch). Returns false — leaving the caller on the flat GEOMETRIC normal —
+ * when the snapshot carried no normals, when the triangle is a FLAT sentinel (a
+ * zero corner triple → interpolant length ≈ 0), or the interpolant degenerates.
+ * (gx,gy,gz) is the geometric normal already oriented against the ray.
+ */
+export function shadingNormalAtHit(
+  triNormal: Float32Array | null, tri: number, u: number, v: number,
+  gx: number, gy: number, gz: number, out: [number, number, number],
+): boolean {
+  if (!triNormal) return false;
+  const o = tri * 9;
+  const w0 = 1 - u - v;
+  let nx = triNormal[o] * w0 + triNormal[o + 3] * u + triNormal[o + 6] * v;
+  let ny = triNormal[o + 1] * w0 + triNormal[o + 4] * u + triNormal[o + 7] * v;
+  let nz = triNormal[o + 2] * w0 + triNormal[o + 5] * u + triNormal[o + 8] * v;
+  const len2 = nx * nx + ny * ny + nz * nz;
+  // Flat sentinel (zeros) or a degenerate interpolant → keep the geometric normal.
+  // Real unit corner normals interpolate to |n| in [~0.5, 1]; 0.25 cleanly excludes
+  // the zero triple while accepting even a 60° corner spread.
+  if (len2 < 0.25) return false;
+  const inv = 1 / Math.sqrt(len2);
+  nx *= inv; ny *= inv; nz *= inv;
+  // Clamp into the geometric hemisphere: a smooth normal that dips below the
+  // geometric horizon (grazing corner) would drive NdotL negative → a black
+  // terminator splotch. Flipping it back is the documented cheap guard.
+  if (nx * gx + ny * gy + nz * gz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+  out[0] = nx; out[1] = ny; out[2] = nz;
+  return true;
+}
+
 /** The material's alpha at a hit (UR16-1): the value passthrough, or the scalar
  *  gradient evaluated at the object-local position (loc). 1 when opaque. */
 function alphaAtHit(mat: SnapMaterial, loc: [number, number, number]): number {
@@ -1165,6 +1206,7 @@ export function traceRay(
   // P13 map scratch (reused per bounce; no allocation in the hot loop).
   const gN: [number, number, number] = [0, 0, 0]; // geometric shading normal (offsets)
   const sN: [number, number, number] = [0, 0, 0]; // map-perturbed shading normal
+  const shN: [number, number, number] = [0, 0, 0]; // UR16-5 smooth shading base normal
   const mT: [number, number, number] = [0, 0, 0];
   const mB: [number, number, number] = [0, 0, 0];
   const mapSamp: [number, number, number] = [0, 0, 0];
@@ -1383,6 +1425,16 @@ export function traceRay(
     // the normal map perturbs the SHADING normal only (matches the GLSL, which
     // keeps offsets stable). With no map, sN === gN so this is byte-identical.
     gN[0] = nx; gN[1] = ny; gN[2] = nz;
+    // UR16-5 smooth shading: replace the flat geometric normal with the
+    // barycentric-interpolated corner normal for shade-smooth objects. gN stays
+    // geometric (ray offsets / glass / hemisphere clamp); only the SHADING normal
+    // (nx,ny,nz — BRDF, NEE cosines, bounce hemisphere) changes. shN is the base
+    // the normal map (if any) perturbs; for flat/undefined it equals gN, so the
+    // no-smooth + normal-map path stays byte-identical.
+    shN[0] = gN[0]; shN[1] = gN[1]; shN[2] = gN[2];
+    if (shadingNormalAtHit(scene.triNormal, hit.tri, hit.u, hit.v, gN[0], gN[1], gN[2], shN)) {
+      nx = shN[0]; ny = shN[1]; nz = shN[2];
+    }
     if (hasNormalMap && scene.triUV) {
       const o9 = hit.tri * 9;
       p0[0] = scene.tris[o9]; p0[1] = scene.tris[o9 + 1]; p0[2] = scene.tris[o9 + 2];
@@ -1392,7 +1444,10 @@ export function traceRay(
       uv0[0] = scene.triUV[o6]; uv0[1] = scene.triUV[o6 + 1];
       uv1[0] = scene.triUV[o6 + 2]; uv1[1] = scene.triUV[o6 + 3];
       uv2[0] = scene.triUV[o6 + 4]; uv2[1] = scene.triUV[o6 + 5];
-      if (tangentFrame(p0, p1, p2, uv0, uv1, uv2, gN, mT, mB)) {
+      // Perturb the SHADING base normal shN (= smooth interp, or gN when flat) so a
+      // normal/bump map layers on TOP of smooth shading; shN === gN when the object
+      // is flat, keeping the pre-UR16-5 map path byte-identical.
+      if (tangentFrame(p0, p1, p2, uv0, uv1, uv2, shN, mT, mB)) {
         const strength = mat.normalStrength ?? 1;
         const img = mat.normalImage!;
         if (mat.normalIsBump) {
@@ -1402,10 +1457,10 @@ export function traceRay(
           sampleImageBilinear(img, uu + tx, vv, mapSamp); const hR = mapSamp[0];
           sampleImageBilinear(img, uu, vv - ty, mapSamp); const hD = mapSamp[0];
           sampleImageBilinear(img, uu, vv + ty, mapSamp); const hU = mapSamp[0];
-          applyBumpMap(hR - hL, hU - hD, strength, mT, mB, gN, sN);
+          applyBumpMap(hR - hL, hU - hD, strength, mT, mB, shN, sN);
         } else {
           sampleImageBilinear(img, uu, vv, mapSamp);
-          applyNormalMap(mapSamp, strength, mT, mB, gN, sN);
+          applyNormalMap(mapSamp, strength, mT, mB, shN, sN);
         }
         nx = sN[0]; ny = sN[1]; nz = sN[2];
       }

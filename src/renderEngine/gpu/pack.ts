@@ -51,6 +51,10 @@ export const MAT_TEXELS = 8;
 /** Object-LOCAL triangle positions (UR16-1 gradient eval): 3 texels/tri, parallel
  *  to the triangle texture. t0 = localA.xyz; t1 = localB.xyz; t2 = localC.xyz. */
 export const LOCAL_TEXELS = 3;
+/** Per-corner WORLD-space SHADING normals (UR16-5 smooth shading): 3 texels/tri,
+ *  parallel to the triangle texture. t0 = nA.xyz; t1 = nB.xyz; t2 = nC.xyz. A zero
+ *  triple = a FLAT triangle (the kernel keeps its geometric normal). */
+export const NORMAL_TEXELS = 3;
 /** UV: 2 texels/tri. t0 = uv0.xy, uv1.xy; t1 = uv2.xy, 0, 0. */
 export const UV_TEXELS = 2;
 /** Emitter: 2 texels/emitter (UR10-2 mesh-light NEE). t0 = triIndex, cdf,
@@ -240,6 +244,21 @@ export function packLocals(triLocal: Float32Array | null | undefined, triCount: 
     texels.push([g(6), g(7), g(8), 0]);
   }
   return buildPayload(texels, LOCAL_TEXELS, triCount);
+}
+
+/** Pack per-corner WORLD-space SHADING normals (UR16-5). Missing/short input (no
+ *  shade-smooth object, or a flat triangle) packs a ZERO triple → the kernel keeps
+ *  the geometric normal for that hit. Parallel to the triangle texture. */
+export function packNormals(triNormal: Float32Array | null | undefined, triCount: number): Payload {
+  const texels: number[][] = [];
+  for (let i = 0; i < triCount; i++) {
+    const o = i * 9;
+    const g = (k: number) => (triNormal && o + k < triNormal.length ? triNormal[o + k] : 0);
+    texels.push([g(0), g(1), g(2), 0]);
+    texels.push([g(3), g(4), g(5), 0]);
+    texels.push([g(6), g(7), g(8), 0]);
+  }
+  return buildPayload(texels, NORMAL_TEXELS, triCount);
 }
 
 export interface MatRead {
@@ -515,6 +534,8 @@ export interface PackedScene {
   uvs: Payload;
   /** Per-corner object-local positions (UR16-1 gradients). */
   locals: Payload;
+  /** Per-corner world-space shading normals (UR16-5 smooth shading). */
+  normals: Payload;
   emitters: PackedEmitters;
   bvh: FlatBVH;
 }
@@ -531,6 +552,7 @@ export function packScene(
     lights: packLights(snap.lights),
     uvs: packUVs(snap.triUV, triCount),
     locals: packLocals(snap.triLocal, triCount),
+    normals: packNormals(snap.triNormal, triCount),
     emitters: packEmitters(emitters),
     bvh: flattenBVH(bvh),
   };

@@ -38,7 +38,7 @@
 
 import {
   TRI_TEXELS, MAT_TEXELS, LIGHT_TEXELS, NODE_TEXELS, TRIIDX_PER_TEXEL,
-  UV_TEXELS, EMIT_TEXELS, LOCAL_TEXELS,
+  UV_TEXELS, EMIT_TEXELS, LOCAL_TEXELS, NORMAL_TEXELS,
 } from './pack';
 
 /** Fixed traversal stack depth (task spec: max depth 64). */
@@ -67,6 +67,7 @@ uniform highp sampler2D uTriIdx;  uniform int uTriIdxW;
 uniform highp sampler2D uMats;    uniform int uMatsW;
 uniform highp sampler2D uUVs;     uniform int uUVsW;
 uniform highp sampler2D uLocals;  uniform int uLocalsW;
+uniform highp sampler2D uNormals; uniform int uNormalsW;
 uniform highp sampler2D uLights;  uniform int uLightsW;  uniform int uNumLights;
 uniform highp sampler2D uEmit;    uniform int uEmitW;
 uniform int   uNumEmitters;       uniform float uEmitTotalArea;
@@ -102,6 +103,7 @@ const int   TRI_TEXELS   = ${TRI_TEXELS};
 const int   MAT_TEXELS   = ${MAT_TEXELS};
 const int   UV_TEXELS    = ${UV_TEXELS};
 const int   LOCAL_TEXELS = ${LOCAL_TEXELS};
+const int   NORMAL_TEXELS= ${NORMAL_TEXELS};
 const int   LIGHT_TEXELS = ${LIGHT_TEXELS};
 const int   EMIT_TEXELS  = ${EMIT_TEXELS};
 const int   NODE_TEXELS  = ${NODE_TEXELS};
@@ -123,6 +125,7 @@ float triIndexAt(int k) {
 vec4 matT(int mat, int j) { return fetchTexel(uMats, uMatsW, mat * MAT_TEXELS + j); }
 vec3 triVert(int tri, int corner) { return fetchTexel(uTris, uTrisW, tri * TRI_TEXELS + corner).xyz; }
 vec3 triLocalVert(int tri, int corner) { return fetchTexel(uLocals, uLocalsW, tri * LOCAL_TEXELS + corner).xyz; }
+vec3 triNormalVert(int tri, int corner) { return fetchTexel(uNormals, uNormalsW, tri * NORMAL_TEXELS + corner).xyz; }
 // UR16-1: object-space linear gradient t = clamp(p[axis]·scale + offset, 0, 1).
 float gradT(vec3 p, float axis, float offset, float scale) {
   float c = axis < 0.5 ? p.x : axis < 1.5 ? p.y : p.z;
@@ -557,6 +560,21 @@ vec4 traceRay(vec3 orig, vec3 dir) {
     vec3 n = frontFace ? ngUnit : -ngUnit;
     vec3 hp = ox + dd * h.t;
     vec3 gN = n;
+
+    // UR16-5 smooth shading: barycentric corner-normal → SHADING normal n (BRDF,
+    // NEE cosines, bounce hemisphere). gN/ngUnit stay geometric for ray offsets and
+    // glass enter/exit. A zero corner triple = a FLAT triangle (sentinel) → keep the
+    // geometric normal. Clamped into the geometric hemisphere (dot ≥ 0) — the
+    // shadow-terminator flip guard, matching the CPU shadingNormalAtHit.
+    {
+      float w0 = 1.0 - h.uv.x - h.uv.y;
+      vec3 sm = triNormalVert(h.tri, 0) * w0 + triNormalVert(h.tri, 1) * h.uv.x + triNormalVert(h.tri, 2) * h.uv.y;
+      if (dot(sm, sm) > 0.25) {
+        sm = normalize(sm);
+        if (dot(sm, gN) < 0.0) sm = -sm;
+        n = sm;
+      }
+    }
 
     // SSS decision (front face only; draws rng only when ssw > 0).
     bool isSSS = frontFace && ssw > 0.0 && rand() < ssw;

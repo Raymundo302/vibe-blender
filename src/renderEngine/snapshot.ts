@@ -2,6 +2,7 @@ import { getNodeDef } from '../core/nodes/nodeGraph';
 import { nodeImageCache } from '../core/nodes/imageCache';
 import '../core/nodes/builtins';
 import { Vec3 } from '../core/math/vec3';
+import { vertexNormals } from '../core/mesh/meshToGpu';
 import type { Scene } from '../core/scene/Scene';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import { cameraFovY, cameraLensRadius, DOF_APERTURE_SCALE, objectForward, DEFAULT_MATERIAL, AREA_MIN_SIZE, shaderOverrides, emitStrengthOf, type Material, type GradientInput } from '../core/scene/objectData';
@@ -194,6 +195,18 @@ export interface Snapshot {
    * own local axis, transform-independent). Optional; absent → gradients fall
    * back to the world hit position. */
   triLocal?: Float32Array;
+  /** Per-corner WORLD-space SHADING normal (3 floats × 3 corners per tri), parallel
+   * to tris (UR16-5 smooth shading). For SHADE-SMOOTH objects each corner carries
+   * its area-weighted per-vert normal (the same `vertexNormals` the raster path
+   * uses, transformed by the object's normal matrix); FLAT objects carry a ZERO
+   * triple — the sentinel that tells the engines to keep the triangle's geometric
+   * normal. SIZE GUARD: the whole array is present ONLY when the scene has at least
+   * one shade-smooth object; absent → every hit shades flat (byte-identical to the
+   * pre-UR16-5 tracer). The engines interpolate it barycentrically → normalize →
+   * use it as the SHADING normal (BRDF / NEE cosines / bounce hemisphere), while
+   * keeping the GEOMETRIC normal for ray-offset bias, glass enter/exit and the
+   * shading-normal hemisphere clamp. */
+  triNormal?: Float32Array;
   /** Material library; index 0 is always the default grey material. */
   materials: SnapMaterial[];
   lights: SnapLight[];
@@ -300,6 +313,11 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
   const triUVArr: number[] = [];
   const triGenArr: number[] = [];
   const triLocalArr: number[] = [];
+  // UR16-5 per-corner shading normals (world space). Built in lock-step with tris:
+  // shade-smooth objects push their per-vert normals, flat objects push zeros (the
+  // "keep the geometric normal" sentinel). Emitted only when anySmooth (size guard).
+  const triNormalArr: number[] = [];
+  let anySmooth = false;
   /** Derived tinted materials, keyed by base index + tint (see face loop). */
   const tintedIndex = new Map<string, number>();
   for (const obj of scene.objects) {
@@ -317,6 +335,25 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     // Precompute world-space vert positions once.
     const world = new Map<number, Vec3>();
     for (const v of mesh.verts.values()) world.set(v.id, model.transformPoint(v.co));
+    // UR16-5: shade-smooth objects carry per-vert WORLD-space shading normals —
+    // the SAME area-weighted `vertexNormals` the raster path uses (meshToGpu),
+    // transformed by the object's normal matrix (inverse-transpose upper-3×3, so
+    // non-uniform scale stays correct) and normalized. Flat objects → no map
+    // (their corners push the zero sentinel below).
+    let worldN: Map<number, Vec3> | null = null;
+    if (obj.shadeSmooth) {
+      const nm = model.normalMatrix();
+      const local = vertexNormals(mesh);
+      worldN = new Map<number, Vec3>();
+      for (const [vid, n] of local) {
+        const wx = nm[0] * n.x + nm[3] * n.y + nm[6] * n.z;
+        const wy = nm[1] * n.x + nm[4] * n.y + nm[7] * n.z;
+        const wz = nm[2] * n.x + nm[5] * n.y + nm[8] * n.z;
+        const len = Math.hypot(wx, wy, wz);
+        worldN.set(vid, len > 1e-12 ? new Vec3(wx / len, wy / len, wz / len) : new Vec3(0, 0, 0));
+      }
+      anySmooth = true;
+    }
     // GENERATED coords (P16-2): each vert's LOCAL position normalized to the
     // evaluated mesh's local AABB, 0..1 per axis. Computed once per object; a
     // degenerate (flat) axis maps to 0.5 (the normalized center).
@@ -376,6 +413,10 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
           // Object-LOCAL corner position (UR16-1 gradient eval).
           const lco = mesh.verts.get(vs[corner])?.co;
           triLocalArr.push(lco?.x ?? 0, lco?.y ?? 0, lco?.z ?? 0);
+          // UR16-5 per-corner shading normal (world). Smooth objects push the vert
+          // normal; flat objects push zero (the "use the geometric normal" sentinel).
+          const wn = worldN?.get(vs[corner]);
+          triNormalArr.push(wn?.x ?? 0, wn?.y ?? 0, wn?.z ?? 0);
         }
         triMatArr.push(faceMi);
       }
@@ -452,6 +493,10 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     triUV: new Float32Array(triUVArr),
     triGen: new Float32Array(triGenArr),
     triLocal: new Float32Array(triLocalArr),
+    // Size guard (UR16-5): only carry per-corner normals when the scene has a
+    // shade-smooth object; otherwise omit → every hit shades flat, byte-identical
+    // to the pre-UR16-5 tracer.
+    triNormal: anySmooth ? new Float32Array(triNormalArr) : undefined,
     materials,
     lights,
     camera,
