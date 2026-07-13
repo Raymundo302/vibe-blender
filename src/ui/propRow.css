@@ -99,3 +99,26 @@
   flex-direction: column;
   gap: 4px;
 }
+
+/* Dark-theme the native inputs (Ray 2026-07-12: text boxes rendered white/
+   light — invert to match the rest of the app: dark ground, light font).
+   Mirrors theme.css .properties-input; color inputs keep their swatch look. */
+.prop-row-control > input:not([type='color']):not([type='range']):not([type='checkbox']),
+.prop-row-control > select,
+.material-tab-slot-select,
+.material-tab-slot-rename,
+.material-tab-new-btn {
+  color: var(--vb-text, #d0d0d0);
+  background: var(--vb-input, #1f1f1f);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 2px;
+  font: inherit;
+  padding: 1px 4px;
+}
+.prop-row-control > input:not([type='color']):not([type='range']):focus,
+.material-tab-slot-rename:focus {
+  outline: none;
+  border-color: var(--vb-accent, #fe730f);
+  box-shadow: 0 0 0 1px var(--vb-accent, #fe730f);
+}
+.prop-row-control > select option { background: var(--vb-input, #1f1f1f); }

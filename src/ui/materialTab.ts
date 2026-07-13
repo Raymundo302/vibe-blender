@@ -546,6 +546,10 @@ class MaterialTab {
     this.slotSelect = document.createElement('select');
     this.slotSelect.className = 'material-tab-slot-select';
     this.slotSelect.addEventListener('change', () => this.onSlotChange());
+    // The slot select IS the one name place (Ray: two name fields → one) —
+    // double-click swaps in a text input to rename the current material.
+    this.slotSelect.title = 'Active material — double-click to rename';
+    this.slotSelect.addEventListener('dblclick', () => this.beginSlotRename());
     const newBtn = document.createElement('button');
     newBtn.type = 'button';
     newBtn.className = 'material-tab-new-btn';
@@ -659,10 +663,8 @@ class MaterialTab {
     // (1) Shader row — the socket circle opens the chooser.
     this.fields.append(this.buildShaderRow(shader));
 
-    // (2) Name row.
-    this.fields.append(this.buildNameRow(mat));
-
-    // (3) Channel rows for this shader.
+    // (2) Channel rows for this shader. (The former Name row is gone — the
+    // slot select at the top is the one name place; double-click renames.)
     for (const ch of channelsForShader(shader)) {
       this.fields.append(this.buildChannelRow(mat, ch));
       // Always Textured sits next to the color row (super / image planes).
@@ -698,13 +700,28 @@ class MaterialTab {
     return propRow({ label: 'Shader', socket, controls: [value], rowClass: 'material-tab-shader-row' });
   }
 
-  private buildNameRow(mat: Material): HTMLElement {
+  /** Double-click on the slot select → inline rename (replaces the removed
+   *  Name row; same undoable 'name' field commit path). */
+  private beginSlotRename(): void {
+    const mat = this.material();
+    if (!mat || this.slotSelect.parentElement === null) return;
     const inp = document.createElement('input');
     inp.type = 'text';
-    inp.className = 'material-tab-name';
+    inp.className = 'material-tab-name material-tab-slot-rename';
     inp.value = mat.name;
     this.wireField(inp, 'name', () => inp.value, () => this.material()?.name ?? '');
-    return propRow({ label: 'Name', controls: [inp] });
+    const done = (): void => {
+      inp.replaceWith(this.slotSelect);
+      this.update();
+    };
+    inp.addEventListener('blur', done);
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === 'Escape') inp.blur();
+      e.stopPropagation();
+    });
+    this.slotSelect.replaceWith(inp);
+    inp.focus();
+    inp.select();
   }
 
   private buildChannelRow(mat: Material, ch: MaterialChannelName): HTMLElement {
