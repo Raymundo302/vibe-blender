@@ -27,6 +27,7 @@ import { ShadowPass, sunShadowMatrix, spotShadowMatrix, cubeFaceView, SHADOW_SLO
 import { averageWorldColor } from '../core/scene/worldData';
 import { IconPass, type IconShape } from './passes/iconPass';
 import { CameraFrustumPass, cameraFrameProjMatrix } from './passes/cameraFrustumPass';
+import { applyCamView, identityCamView, type CamView } from '../camera/camView';
 import { LightDirPass, hasAimArrow } from './passes/lightDirPass';
 import { EmptyAxesPass } from './passes/emptyAxesPass';
 import { ensureBaked } from '../core/nodes/bake';
@@ -225,6 +226,15 @@ export class Renderer {
    * the user orbits/pans/zooms. Public so e2e can drive it directly.
    */
   cameraViewId: number | null = null;
+
+  /**
+   * Camera-view zoom/pan (passepartout) while looking through a camera without
+   * view-lock. Wheel scales `zoom`, Shift+MMB shifts `panX`/`panY` (NDC). Applied
+   * to the frame projection here + the OrbitCamera (input) + the passepartout DOM,
+   * so all three agree. Persists across enter/exit; only meaningful when
+   * cameraViewId is set. Public so input + the overlay can read/write it.
+   */
+  camView: CamView = identityCamView();
 
   constructor(private readonly ctx: GlContext) {
     const { gl, canvas } = ctx;
@@ -784,7 +794,9 @@ export class Renderer {
         const rs = scene.renderSettings;
         return {
           view: world.invert(),
-          proj: cameraFrameProjMatrix(camObj.camera, rs.width, rs.height, canvas.width, canvas.height),
+          // Camera-view zoom/pan (passepartout) rides on the letterboxed frame
+          // projection; the OrbitCamera applies the SAME transform so input agrees.
+          proj: applyCamView(cameraFrameProjMatrix(camObj.camera, rs.width, rs.height, canvas.width, canvas.height), this.camView),
           eye: scene.worldTransformOf(camObj).position,
           fovY: cameraFovY(camObj.camera),
         };

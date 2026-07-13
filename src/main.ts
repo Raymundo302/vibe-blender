@@ -2,6 +2,7 @@ import { createGlContext } from './render/gl/context';
 import { Renderer } from './render/Renderer';
 import { Scene } from './core/scene/Scene';
 import { OrbitCamera } from './camera/OrbitCamera';
+import { identityCamView } from './camera/camView';
 import { UndoStack } from './core/undo/UndoStack';
 import { makeCube } from './core/mesh/primitives';
 import { cameraTransformFromView, quatFromBasis } from './tools/cameraToView';
@@ -599,7 +600,14 @@ function syncInputCameraToView(): void {
     else if (id === null) camera.fovY = camViewSavedFovY;                      // exiting
     camViewPrevId = id;
   }
-  if (id === null) return;
+  if (id === null) {
+    // Free navigation: no camera-view zoom/pan on the input projection.
+    camera.camView = identityCamView();
+    return;
+  }
+  // Mirror the renderer's camera-view zoom/pan onto the input camera so pointer
+  // rays match the on-screen (zoomed/panned) passepartout frame exactly.
+  camera.camView = { zoom: renderer.camView.zoom, panX: renderer.camView.panX, panY: renderer.camView.panY };
   const camObj = scene.get(id);
   if (!camObj || camObj.kind !== 'camera' || !camObj.camera) return;
   // Pose from the central world matrix (respects parenting + Look At), so input

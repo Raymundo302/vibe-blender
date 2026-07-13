@@ -96,7 +96,19 @@ export class Passepartout {
     const h = this.canvas.clientHeight;
     const rs = this.scene.renderSettings;
     const aspect = rs.height > 0 ? rs.width / rs.height : FRAME_ASPECT;
-    const r = frameRect(w, h, aspect);
+    const base = frameRect(w, h, aspect);
+    // Camera-view zoom/pan: scale the frame about the viewport center and shift
+    // it by the NDC pan (panX right, panY up → screen y down). Matches the render
+    // projection's applyCamView exactly, so the frame tracks the rendered image.
+    const cv = this.renderer.camView;
+    const cxV = w / 2 + cv.panX * (w / 2);
+    const cyV = h / 2 - cv.panY * (h / 2);
+    const r = {
+      w: base.w * cv.zoom,
+      h: base.h * cv.zoom,
+      x: cxV - (base.w * cv.zoom) / 2,
+      y: cyV - (base.h * cv.zoom) / 2,
+    };
     this.root.style.display = '';
 
     // Four margin panes around the frame (any zero-size pane simply collapses).

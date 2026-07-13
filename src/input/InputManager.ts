@@ -29,6 +29,7 @@ import { frameSelection } from '../tools/frame';
 import { viewSnap } from '../ui/axisGizmo';
 import { cameraTransformFromView } from '../tools/cameraToView';
 import { OrbitCamera } from '../camera/OrbitCamera';
+import { clampCamZoom } from '../camera/camView';
 import { objectForward } from '../core/scene/objectData';
 import { Vec3 } from '../core/math/vec3';
 import { Transform } from '../core/math/transform';
@@ -395,6 +396,9 @@ export class InputManager {
   private camRig: OrbitCamera | null = null;
   private camRigObj: SceneObject | null = null;
   private camRigBefore: Transform | null = null;
+
+  /** Shift+MMB drag panning the camera-view frame (passepartout) — see camView. */
+  private camViewPanning = false;
 
   // --- Continuous grab (UR4-1) ------------------------------------------------
   /** Virtual, unbounded pointer accumulated from raw movement deltas while a
@@ -877,6 +881,14 @@ export class InputManager {
         e.preventDefault();
         return;
       }
+      // Through-camera (not view-locked): Shift+MMB PANS the camera-view frame
+      // (passepartout) instead of exiting; a plain MMB still exits to free orbit.
+      if (this.renderer.cameraViewId !== null && e.shiftKey) {
+        this.camViewPanning = true;
+        this.canvas.setPointerCapture(e.pointerId);
+        e.preventDefault();
+        return;
+      }
       // Unlocked (or user camera): navigating exits camera-view first. Commit any
       // pending rig session (e.g. lock was just turned off) before leaving.
       this.finalizeCamRig();
@@ -988,6 +1000,15 @@ export class InputManager {
     }
     const dx = this.pointer.x - prev.x;
     const dy = this.pointer.y - prev.y;
+    // Shift+MMB in camera view: pan the frame (passepartout) by an NDC delta that
+    // tracks the cursor 1:1 (screen dx → +panX, screen dy → −panY).
+    if (this.camViewPanning) {
+      const { width, height } = this.ctx.viewportSize();
+      const cv = this.renderer.camView;
+      cv.panX += (2 * dx) / Math.max(1, width);
+      cv.panY -= (2 * dy) / Math.max(1, height);
+      return;
+    }
     // Locked camera view: MMB drag flies the camera via the rig.
     if ((this.orbiting || this.panning) && this.camRig) {
       if (this.orbiting) this.camRig.orbit(dx, dy);
@@ -1045,6 +1066,7 @@ export class InputManager {
     if (e.button === 1) {
       this.orbiting = false;
       this.panning = false;
+      this.camViewPanning = false;
       if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     }
     if (e.button === 0) {
@@ -1103,6 +1125,13 @@ export class InputManager {
     if (this.ensureCamRig()) {
       this.camRig!.zoom(e.deltaY);
       this.writeCamRig();
+      return;
+    }
+    // Through-camera (not view-locked): the wheel scales the camera-view frame
+    // (Blender's passepartout zoom) instead of exiting — zoom in = bigger frame.
+    if (this.renderer.cameraViewId !== null) {
+      const cv = this.renderer.camView;
+      cv.zoom = clampCamZoom(cv.zoom * Math.exp(-e.deltaY * 0.001));
       return;
     }
     this.finalizeCamRig();

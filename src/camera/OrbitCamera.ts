@@ -1,6 +1,7 @@
 import { Vec3 } from '../core/math/vec3';
 import { Mat4 } from '../core/math/mat4';
 import { rayFromNdc, type Ray } from '../core/math/ray';
+import { applyCamView, identityCamView, type CamView } from './camView';
 
 /**
  * Blender-style turntable camera: yaw around world Z (up, Blender convention),
@@ -50,8 +51,13 @@ export class OrbitCamera {
     return Mat4.lookAt(this.eye, this.target, Vec3.Z);
   }
 
+  /** Camera-view zoom/pan applied to the projection — identity except while
+   *  looking through a camera (kept in sync with Renderer.camView by main.ts),
+   *  so pointer rays match the on-screen frame after a passepartout zoom/pan. */
+  camView: CamView = identityCamView();
+
   projMatrix(aspect: number): Mat4 {
-    return Mat4.perspective(this.fovY, aspect, this.near, this.far);
+    return applyCamView(Mat4.perspective(this.fovY, aspect, this.near, this.far), this.camView);
   }
 
   orbit(dxPx: number, dyPx: number): void {
