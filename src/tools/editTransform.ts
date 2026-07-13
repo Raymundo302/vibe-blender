@@ -9,6 +9,7 @@ import { Quat } from '../core/math/quat';
 import { rayPlane } from '../core/math/ray';
 import { MeshEditCommand } from '../core/undo/meshCommands';
 import { snapActive, snapVec, SNAP_STEP } from '../core/snap';
+import { vertexNormals } from '../core/mesh/meshToGpu';
 import { NumericInput } from './numericInput';
 
 type AxisLock = 'x' | 'y' | 'z' | null;
@@ -133,6 +134,10 @@ export abstract class EditTransformBase implements Operator {
   /** Inverse model matrix: world → local for writing back. */
   protected invMatrix!: Mat4;
   protected lastPointer: PointerState = { x: 0, y: 0 };
+  /** WORLD-space axis basis for X/Y/Z locks, from the transform orientation:
+   *  Global = world axes, Local = the object's rotation, Normal = the selection's
+   *  averaged normal (Z) + a tangent frame. Computed once at start(). */
+  protected axisBasis: { x: Vec3; y: Vec3; z: Vec3 } = { x: Vec3.X, y: Vec3.Y, z: Vec3.Z };
 
   /** Renderer is optional so unit tests can drive the op without a GL context;
    *  it is only used to draw/clear the proportional radius circle overlay. */
@@ -162,6 +167,7 @@ export abstract class EditTransformBase implements Operator {
     const selWorld: Vec3[] = [];
     for (const id of selectedIds) selWorld.push(m.transformPoint(obj.mesh.verts.get(id)!.co));
     this.pivot = centroid(selWorld);
+    this.axisBasis = this.computeAxisBasis(ctx, obj, m);
 
     // Proportional on: capture EVERY vert so the weight map can grow/shrink
     // (via the wheel) without missing a "before" position. Off: selection only.
@@ -182,6 +188,37 @@ export abstract class EditTransformBase implements Operator {
 
   private recomputeWeights(): void {
     this.weights = computeProportionalWeights(this.mesh, this.selectedSet, this.proportionalOn, proportional.radius);
+  }
+
+  /**
+   * The WORLD-space X/Y/Z basis for axis locks under the active transform
+   * orientation. Global → world axes; Local → the edit object's world rotation;
+   * Normal → the selection's averaged vertex normal as Z with an orthonormal
+   * tangent frame (so `Z` moves/rotates/scales along the element normal). Falls
+   * back to world axes when the normal is degenerate.
+   */
+  private computeAxisBasis(ctx: OperatorContext, obj: SceneObject, m: Mat4): { x: Vec3; y: Vec3; z: Vec3 } {
+    const world = { x: Vec3.X, y: Vec3.Y, z: Vec3.Z };
+    const orient = ctx.scene.transformOrientation;
+    if (orient === 'global') return world;
+    if (orient === 'local') {
+      const q = ctx.scene.worldTransformOf(obj).rotation;
+      return { x: q.rotate(Vec3.X).normalize(), y: q.rotate(Vec3.Y).normalize(), z: q.rotate(Vec3.Z).normalize() };
+    }
+    // Normal: average the selected verts' (locked) normals, take it to world as Z.
+    const vn = vertexNormals(this.mesh);
+    let nLocal = Vec3.ZERO;
+    for (const id of this.selectedSet) {
+      const n = vn.get(id);
+      if (n) nLocal = nLocal.add(n);
+    }
+    let z = m.transformDir(nLocal); // rotation+uniform-scale correct; fine here
+    if (z.length() < 1e-6) return world; // no faces → fall back to world axes
+    z = z.normalize();
+    const ref = Math.abs(z.z) < 0.9 ? Vec3.Z : Vec3.X;
+    const x = ref.cross(z).normalize();
+    const y = z.cross(x).normalize();
+    return { x, y, z };
   }
 
   /** Influence weight for a vert (defaults to 1 for selected/plain transforms). */
@@ -316,7 +353,8 @@ export class EditTranslateOperator extends EditTransformBase {
     const forward = ctx.camera.forward;
     if (!this.axis) return rayPlane(ray, this.pivot, forward);
 
-    const axisDir = this.axis === 'x' ? Vec3.X : this.axis === 'y' ? Vec3.Y : Vec3.Z;
+    // Axis lock in the active transform orientation (Normal → element normal).
+    const axisDir = this.axis === 'x' ? this.axisBasis.x : this.axis === 'y' ? this.axisBasis.y : this.axisBasis.z;
     const planeNormal = axisDir.cross(forward).cross(axisDir).normalize();
     const hit = rayPlane(ray, this.pivot, planeNormal);
     if (!hit) return null;
@@ -448,7 +486,7 @@ export class EditRotateOperator extends EditTransformBase {
 
   private apply(ctx: OperatorContext): void {
     const axisDir =
-      this.axis === 'x' ? Vec3.X : this.axis === 'y' ? Vec3.Y : this.axis === 'z' ? Vec3.Z : ctx.camera.forward;
+      this.axis === 'x' ? this.axisBasis.x : this.axis === 'y' ? this.axisBasis.y : this.axis === 'z' ? this.axisBasis.z : ctx.camera.forward;
     const numeric = this.numeric.value;
     const angle = numeric !== null ? (numeric * Math.PI) / 180 : this.pointerAngle;
     const q = Quat.fromAxisAngle(axisDir, angle);
@@ -528,9 +566,14 @@ export class EditScaleOperator extends EditTransformBase {
     const sy = !this.axis || this.axis === 'y' ? f : 1;
     const sz = !this.axis || this.axis === 'z' ? f : 1;
 
+    // Scale in the oriented basis: project each offset onto X/Y/Z of the
+    // transform orientation, scale that component, rebuild (Global reduces to the
+    // world-axis scaling exactly).
+    const { x: bx, y: by, z: bz } = this.axisBasis;
     for (const id of this.affected) {
       const off = this.worldBefore.get(id)!.sub(this.pivot);
-      this.setWorld(id, this.pivot.add(new Vec3(off.x * sx, off.y * sy, off.z * sz)));
+      const scaled = bx.scale(off.dot(bx) * sx).add(by.scale(off.dot(by) * sy)).add(bz.scale(off.dot(bz) * sz));
+      this.setWorld(id, this.pivot.add(scaled));
     }
     this.updateStatus(ctx, f);
   }
