@@ -1,7 +1,5 @@
 import type { Scene } from '../core/scene/Scene';
 import { openThemePicker } from './themePicker';
-import type { CursorOverlay } from './cursorOverlay';
-import { overlays, saveOverlayPrefs, type OverlayPrefs } from '../render/overlayPrefs';
 import { autoKeyState } from './timeline';
 import { setTip } from './tooltip';
 import { APP_VERSION } from '../version';
@@ -47,7 +45,6 @@ export class Topbar {
   constructor(
     private readonly scene: Scene,
     private readonly actions: TopbarActions,
-    private readonly cursorOverlay: CursorOverlay,
   ) {
     const root = document.getElementById('topbar') as HTMLElement;
     root.replaceChildren();
@@ -56,12 +53,7 @@ export class Topbar {
     title.className = 'topbar-title';
     title.textContent = 'Vibe Blender';
 
-    // Overlays dropdown (P12-2): a checkbox popover toggling viewport
-    // decorations (grid / origin points / icons / frustums / 3D cursor).
-    const overlaysBtn = Topbar.makeButton('⬒ Overlays', 'overlays', () => {
-      this.toggleOverlaysMenu(overlaysBtn);
-    });
-    setTip(overlaysBtn, 'Viewport overlays');
+    // (Overlays dropdown moved to the 3D viewport header — see viewportHeader.ts.)
 
     // 💡 Lights toggle (P12-2): flips visibility on ALL light objects at once.
     // Off if any light is on (turn them all off), else turn them all on. Not
@@ -129,7 +121,7 @@ export class Topbar {
     const clTabs = Topbar.cluster('cl-tabs');
     // Mode chip, Snap, X-ray and Pivot moved into the 3D Viewport header
     // (viewportHeader.ts); the topbar keeps the scene-wide toggles.
-    const clView = Topbar.cluster('cl-view', overlaysBtn, lights, autoKey);
+    const clView = Topbar.cluster('cl-view', lights, autoKey);
     const clRender = Topbar.cluster('cl-render', renderBtn, renderAnimBtn);
     const clRight = Topbar.cluster('cl-right', themeBtn, helpBtn);
 
@@ -302,40 +294,6 @@ export class Topbar {
       root.style.top = `${Math.max(4, top)}px`;
     });
     return root;
-  }
-
-  private toggleOverlaysMenu(anchor: HTMLElement): void {
-    if (this.openMenu) { this.openMenu.close(); return; }
-    const root = this.popover(anchor);
-    const heading = document.createElement('div');
-    heading.className = 'topbar-menu-heading';
-    heading.textContent = 'Overlays';
-    root.appendChild(heading);
-
-    const rows: [keyof OverlayPrefs, string][] = [
-      ['grid', 'Grid'],
-      ['originPoints', 'Origin Points'],
-      ['icons', 'Light & Camera Icons'],
-      ['frustums', 'Camera Frustums'],
-      ['cursor3d', '3D Cursor'],
-    ];
-    for (const [key, label] of rows) {
-      const row = document.createElement('label');
-      row.className = 'topbar-menu-check';
-      row.dataset.overlay = key;
-      const box = document.createElement('input');
-      box.type = 'checkbox';
-      box.checked = overlays[key];
-      const text = document.createElement('span');
-      text.textContent = label;
-      box.addEventListener('change', () => {
-        overlays[key] = box.checked;
-        if (key === 'cursor3d') this.cursorOverlay.visible = box.checked;
-        saveOverlayPrefs();
-      });
-      row.append(box, text);
-      root.appendChild(row);
-    }
   }
 
   /** Flip visibility on every light: all off if any is on, else all on. */

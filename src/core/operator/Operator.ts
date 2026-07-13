@@ -2,6 +2,7 @@ import type { Scene } from '../scene/Scene';
 import type { OrbitCamera } from '../../camera/OrbitCamera';
 import type { UndoStack } from '../undo/UndoStack';
 import type { Vec3 } from '../math/vec3';
+import type { Mat4 } from '../math/mat4';
 
 /**
  * Modal operator system (architecture decision A1) — Blender's core tool
@@ -77,6 +78,15 @@ export interface Operator {
    * no guides.
    */
   guideSegments?(): { a: Vec3; b: Vec3 }[] | null;
+
+  /**
+   * Optional: a WORK-PLANE transform (local XY → world) that the viewport draws
+   * the floor grid on while the modal runs — the plane-handle move reorients the
+   * grid onto the drag plane at the gizmo, so snapping reads against it. Return
+   * the model matrix, or null for the normal world floor. InputManager mirrors it
+   * onto the renderer and clears it when the operator ends.
+   */
+  workPlane?(): Mat4 | null;
 
   /** LMB or Enter: apply final state and push the undo command. */
   confirm(ctx: OperatorContext): void;

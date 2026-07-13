@@ -9,7 +9,7 @@ import { buildWireRibbon } from './passes/ribbon';
 import { GridPass } from './passes/gridPass';
 import { OutlinePass } from './passes/outlinePass';
 import { PickingPass } from './passes/pickingPass';
-import { GizmoPass, GIZMO_PICK_BASE, GIZMO_AXES, gizmoScreenScale, type GizmoAxis } from './passes/gizmoPass';
+import { GizmoPass, GIZMO_PICK_BASE, GIZMO_PLANE_BASE, GIZMO_AXES, GIZMO_PLANES, gizmoScreenScale, type GizmoAxis, type GizmoPlane, type AxisColors } from './passes/gizmoPass';
 import { EditOverlayPass } from './passes/editOverlayPass';
 import { CurveEditPass } from './passes/curveEditPass';
 import { evaluateCurve, leftHandle, rightHandle } from '../core/curve/eval';
@@ -75,7 +75,17 @@ const SHADING_CYCLE: readonly ShadingMode[] = ['matcap', 'wireframe', 'studio', 
  */
 export type PickResult =
   | { kind: 'object'; id: number }
-  | { kind: 'gizmo'; axis: GizmoAxis };
+  | { kind: 'gizmo'; axis: GizmoAxis }
+  | { kind: 'gizmoPlane'; plane: GizmoPlane };
+
+/** The gizmo/axis palette from overlay prefs (drives arrows + plane handles). */
+function axisColorsFromPrefs(): AxisColors {
+  return {
+    x: [overlays.axisX[0], overlays.axisX[1], overlays.axisX[2]],
+    y: [overlays.axisY[0], overlays.axisY[1], overlays.axisY[2]],
+    z: [overlays.axisZ[0], overlays.axisZ[1], overlays.axisZ[2]],
+  };
+}
 
 // Viewport clear color comes from the active theme (themeViewport.background).
 
@@ -184,6 +194,14 @@ export class Renderer {
    * the same near-plane-clamp technique as the axis guide. Null when none.
    */
   guideSegments: { a: Vec3; b: Vec3 }[] | null = null;
+
+  /**
+   * WORK-PLANE transform (local XY → world) the floor grid draws on while a
+   * plane-handle move runs — the grid reorients onto the drag plane at the
+   * gizmo. InputManager mirrors the active operator's workPlane() here; null
+   * draws the normal world floor.
+   */
+  workPlane: Mat4 | null = null;
 
   /**
    * Current viewport solid-shading mode. Z (or the topbar chip) cycles it via
@@ -1182,8 +1200,19 @@ export class Renderer {
     // After the solid/wire passes, before the grid so curves sit over surfaces.
     this.drawCurves(scene, visible, view, proj, camera.distance);
 
-    // Grid (blended, after opaque) — Overlays › Grid toggles it (P12-2).
-    if (overlays.grid) this.gridPass.render(view, proj, eye);
+    // Grid (blended, after opaque) — Overlays › Grid toggles it (P12-2). Colors,
+    // fade and the floor-lines toggle come from overlay prefs; workPlane (set
+    // while a plane-handle move runs) reorients the grid onto the drag plane.
+    if (overlays.grid) {
+      this.gridPass.render(view, proj, eye, {
+        gridColor: new Vec3(overlays.gridColor[0], overlays.gridColor[1], overlays.gridColor[2]),
+        axisXColor: new Vec3(overlays.axisX[0], overlays.axisX[1], overlays.axisX[2]),
+        axisYColor: new Vec3(overlays.axisY[0], overlays.axisY[1], overlays.axisY[2]),
+        fade: overlays.gridFade,
+        floor: overlays.floor,
+        plane: this.workPlane ?? undefined,
+      });
+    }
 
     // Camera frustums — after the grid, before outlines. Skip the camera we are
     // currently looking through (its wireframe would smear across the whole view).
@@ -1274,10 +1303,11 @@ export class Renderer {
     }
 
     // Translate gizmo — on top of everything (clear depth after outlines).
-    const gz = this.gizmoTransform(scene, eye, fovY);
+    // Overlays › Transform Gizmo toggles it; colors follow the axis prefs.
+    const gz = overlays.gizmo ? this.gizmoTransform(scene, eye, fovY) : null;
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT);
-      this.gizmoPass.render(proj.mul(view), gz.origin, gz.scale, Mat4.fromQuat(gz.quat));
+      this.gizmoPass.render(proj.mul(view), gz.origin, gz.scale, Mat4.fromQuat(gz.quat), axisColorsFromPrefs());
     }
 
     // Locked-axis indicator — the one gizmo arrow + guide line that stays on
@@ -1382,7 +1412,7 @@ export class Renderer {
       this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
       this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
     }
-    const gz = this.gizmoTransform(scene, eye, fovY);
+    const gz = overlays.gizmo ? this.gizmoTransform(scene, eye, fovY) : null;
     if (gz) {
       gl.clear(gl.DEPTH_BUFFER_BIT); // pick FBO still bound: gizmo handles win
       this.gizmoPass.renderPick(this.pickingPass, viewProj, gz.origin, gz.scale, Mat4.fromQuat(gz.quat));
@@ -1402,7 +1432,9 @@ export class Renderer {
     const py = Math.round(cssY * dpr);
     const raw = this.pickingPass.read(px, py);
     // Gizmo handles win over everything (they drew last with depth cleared) —
-    // keep that ordering regardless of the select-through phase below.
+    // keep that ordering regardless of the select-through phase below. Plane ids
+    // sit above the arrow ids, so test them first.
+    if (raw >= GIZMO_PLANE_BASE) return { kind: 'gizmoPlane', plane: GIZMO_PLANES[raw - GIZMO_PLANE_BASE] };
     if (raw >= GIZMO_PICK_BASE) return { kind: 'gizmo', axis: GIZMO_AXES[raw - GIZMO_PICK_BASE] };
 
     // Curve select-through (UR11-1): a curve has no surface, so its polyline is

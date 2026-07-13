@@ -29,9 +29,18 @@ function reset(): void {
 describe('overlayPrefs', () => {
   beforeEach(reset);
 
-  it('defaults every overlay to true', () => {
+  it('defaults every overlay toggle to true', () => {
     const d = defaultOverlayPrefs();
-    expect(d).toEqual({ grid: true, originPoints: true, icons: true, frustums: true, cursor3d: true });
+    // Boolean toggles all default ON (the app looks the same as before prefs).
+    for (const key of ['grid', 'originPoints', 'icons', 'frustums', 'cursor3d', 'gizmo', 'floor'] as const) {
+      expect(d[key]).toBe(true);
+    }
+    // Color + number defaults present (drive the grid + gizmo palette / fade).
+    expect(d.axisX).toHaveLength(3);
+    expect(d.axisY).toHaveLength(3);
+    expect(d.axisZ).toHaveLength(3);
+    expect(d.gridColor).toHaveLength(3);
+    expect(d.gridFade).toBeGreaterThan(0);
   });
 
   it('round-trips saved prefs through localStorage', () => {

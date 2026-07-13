@@ -3,6 +3,7 @@ import { ModalPointer } from './modalPointer';
 import type { Renderer } from '../render/Renderer';
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import { TranslateOperator } from '../tools/translate';
+import { PlanarTranslateOperator } from '../tools/planarTranslate';
 import { RotateOperator } from '../tools/rotate';
 import { ScaleOperator } from '../tools/scale';
 import { EditTranslateOperator, EditRotateOperator, EditScaleOperator, EditTransformBase, proportional } from '../tools/editTransform';
@@ -478,6 +479,7 @@ export class InputManager {
   private syncAxisIndicator(): void {
     this.renderer.axisIndicator = this.activeOp?.axisIndicator?.() ?? null;
     this.renderer.guideSegments = this.activeOp?.guideSegments?.() ?? null;
+    this.renderer.workPlane = this.activeOp?.workPlane?.() ?? null;
   }
 
   /**
@@ -791,6 +793,7 @@ export class InputManager {
     this.renderer.gizmoVisible = true;
     this.renderer.axisIndicator = null;
     this.renderer.guideSegments = null;
+    this.renderer.workPlane = null;
   }
 
   private onPointerDown(e: PointerEvent): void {
@@ -919,6 +922,13 @@ export class InputManager {
         // get the move/up events if the cursor leaves the canvas.
         this.canvas.setPointerCapture(e.pointerId);
         this.startOperator(new TranslateOperator(hit.axis), false);
+        if (this.activeOp) this.gizmoDrag = true;
+        else if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+      } else if (hit.kind === 'gizmoPlane') {
+        // Grab a plane handle: a planar Move constrained to that plane, which
+        // also reorients the floor grid onto the drag plane while it runs.
+        this.canvas.setPointerCapture(e.pointerId);
+        this.startOperator(new PlanarTranslateOperator(hit.plane), false);
         if (this.activeOp) this.gizmoDrag = true;
         else if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
       } else if (e.shiftKey) {

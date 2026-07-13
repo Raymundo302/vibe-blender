@@ -21,20 +21,20 @@ runE2e(async (t) => {
 
   // --- Overlays dropdown --------------------------------------------------
   t.check('Overlays button present',
-    await t.evaluate(`!!document.querySelector('.topbar-btn[data-action="overlays"]')`));
+    await t.evaluate(`!!document.querySelector('.vh-overlays')`));
 
   // Open it; the five checkbox rows appear in the popover.
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.evaluate(`document.querySelector('.vh-overlays').click()`);
   await t.sleep(120);
-  t.check('Overlays popover has 5 checkbox rows',
-    (await t.evaluate(`document.querySelectorAll('.topbar-menu-check').length`)) === 5);
+  t.check('Overlays popover has 7 checkbox rows',
+    (await t.evaluate(`document.querySelectorAll('.vh-overlays-row[data-overlay]').length`)) === 7);
   t.check('Grid checkbox starts checked',
-    await t.evaluate(`document.querySelector('.topbar-menu-check[data-overlay="grid"] input').checked`));
+    await t.evaluate(`document.querySelector('.vh-overlays-row[data-overlay="grid"] input').checked`));
 
   // Screenshot with the grid ON, then un-check Grid and screenshot again.
   await t.screenshot(SHOT_A);
   await t.evaluate(`(() => {
-    const box = document.querySelector('.topbar-menu-check[data-overlay="grid"] input');
+    const box = document.querySelector('.vh-overlays-row[data-overlay="grid"] input');
     box.checked = false;
     box.dispatchEvent(new Event('change'));
   })()`);
@@ -42,7 +42,7 @@ runE2e(async (t) => {
   t.check('un-checking Grid persists the pref to localStorage',
     (await t.evaluate(`JSON.parse(localStorage.getItem('vibe-overlays')).grid`)) === false);
   // Close the popover (a second click on the button toggles it shut).
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.evaluate(`document.querySelector('.vh-overlays').click()`);
   await t.sleep(80);
 
   // render() still runs without throwing after the grid is off.
@@ -89,10 +89,10 @@ runE2e(async (t) => {
     (await t.evaluate(pickAtLight)) === lightId);
 
   // Toggle Icons OFF via the dropdown checkbox.
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.evaluate(`document.querySelector('.vh-overlays').click()`);
   await t.sleep(100);
   await t.evaluate(`(() => {
-    const box = document.querySelector('.topbar-menu-check[data-overlay="icons"] input');
+    const box = document.querySelector('.vh-overlays-row[data-overlay="icons"] input');
     box.checked = false;
     box.dispatchEvent(new Event('change'));
   })()`);
@@ -100,7 +100,7 @@ runE2e(async (t) => {
   t.check('with Icons off, the light is NOT pickable at that position',
     (await t.evaluate(pickAtLight)) !== lightId);
   // Close the popover before moving on.
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.evaluate(`document.querySelector('.vh-overlays').click()`);
   await t.sleep(80);
 
   // --- Pivot dropdown -----------------------------------------------------
@@ -137,12 +137,12 @@ runE2e(async (t) => {
   await t.sleep(150);
   t.check('grid pref persisted through reload (localStorage)',
     (await t.evaluate(`JSON.parse(localStorage.getItem('vibe-overlays')).grid`)) === false);
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="overlays"]').click()`);
+  await t.evaluate(`document.querySelector('.vh-overlays').click()`);
   await t.sleep(120);
   t.check('reopened Overlays menu shows Grid un-checked (pref applied at boot)',
-    (await t.evaluate(`document.querySelector('.topbar-menu-check[data-overlay="grid"] input').checked`)) === false);
+    (await t.evaluate(`document.querySelector('.vh-overlays-row[data-overlay="grid"] input').checked`)) === false);
   t.check('reopened Overlays menu shows Icons un-checked',
-    (await t.evaluate(`document.querySelector('.topbar-menu-check[data-overlay="icons"] input').checked`)) === false);
+    (await t.evaluate(`document.querySelector('.vh-overlays-row[data-overlay="icons"] input').checked`)) === false);
 
   // Clean up: restore all-on prefs so we don't leave the shared browser dirty.
   await t.evaluate(`(() => { localStorage.removeItem('vibe-overlays'); })()`);

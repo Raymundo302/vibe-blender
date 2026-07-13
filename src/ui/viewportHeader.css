@@ -61,3 +61,61 @@
   color: var(--vb-accent, #fe730f);
   background: color-mix(in srgb, var(--vb-accent, #fe730f) 18%, var(--vb-panel, #2b2b2b));
 }
+
+/* --------------------------------------------- Overlays popover (vh-overlays) */
+.vh-overlays-panel {
+  position: absolute;
+  z-index: 40;
+  min-width: 210px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 6px;
+  padding: 5px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  color: var(--vb-text, #d0d0d0);
+  font-size: 11px;
+  user-select: none;
+}
+.vh-overlays-heading {
+  padding: 3px 6px 5px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vb-text-dim, #8a8a8a);
+}
+.vh-overlays-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.vh-overlays-row:hover { background: var(--vb-hover, #4a4a4a); }
+.vh-overlays-row input[type="checkbox"] {
+  accent-color: var(--vb-accent, #fe730f);
+  cursor: pointer;
+  margin: 0;
+}
+.vh-overlays-row input[type="color"] {
+  width: 28px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+}
+.vh-overlays-slider input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--vb-accent, #fe730f);
+  cursor: pointer;
+}
+.vh-overlays-readout {
+  min-width: 30px;
+  text-align: right;
+  color: var(--vb-text-dim, #8a8a8a);
+  font-variant-numeric: tabular-nums;
+}

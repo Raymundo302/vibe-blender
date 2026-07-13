@@ -6,19 +6,37 @@ import type { PickingPass } from './pickingPass';
 
 /**
  * Translate gizmo (architecture: color-ID picking A3) — three world-axis move
- * arrows drawn at the active object, at a constant screen size. Handles are
- * pickable by rendering them into the shared id buffer with reserved ids far
- * above any object id, so a hit never collides with a real object.
+ * arrows plus three center plane handles (XY / YZ / XZ) drawn at the active
+ * object, at a constant screen size. Handles are pickable by rendering them into
+ * the shared id buffer with reserved ids far above any object id, so a hit never
+ * collides with a real object.
  */
 
-/** Gizmo pick ids live far above object ids: X = base, Y = base+1, Z = base+2. */
+/** Gizmo pick ids live far above object ids. Arrows: base..base+2 (X/Y/Z);
+ *  plane handles: base+3..base+5 (XY/YZ/XZ, see GIZMO_PLANE_BASE). */
 export const GIZMO_PICK_BASE = 0xf00000;
 
 export type GizmoAxis = 'x' | 'y' | 'z';
 export const GIZMO_AXES: readonly GizmoAxis[] = ['x', 'y', 'z'];
 
-// Blender-ish axis colors (X red, Y green, Z blue).
-const AXIS_COLOR: Record<GizmoAxis, readonly [number, number, number]> = {
+/** The three planar-move handles, keyed by the two axes they span. */
+export type GizmoPlane = 'xy' | 'yz' | 'xz';
+export const GIZMO_PLANES: readonly GizmoPlane[] = ['xy', 'yz', 'xz'];
+/** Plane pick ids follow the three arrow ids. */
+export const GIZMO_PLANE_BASE = GIZMO_PICK_BASE + GIZMO_AXES.length;
+
+/** The two axes a plane handle spans (for coloring + work-plane basis). */
+export const PLANE_AXES: Record<GizmoPlane, readonly [GizmoAxis, GizmoAxis]> = {
+  xy: ['x', 'y'],
+  yz: ['y', 'z'],
+  xz: ['x', 'z'],
+};
+
+/** Axis colors (X/Y/Z), overridable per-draw from overlay prefs. */
+export type AxisColors = Record<GizmoAxis, readonly [number, number, number]>;
+
+// Blender-ish axis colors (X red, Y green, Z blue) — the fallback palette.
+const AXIS_COLOR: AxisColors = {
   x: [0.89, 0.35, 0.35],
   y: [0.45, 0.78, 0.31],
   z: [0.33, 0.5, 0.9],
@@ -30,6 +48,30 @@ const TIP = 1.1; //    cone tip apex
 const CONE_R = 0.055; // cone base radius
 const PICK_R = 0.09; //  half-width of the fat pick box (~6px worth at K=0.18)
 const PICK_LEN = 1.15; // pick box overshoots the tip so it stays grabbable
+
+// Plane-handle square (in a local XY quad, offset off the origin between the two
+// axes). PLANE_ROT rotates this quad onto each of the three planes.
+const PLANE_OFF = 0.28; // inner corner offset from the origin
+const PLANE_SIZE = 0.22; // square edge length
+const PLANE_PICK_MARGIN = 0.06; // fatter pick square for an easier grab
+
+/** Rotation mapping the local XY plane-handle quad onto each gizmo plane. */
+const PLANE_ROT: Record<GizmoPlane, Mat4> = {
+  xy: Mat4.identity(),
+  // local x→world y, local y→world z  (quad lies in the YZ plane)
+  yz: new Mat4([0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1]),
+  // local x→world x, local y→world z  (quad lies in the XZ plane)
+  xz: new Mat4([1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1]),
+};
+
+/** Two-triangle quad in local XY spanning [off, off+size]², at z=0. */
+function planeQuad(off: number, size: number): Float32Array {
+  const a = off, b = off + size;
+  return new Float32Array([
+    a, a, 0, b, a, 0, b, b, 0,
+    a, a, 0, b, b, 0, a, b, 0,
+  ]);
+}
 
 /**
  * Rotation that maps local +X onto the given world axis (column-major).
@@ -58,6 +100,15 @@ export function gizmoModelMatrix(origin: Vec3, scale: number, axis: GizmoAxis, o
     .mul(orient) // transform-orientation basis (identity = Global/world axes)
     .mul(Mat4.scaling(new Vec3(scale, scale, scale)))
     .mul(AXIS_ROT[axis]);
+}
+
+/** Model matrix placing the plane-handle quad onto `plane` at `origin`. Shares
+ *  the arrows' translate·orient·scale, then PLANE_ROT orients the local quad. */
+export function gizmoPlaneModelMatrix(origin: Vec3, scale: number, plane: GizmoPlane, orient: Mat4 = Mat4.identity()): Mat4 {
+  return Mat4.translation(origin)
+    .mul(orient)
+    .mul(Mat4.scaling(new Vec3(scale, scale, scale)))
+    .mul(PLANE_ROT[plane]);
 }
 
 /**
@@ -131,6 +182,8 @@ export class GizmoPass {
   private readonly shaft: VertexArray; // 2-vertex line
   private readonly cone: VertexArray; //  triangles
   private readonly pickBox: VertexArray; // fat triangles for picking
+  private readonly planeQuad: VertexArray; // visible plane-handle square
+  private readonly planePickQuad: VertexArray; // fatter square for picking
   /** Two-way guide line for the modal axis-lock indicator, re-uploaded per
    *  draw: renderAxis clamps its extent against the camera near plane on the
    *  CPU, because rasterizers (SwiftShader at least) drop LINES with an
@@ -142,15 +195,21 @@ export class GizmoPass {
     this.shaft = new VertexArray(gl, [{ location: 0, size: 3, data: new Float32Array([0, 0, 0, SHAFT, 0, 0]) }]);
     this.cone = new VertexArray(gl, [{ location: 0, size: 3, data: coneTris(SHAFT, TIP, CONE_R, 12) }]);
     this.pickBox = new VertexArray(gl, [{ location: 0, size: 3, data: boxTris(0, PICK_LEN, PICK_R) }]);
+    this.planeQuad = new VertexArray(gl, [{ location: 0, size: 3, data: planeQuad(PLANE_OFF, PLANE_SIZE) }]);
+    this.planePickQuad = new VertexArray(gl, [{
+      location: 0, size: 3,
+      data: planeQuad(PLANE_OFF - PLANE_PICK_MARGIN, PLANE_SIZE + 2 * PLANE_PICK_MARGIN),
+    }]);
     this.guide = new VertexArray(gl, [{ location: 0, size: 3, data: new Float32Array(6) }]);
   }
 
   /**
-   * Draw the visible arrows. Caller must have cleared the depth buffer first so
-   * the gizmo wins over everything. Uniform-color flat shading, no cull (the
-   * cone/line are thin and viewed from all sides).
+   * Draw the visible arrows + the three center plane handles. Caller must have
+   * cleared the depth buffer first so the gizmo wins over everything.
+   * Uniform-color flat shading, no cull (the cone/line/quads are thin and viewed
+   * from all sides). `colors` overrides the X/Y/Z palette (overlay prefs).
    */
-  render(viewProj: Mat4, origin: Vec3, scale: number, orient: Mat4 = Mat4.identity()): void {
+  render(viewProj: Mat4, origin: Vec3, scale: number, orient: Mat4 = Mat4.identity(), colors: AxisColors = AXIS_COLOR): void {
     const gl = this.gl;
     this.shader.use();
     gl.disable(gl.CULL_FACE);
@@ -158,12 +217,27 @@ export class GizmoPass {
     gl.depthMask(true);
     for (const axis of GIZMO_AXES) {
       const mvp = viewProj.mul(gizmoModelMatrix(origin, scale, axis, orient));
-      const [r, g, b] = AXIS_COLOR[axis];
+      const [r, g, b] = colors[axis];
       this.shader.setMat4('u_mvp', mvp);
       this.shader.setVec4('u_color', r, g, b, 1);
       this.shaft.draw(gl.LINES);
       this.cone.draw(gl.TRIANGLES);
     }
+    // Plane handles: translucent squares tinted by the two axes they span. Drawn
+    // blended (no depth write) so the arrows behind them stay visible.
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.depthMask(false);
+    for (const plane of GIZMO_PLANES) {
+      const [ax, ay] = PLANE_AXES[plane];
+      const ca = colors[ax], cb = colors[ay];
+      const mvp = viewProj.mul(gizmoPlaneModelMatrix(origin, scale, plane, orient));
+      this.shader.setMat4('u_mvp', mvp);
+      this.shader.setVec4('u_color', (ca[0] + cb[0]) / 2, (ca[1] + cb[1]) / 2, (ca[2] + cb[2]) / 2, 0.5);
+      this.planeQuad.draw(gl.TRIANGLES);
+    }
+    gl.depthMask(true);
+    gl.disable(gl.BLEND);
     gl.enable(gl.CULL_FACE);
   }
 
@@ -251,6 +325,13 @@ export class GizmoPass {
   renderPick(picking: PickingPass, viewProj: Mat4, origin: Vec3, scale: number, orient: Mat4 = Mat4.identity()): void {
     const gl = this.gl;
     gl.disable(gl.CULL_FACE);
+    // Plane handles first (drawn with a slightly nearer square below), then the
+    // fat axis boxes: an axis box overlapping a plane square wins, matching the
+    // visual stack (arrows read over the translucent squares).
+    for (let i = 0; i < GIZMO_PLANES.length; i++) {
+      picking.drawObject(viewProj.mul(gizmoPlaneModelMatrix(origin, scale, GIZMO_PLANES[i], orient)), GIZMO_PLANE_BASE + i);
+      this.planePickQuad.draw(gl.TRIANGLES);
+    }
     for (let i = 0; i < GIZMO_AXES.length; i++) {
       const axis = GIZMO_AXES[i];
       picking.drawObject(viewProj.mul(gizmoModelMatrix(origin, scale, axis, orient)), GIZMO_PICK_BASE + i);

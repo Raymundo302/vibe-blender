@@ -19,6 +19,8 @@ runE2e(async (t) => {
   const camId = await t.evaluate(`(() => {
     const s = window.__app.scene;
     if (s.editMode) s.exitEditMode();
+    // Default scene ships a Camera — clear cameras so the added one is active.
+    for (const o of [...s.objects]) if (o.kind === 'camera') s.remove(o.id);
     const cam = s.addCamera('Camera');
     const V = cam.transform.position.constructor;
     cam.transform = cam.transform.withPosition(new V(0, 0, 6));

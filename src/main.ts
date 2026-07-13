@@ -256,6 +256,9 @@ const cursorOverlay = new CursorOverlay(viewportWrap, scene, camera, renderer, c
 loadOverlayPrefs();
 loadShadePrefs();
 cursorOverlay.visible = overlays.cursor3d;
+// The Overlays dropdown (viewport header) toggles the 3D-cursor marker through
+// this callback — the header is built before the cursor overlay exists.
+viewportHeader.onCursorVisibility = (v) => { cursorOverlay.visible = v; };
 
 // Origin dots (P12-2): small orange dot at each selected object's world origin.
 const originDots = new OriginDots(viewportWrap, scene, camera, renderer, canvas);
@@ -498,13 +501,13 @@ const topbar = new Topbar(scene, {
   toggleRenderAnimation: () => animRender.toggle(),
   undo: () => { const n = undo.undo(); opCtx.setStatus(n ? `Undo: ${n}` : 'Nothing to undo'); },
   redo: () => { const n = undo.redo(); opCtx.setStatus(n ? `Redo: ${n}` : 'Nothing to redo'); },
-}, cursorOverlay);
+});
 topbar.mountTabs(workspaces.createTabs());
 
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs,
+  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs, overlays,
   input: inputManager,
   htmlDriver,
   // UR14-1 status & hints handles for e2e (text without pixel reads).
