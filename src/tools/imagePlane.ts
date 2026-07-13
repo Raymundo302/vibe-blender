@@ -151,7 +151,16 @@ export function createImagePlane(
   // Decode the pixels for the F12 path tracer (browser only, best-effort — the
   // Rendered viewport uploads the data URL straight to GL and never needs this).
   decodeTexImage(dataUrl)
-    .then((img) => { if (img) mat.texImage = img; })
+    .then((img) => {
+      if (!img) return;
+      mat.texImage = img;
+      // UR16-6: a PNG picked via plain Image ▸ Diffuse/Emit doesn't pass
+      // alphaBlend, so a transparent PNG would render its transparent texels
+      // BLACK in every engine (CPU/GPU tracer cutout + raster texturedPass are
+      // all gated on material.alphaBlend). Detect real transparency at decode and
+      // turn the flag on so those texels pass through (ray continues) instead.
+      if (!mat.alphaBlend && imageHasTransparency(img.alpha)) mat.alphaBlend = true;
+    })
     .catch(() => { /* tracer falls back to white — Rendered viewport unaffected */ });
 
   // Geometry + assignment.
@@ -201,6 +210,18 @@ export function pickImagePlane(
   });
   document.body.appendChild(input);
   input.click();
+}
+
+/**
+ * UR16-6: does a decoded image carry real per-texel transparency? True when any
+ * texel's alpha dips below ~254/255 (ignores 8-bit rounding on fully-opaque
+ * PNGs). Used to auto-enable material.alphaBlend for plain image-plane picks so
+ * transparent texels cut out instead of shading black. Pure, exported for tests.
+ */
+export function imageHasTransparency(alpha?: Float32Array): boolean {
+  if (!alpha) return false;
+  for (let i = 0; i < alpha.length; i++) if (alpha[i] < 0.996) return true;
+  return false;
 }
 
 /** File basename without its extension ("refs/plan.PNG" → "plan"). */

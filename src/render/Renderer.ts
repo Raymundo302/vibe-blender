@@ -152,7 +152,7 @@ export class Renderer {
    * tracks which data URL is uploaded so a texDataUrl change re-uploads; `tex`
    * stays null while the async image decodes (falls back to white until ready).
    */
-  private readonly matTextures = new Map<number, { url: string; tex: WebGLTexture | null }>();
+  private readonly matTextures = new Map<number, { url: string; tex: WebGLTexture | null; alphaBlend: boolean }>();
   /** P13: lazy data-URL → GL texture cache for map slots. Key prefix encodes
    *  color space ('s:' sRGB base color, 'l:' linear data maps). */
   private readonly urlTextures = new Map<string, { tex: WebGLTexture | null }>();
@@ -505,15 +505,20 @@ export class Renderer {
   private materialTexture(mat: Material): WebGLTexture | null {
     if (mat.texKind !== 'image' || !mat.texDataUrl) return null;
     const url = mat.texDataUrl;
+    const wantAlpha = mat.alphaBlend === true;
     const cached = this.matTextures.get(mat.id);
-    if (cached && cached.url === url) return cached.tex;
+    // UR16-6: alphaBlend is detected asynchronously at decode (a plain PNG that
+    // turns out to carry transparency flips false→true after this first upload),
+    // so the cache must invalidate when the flag changes — otherwise the stale
+    // opaque upload (alpha flattened to 1) keeps drawing transparent texels black.
+    if (cached && cached.url === url && cached.alphaBlend === wantAlpha) return cached.tex;
     if (cached?.tex) this.ctx.gl.deleteTexture(cached.tex);
-    const holder = { url, tex: null as WebGLTexture | null };
+    const holder = { url, tex: null as WebGLTexture | null, alphaBlend: wantAlpha };
     this.matTextures.set(mat.id, holder);
     const img = new Image();
     img.onload = () => {
-      if (holder.url !== mat.texDataUrl) return; // stale (url changed again)
-      holder.tex = this.uploadBaseColorTexture(img, mat.alphaBlend === true);
+      if (holder.url !== mat.texDataUrl || holder.alphaBlend !== (mat.alphaBlend === true)) return; // stale
+      holder.tex = this.uploadBaseColorTexture(img, wantAlpha);
     };
     img.onerror = () => { /* leave white fallback */ };
     img.src = url;
@@ -570,8 +575,9 @@ export class Renderer {
     if (mat.texKind !== 'image' || !mat.texDataUrl) return;
     if (typeof Image === 'undefined') return;
     const url = mat.texDataUrl;
+    const wantAlpha = mat.alphaBlend === true;
     const cached = this.matTextures.get(mat.id);
-    if (cached && cached.url === url && cached.tex) return; // already up to date
+    if (cached && cached.url === url && cached.tex && cached.alphaBlend === wantAlpha) return; // already up to date
     const gl = this.ctx.gl;
     const img = new Image();
     const ok = await new Promise<boolean>((resolve) => {
@@ -581,9 +587,9 @@ export class Renderer {
     });
     if (!ok || mat.texDataUrl !== url) return; // decode failed or superseded
     const prev = this.matTextures.get(mat.id);
-    if (prev?.tex && prev.url !== url) gl.deleteTexture(prev.tex);
-    const tex = this.uploadBaseColorTexture(img, mat.alphaBlend === true);
-    this.matTextures.set(mat.id, { url, tex });
+    if (prev?.tex && (prev.url !== url || prev.alphaBlend !== wantAlpha)) gl.deleteTexture(prev.tex);
+    const tex = this.uploadBaseColorTexture(img, wantAlpha);
+    this.matTextures.set(mat.id, { url, tex, alphaBlend: wantAlpha });
   }
 
   /**

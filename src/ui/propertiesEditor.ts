@@ -120,7 +120,13 @@ export class PropertiesEditor {
 
     this.element.append(this.strip, this.content);
 
-    if (registry.length > 0) this.select(registry[0].id);
+    // Default to the OBJECT tab regardless of strip order — tabs registered
+    // with prepend (Render sits visually first, UR16-3) must not steal the
+    // default. Only the active tab update()s, so a wrong default left the
+    // Object tab's sections (Web Page etc.) stale/hidden.
+    if (registry.length > 0) {
+      this.select(registry.some((t) => t.id === 'object') ? 'object' : registry[0].id);
+    }
   }
 
   /** UR14-3 item 3: the active tab's human title, so the panel header can read

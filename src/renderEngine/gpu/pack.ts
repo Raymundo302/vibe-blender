@@ -194,7 +194,16 @@ export function packMaterials(materials: SnapMaterial[]): Payload {
  *  ATLAS_SIZE² and quantized to 8-bit — the kernel samples it LINEAR-filtered as
  *  the color socket for emit/diffuse image planes (the GPU's v1 white fallback is
  *  gone). Returns { data, layers, size }; `layers ≥ 1` always so a bindable array
- *  texture exists even with no image materials. */
+ *  texture exists even with no image materials.
+ *
+ *  UR16-6: the ALPHA channel is now packed too (was hardcoded 255), so the GPU
+ *  kernel can cut out transparent texels of alphaBlend image planes exactly like
+ *  the CPU tracer. To kill BLACK FRINGING at cutout edges, RGB is resampled with
+ *  ALPHA-WEIGHTED bilinear (straight-alpha edge bleed): a transparent source
+ *  texel (RGB≈0, α=0) contributes NOTHING to a neighbour's colour, so opaque
+ *  edge texels keep their real colour instead of averaging toward black. Alpha
+ *  itself is plain bilinear. Where a whole neighbourhood is transparent, RGB
+ *  falls back to unweighted bilinear (value irrelevant — those texels cut out). */
 export interface ImageAtlas { data: Uint8Array; layers: number; size: number; }
 export function packImageAtlas(materials: SnapMaterial[]): ImageAtlas {
   const layerOf = imageLayers(materials);
@@ -208,6 +217,7 @@ export function packImageAtlas(materials: SnapMaterial[]): ImageAtlas {
     if (l < 0) continue;
     const img = materials[i].texImage!;
     const iw = img.width, ih = img.height, px = img.pixels;
+    const alpha = img.alpha; // per-texel straight alpha (undefined → fully opaque)
     const cx = (x: number) => (x < 0 ? 0 : x > iw - 1 ? iw - 1 : x);
     const cy = (y: number) => (y < 0 ? 0 : y > ih - 1 ? ih - 1 : y);
     const base = l * size * size * 4;
@@ -220,12 +230,28 @@ export function packImageAtlas(materials: SnapMaterial[]): ImageAtlas {
         const fx = ((x + 0.5) / size) * iw - 0.5;
         const x0 = Math.floor(fx), tx = fx - x0;
         const o = base + (y * size + x) * 4;
+        // The four source taps + their bilinear weights.
+        const i00 = cy(y0) * iw + cx(x0), i10 = cy(y0) * iw + cx(x0 + 1);
+        const i01 = cy(y0 + 1) * iw + cx(x0), i11 = cy(y0 + 1) * iw + cx(x0 + 1);
+        const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty;
+        const a00 = alpha ? alpha[i00] : 1, a10 = alpha ? alpha[i10] : 1;
+        const a01 = alpha ? alpha[i01] : 1, a11 = alpha ? alpha[i11] : 1;
+        // Straight alpha = plain bilinear of the alpha channel.
+        data[o + 3] = q(w00 * a00 + w10 * a10 + w01 * a01 + w11 * a11);
+        // Alpha-weighted RGB (premultiply → bilinear → unpremultiply) so colour
+        // bleeds OUT of opaque texels and never averages toward transparent black.
+        const aw = w00 * a00 + w10 * a10 + w01 * a01 + w11 * a11;
         for (let k = 0; k < 3; k++) {
-          const a = px[(cy(y0) * iw + cx(x0)) * 3 + k] * (1 - tx) + px[(cy(y0) * iw + cx(x0 + 1)) * 3 + k] * tx;
-          const b = px[(cy(y0 + 1) * iw + cx(x0)) * 3 + k] * (1 - tx) + px[(cy(y0 + 1) * iw + cx(x0 + 1)) * 3 + k] * tx;
-          data[o + k] = q(a * (1 - ty) + b * ty);
+          if (aw > 1e-6) {
+            const c = w00 * a00 * px[i00 * 3 + k] + w10 * a10 * px[i10 * 3 + k]
+              + w01 * a01 * px[i01 * 3 + k] + w11 * a11 * px[i11 * 3 + k];
+            data[o + k] = q(c / aw);
+          } else {
+            // Fully transparent neighbourhood — plain bilinear (value cut out anyway).
+            data[o + k] = q(w00 * px[i00 * 3 + k] + w10 * px[i10 * 3 + k]
+              + w01 * px[i01 * 3 + k] + w11 * px[i11 * 3 + k]);
+          }
         }
-        data[o + 3] = 255;
       }
     }
   }

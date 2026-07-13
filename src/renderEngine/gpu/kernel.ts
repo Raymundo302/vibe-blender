@@ -289,6 +289,24 @@ vec3 sampleTexture(int texKind, vec2 uv, float layer) {
   return vec3(1.0);
 }
 
+// UR16-6: per-texel image alpha at a hit (1 = fully opaque), for alphaBlend image
+// planes. The atlas now carries alpha (pack.ts), so a transparent texel of a PNG
+// picked as an image plane can cut out just like on the CPU tracer. Non-image or
+// non-alphaBlend materials return 1 → the pass-through machinery is untouched
+// (opaque materials never draw rng, so existing GPU renders stay byte-identical).
+float hitTexAlpha(int mat, int tri, vec2 bary) {
+  if (matT(mat, 3).w < 0.5) return 1.0;            // not alphaBlend
+  vec4 m2 = matT(mat, 2);
+  if (int(m2.w + 0.5) != 2) return 1.0;             // texKind != image
+  float layer = matT(mat, 7).y;                     // atlas layer, -1 = none
+  if (layer < 0.0) return 1.0;
+  vec4 uvA = fetchTexel(uUVs, uUVsW, tri * UV_TEXELS);
+  vec2 uv2 = fetchTexel(uUVs, uUVsW, tri * UV_TEXELS + 1).xy;
+  float w0 = 1.0 - bary.x - bary.y;
+  vec2 uv = uvA.xy * w0 + uvA.zw * bary.x + uv2 * bary.y;
+  return texture(uAtlas, vec3(uv, layer)).a;
+}
+
 // ---- world/sky (flat / gradient; hdri → gradient fallback) -----------------
 vec3 worldSky(vec3 d) {
   if (uWorldMode == 0) return uWorldColor * uWorldStrength;
@@ -414,6 +432,10 @@ vec3 sampleEmitters(vec3 P, vec3 N, vec3 albedo, vec3 offN) {
       vec2 uv2 = fetchTexel(uUVs, uUVsW, tri * UV_TEXELS + 1).xy;
       vec2 euv = uvA.xy * w0 + uvA.zw * w1 + uv2 * w2;
       col *= sampleTexture(emTexKind, euv, em7.y);
+      // UR16-6: a directly-sampled TRANSPARENT emit texel contributes nothing —
+      // multiply by its alpha (the atlas RGB is edge-bled, so it is NOT zero there).
+      // Only alphaBlend image emitters carry meaningful per-texel alpha.
+      if (em3.w > 0.5 && emTexKind == 2 && em7.y >= 0.0) col *= texture(uAtlas, vec3(euv, em7.y)).a;
     }
     radiance = col * em7.x; // × emit strength
   }
@@ -483,7 +505,10 @@ vec4 traceRay(vec3 orig, vec3 dir) {
     // materials (alpha 1) draw no rng, so existing GPU renders are unchanged.
     for (int pt = 0; pt < 64 && h.tri >= 0; pt++) {
       int matA = int(fetchTexel(uTris, uTrisW, h.tri * TRI_TEXELS).w + 0.5);
-      float av = matT(matA, 5).w;
+      // UR16-6: effective alpha = material alpha VALUE × per-texel image alpha, so a
+      // transparent image-plane texel (aTex≈0) passes the ray through instead of
+      // shading its black RGB. Matches the task's aTex(point) × alphaSocket(point).
+      float av = matT(matA, 5).w * hitTexAlpha(matA, h.tri, h.uv);
       if (av >= 1.0) break;
       if (rand() < av) break;
       vec3 hp = ox + dd * h.t;

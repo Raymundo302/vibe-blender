@@ -8,6 +8,7 @@ import {
   packUVs, readUV,
   packNormals, NORMAL_TEXELS,
   packEmitters,
+  packImageAtlas, ATLAS_SIZE,
   flattenBVH, readNode, readTriIndex,
   TEX_MAX_WIDTH,
 } from './pack';
@@ -100,6 +101,48 @@ describe('packMaterials', () => {
     expect(m1.shadeless).toBe(0);
     // defaults for an omitted-fields material
     expect(m0.texKind).not.toBe(m1.texKind);
+  });
+});
+
+describe('packImageAtlas (UR16-6 per-texel alpha)', () => {
+  // A 4×1 image: left half opaque, right half transparent — but RGB is FULL RED
+  // everywhere (incl. the transparent texels). Proves the atlas (1) packs the
+  // alpha channel through with transparency intact and (2) never zeroes RGB under
+  // alpha (the black-transparent-texel bug + fringing).
+  function redRow(alpha: number[]): SnapMaterial {
+    const iw = alpha.length, ih = 1;
+    const pixels = new Float32Array(iw * ih * 3);
+    for (let i = 0; i < iw; i++) { pixels[i * 3] = 1; } // red = 1 (linear) everywhere
+    return {
+      baseColor: [1, 1, 1], metallic: 0, roughness: 1,
+      emissive: [0, 0, 0], emissiveStrength: 0,
+      texKind: 'image', alphaBlend: true,
+      texImage: { width: iw, height: ih, pixels, alpha: new Float32Array(alpha) },
+    };
+  }
+
+  it('packs alpha with transparency intact and keeps RGB under alpha=0', () => {
+    const atlas = packImageAtlas([redRow([1, 1, 0, 0])]);
+    expect(atlas.size).toBe(ATLAS_SIZE);
+    expect(atlas.layers).toBe(1);
+    const at = (x: number, y = ATLAS_SIZE >> 1) => {
+      const o = (y * ATLAS_SIZE + x) * 4;
+      return { r: atlas.data[o], a: atlas.data[o + 3] };
+    };
+    const left = at(8), right = at(ATLAS_SIZE - 8);
+    // Left half opaque, right half transparent → alpha is REAL, not hardcoded 255.
+    expect(left.a).toBeGreaterThan(250);
+    expect(right.a).toBeLessThan(5);
+    // RGB is NOT zeroed under alpha=0: red stays full on BOTH sides (edge bleed).
+    expect(left.r).toBeGreaterThan(250);
+    expect(right.r).toBeGreaterThan(250);
+  });
+
+  it('a fully opaque image packs alpha 255 everywhere', () => {
+    const atlas = packImageAtlas([redRow([1, 1, 1, 1])]);
+    let minA = 255;
+    for (let i = 3; i < atlas.data.length; i += 4) minA = Math.min(minA, atlas.data[i]);
+    expect(minA).toBe(255);
   });
 });
 

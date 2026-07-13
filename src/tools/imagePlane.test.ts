@@ -5,6 +5,7 @@ import { Vec3 } from '../core/math/vec3';
 import {
   basename,
   createImagePlane,
+  imageHasTransparency,
   makeImagePlaneMesh,
 } from './imagePlane';
 
@@ -155,5 +156,19 @@ describe('basename', () => {
     expect(basename('C:\\images\\wall.webp')).toBe('wall');
     expect(basename('noext')).toBe('noext');
     expect(basename('.hidden')).toBe('.hidden'); // no real extension to strip
+  });
+});
+
+describe('imageHasTransparency (UR16-6)', () => {
+  it('false with no alpha array', () => {
+    expect(imageHasTransparency(undefined)).toBe(false);
+  });
+  it('false for a fully opaque image', () => {
+    expect(imageHasTransparency(new Float32Array([1, 1, 1, 1]))).toBe(false);
+    expect(imageHasTransparency(new Float32Array([1, 0.998, 1]))).toBe(false); // 8-bit rounding tolerated
+  });
+  it('true when any texel is non-opaque', () => {
+    expect(imageHasTransparency(new Float32Array([1, 1, 0, 1]))).toBe(true);
+    expect(imageHasTransparency(new Float32Array([0.5]))).toBe(true);
   });
 });
