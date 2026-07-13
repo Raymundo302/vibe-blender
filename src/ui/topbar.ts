@@ -36,7 +36,6 @@ export interface TopbarActions {
  */
 export class Topbar {
   private readonly statusEl: HTMLSpanElement;
-  private readonly lightsEl: HTMLButtonElement;
   private readonly autoKeyEl: HTMLButtonElement;
   private readonly fileEl: HTMLButtonElement;
   private lastSig = '';
@@ -55,15 +54,8 @@ export class Topbar {
 
     // (Overlays dropdown moved to the 3D viewport header — see viewportHeader.ts.)
 
-    // 💡 Lights toggle (P12-2): flips visibility on ALL light objects at once.
-    // Off if any light is on (turn them all off), else turn them all on. Not
-    // undoable; the highlight reflects whether any light is currently visible.
-    const lights = Topbar.makeButton('💡 Lights', 'lights-toggle', () => {
-      this.toggleAllLights();
-      this.update();
-    });
-    setTip(lights, 'Toggle all lights');
-    this.lightsEl = lights;
+    // (💡 Lights moved to the viewport-header Object Types dropdown — lights
+    // visibility now lives with the other per-type show/select toggles.)
 
     // ⏺ Auto-key toggle (P15-3): when on, confirming a G/R/S transform in
     // Object Mode auto-inserts LocRotScale keys (the Timeline pane polls the
@@ -121,7 +113,7 @@ export class Topbar {
     const clTabs = Topbar.cluster('cl-tabs');
     // Mode chip, Snap, X-ray and Pivot moved into the 3D Viewport header
     // (viewportHeader.ts); the topbar keeps the scene-wide toggles.
-    const clView = Topbar.cluster('cl-view', lights, autoKey);
+    const clView = Topbar.cluster('cl-view', autoKey);
     const clRender = Topbar.cluster('cl-render', renderBtn, renderAnimBtn);
     const clRight = Topbar.cluster('cl-right', themeBtn, helpBtn);
 
@@ -296,14 +288,6 @@ export class Topbar {
     return root;
   }
 
-  /** Flip visibility on every light: all off if any is on, else all on. */
-  private toggleAllLights(): void {
-    const lights = this.scene.objects.filter((o) => o.kind === 'light');
-    if (lights.length === 0) return;
-    const anyOn = lights.some((l) => l.visible);
-    for (const l of lights) l.visible = !anyOn;
-  }
-
   private static makeButton(label: string, action: string, onClick: () => void): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.className = 'topbar-btn';
@@ -344,9 +328,7 @@ export class Topbar {
   update(): void {
     const active = this.scene.activeObject;
     const count = this.scene.objects.length;
-    const lights = this.scene.objects.filter((o) => o.kind === 'light');
-    const lightsOn = lights.some((l) => l.visible);
-    const sig = `${active ? active.name : ''}#${count}#${lightsOn}#${autoKeyState.enabled}`;
+    const sig = `${active ? active.name : ''}#${count}#${autoKeyState.enabled}`;
     if (sig === this.lastSig) return;
     this.lastSig = sig;
 
@@ -354,9 +336,6 @@ export class Topbar {
     this.autoKeyEl.classList.toggle('topbar-btn-on', autoKeyState.enabled);
     this.autoKeyEl.setAttribute('aria-pressed', String(autoKeyState.enabled));
     this.autoKeyEl.style.color = autoKeyState.enabled ? '#ff3b30' : '';
-
-    this.lightsEl.classList.toggle('topbar-btn-on', lightsOn);
-    this.lightsEl.setAttribute('aria-pressed', String(lightsOn));
 
     const noun = count === 1 ? 'object' : 'objects';
     this.statusEl.textContent = active

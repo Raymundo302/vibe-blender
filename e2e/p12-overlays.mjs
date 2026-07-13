@@ -113,22 +113,37 @@ runE2e(async (t) => {
   t.check('pivot select reflects the mode',
     (await t.evaluate(`document.querySelector('.vh-pivot').value`)) === 'cursor');
 
-  // --- 💡 Lights master toggle -------------------------------------------
-  // Add a second light so we exercise the all-on/all-off logic across many.
+  // --- Object Types dropdown: Lights show/select --------------------------
+  // (The old topbar 💡 toggle moved here.) Hiding the Lights type makes the
+  // light unpickable at its icon; showing it again restores pickability.
+  // Re-enable the Icons overlay (a prior section turned it off) so the light's
+  // billboard is drawn/pickable and this section isolates the TYPE toggle.
+  await t.evaluate(`(() => { window.__app.overlays.icons = true; })()`);
+  await t.sleep(60);
+  await t.evaluate(`document.querySelector('.vh-vis').click()`);
+  await t.sleep(100);
+  t.check('Object Types panel has 6 type rows',
+    (await t.evaluate(`document.querySelectorAll('.vh-vis-row[data-kind]').length`)) === 6);
+  t.check('Lights start pickable (type shown+selectable)',
+    (await t.evaluate(pickAtLight)) === lightId);
   await t.evaluate(`(() => {
-    const s = window.__app.scene;
-    const l2 = s.addLight('Probe2', 'sun');
-    l2.visible = true;
+    const box = document.querySelector('.vh-vis-row[data-kind="light"] input[data-role="show"]');
+    box.checked = false; box.dispatchEvent(new Event('change'));
   })()`);
-  const anyLightOn = `(() => window.__app.scene.objects.filter(o => o.kind === 'light').some(l => l.visible))()`;
-  const allLightsOff = `(() => window.__app.scene.objects.filter(o => o.kind === 'light').every(l => !l.visible))()`;
-  t.check('a light is on before toggling', await t.evaluate(anyLightOn));
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="lights-toggle"]').click()`);
   await t.sleep(120);
-  t.check('💡 turns all lights off when any was on', await t.evaluate(allLightsOff));
-  await t.evaluate(`document.querySelector('.topbar-btn[data-action="lights-toggle"]').click()`);
+  t.check('hiding the Lights type makes the light unpickable',
+    (await t.evaluate(pickAtLight)) !== lightId);
+  t.check('hiding Lights persists to localStorage',
+    (await t.evaluate(`JSON.parse(localStorage.getItem('vibe-object-types')).light.show`)) === false);
+  // Re-show and confirm it comes back.
+  await t.evaluate(`(() => {
+    const box = document.querySelector('.vh-vis-row[data-kind="light"] input[data-role="show"]');
+    box.checked = true; box.dispatchEvent(new Event('change'));
+  })()`);
   await t.sleep(120);
-  t.check('💡 turns all lights back on', await t.evaluate(anyLightOn));
+  t.check('re-showing Lights restores pickability', (await t.evaluate(pickAtLight)) === lightId);
+  await t.evaluate(`document.querySelector('.vh-vis').click()`); // close
+  await t.sleep(80);
 
   // --- Persistence across reload -----------------------------------------
   // Grid + Icons were un-checked earlier; both should survive the reload.

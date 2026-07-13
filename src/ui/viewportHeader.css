@@ -93,20 +93,54 @@
   cursor: pointer;
 }
 .vh-overlays-row:hover { background: var(--vb-hover, #4a4a4a); }
-.vh-overlays-row input[type="checkbox"] {
-  accent-color: var(--vb-accent, #fe730f);
-  cursor: pointer;
+
+/* Custom checkboxes + color swatches for BOTH viewport-header dropdowns: dark
+ * grey like the transform number fields (not the native white box), matched to
+ * their 18px height, and color swatches with NO white surround. */
+.vh-overlays-row input[type="checkbox"],
+.vh-vis-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
   margin: 0;
+  background: var(--vb-input, #1f1f1f);
+  border: 1px solid var(--vb-border, #3d3d3d);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+}
+.vh-overlays-row input[type="checkbox"]:checked,
+.vh-vis-row input[type="checkbox"]:checked {
+  background: var(--vb-accent, #fe730f);
+  border-color: var(--vb-accent, #fe730f);
+}
+/* Check tick on the accent fill. */
+.vh-overlays-row input[type="checkbox"]:checked::after,
+.vh-vis-row input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 5px; top: 2px;
+  width: 4px; height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 .vh-overlays-row input[type="color"] {
-  width: 28px;
+  width: 34px;
   height: 18px;
+  box-sizing: border-box;
   padding: 0;
   border: 1px solid var(--vb-border, #3d3d3d);
-  border-radius: 3px;
+  border-radius: 2px;
   background: none;
   cursor: pointer;
 }
+/* Strip the native white swatch surround so the color fills the whole box. */
+.vh-overlays-row input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.vh-overlays-row input[type="color"]::-webkit-color-swatch { border: none; border-radius: 1px; }
+.vh-overlays-row input[type="color"]::-moz-color-swatch { border: none; border-radius: 1px; }
 .vh-overlays-slider input[type="range"] {
   flex: 1 1 auto;
   min-width: 0;
@@ -119,3 +153,30 @@
   color: var(--vb-text-dim, #8a8a8a);
   font-variant-numeric: tabular-nums;
 }
+
+/* Object Types (Show / Select) dropdown — a 3-column grid: label, 👁, ➤. */
+.vh-vis-panel { min-width: 172px; }
+.vh-vis-row {
+  display: grid;
+  grid-template-columns: 1fr 22px 22px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.vh-vis-row:not(.vh-vis-head):hover { background: var(--vb-hover, #4a4a4a); }
+.vh-vis-head {
+  color: var(--vb-text-dim, #8a8a8a);
+  font-size: 12px;
+  text-align: center;
+  cursor: default;
+}
+.vh-vis-head span:not(.vh-vis-label) { justify-self: center; }
+.vh-vis-label { text-align: left; white-space: nowrap; }
+.vh-vis-row input[type="checkbox"] {
+  accent-color: var(--vb-accent, #fe730f);
+  cursor: pointer;
+  margin: 0;
+  justify-self: center;
+}
+.vh-vis-row input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.4; }

@@ -42,6 +42,7 @@ import { CursorOverlay } from './ui/cursorOverlay';
 import { OriginDots } from './ui/originDots';
 import { HtmlPortals } from './ui/htmlPortals'; // UR7-3 live URL web portals
 import { loadOverlayPrefs, overlays } from './render/overlayPrefs';
+import { loadObjectTypePrefs, objectTypes } from './render/objectTypePrefs';
 import { loadShadePrefs, shadePrefs } from './render/shadePrefs';
 import { ShadingMenu } from './ui/shadingMenu';
 import './ui/shadingMenu.css';
@@ -254,6 +255,7 @@ const cursorOverlay = new CursorOverlay(viewportWrap, scene, camera, renderer, c
 // toggles before the first frame so the initial render honors them, and sync
 // the cursor marker's visibility to the stored pref.
 loadOverlayPrefs();
+loadObjectTypePrefs();
 loadShadePrefs();
 cursorOverlay.visible = overlays.cursor3d;
 // The Overlays dropdown (viewport header) toggles the 3D-cursor marker through
@@ -507,7 +509,7 @@ topbar.mountTabs(workspaces.createTabs());
 // Debug/test handle (used by e2e smoke tests; harmless in production).
 // __app.io exposes the same serialize/apply the buttons use, for e2e.
 (window as unknown as Record<string, unknown>).__app = {
-  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs, overlays,
+  scene, camera, undo, renderer, workspaces, nPanel, cursorOverlay, originDots, shadePrefs, overlays, objectTypes,
   input: inputManager,
   htmlDriver,
   // UR14-1 status & hints handles for e2e (text without pixel reads).

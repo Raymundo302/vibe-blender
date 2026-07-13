@@ -3,6 +3,8 @@ import type { ShadingMenu } from './shadingMenu';
 import { snapState } from '../core/snap';
 import { xrayState } from '../render/passes/elementPickPass';
 import { overlays, saveOverlayPrefs, type OverlayPrefs, type RGB } from '../render/overlayPrefs';
+import { objectTypes, saveObjectTypePrefs } from '../render/objectTypePrefs';
+import type { ObjectKind } from '../core/scene/objectData';
 import { setTip } from './tooltip';
 import './viewportHeader.css';
 
@@ -28,6 +30,16 @@ const COLOR_ROWS: [ColorKey, string][] = [
   ['axisZ', 'Axis Z'],
 ];
 
+/** Object-type dropdown rows: icon + plural label per kind, in display order. */
+const TYPE_ROWS: [ObjectKind, string, string][] = [
+  ['mesh', '▦', 'Meshes'],
+  ['curve', '〰', 'Curves'],
+  ['text', 'T', 'Text'],
+  ['light', '💡', 'Lights'],
+  ['camera', '🎥', 'Cameras'],
+  ['empty', '✛', 'Empties'],
+];
+
 /** RGB (0..1 display channels, no gamma) → "#rrggbb" for a native color input. */
 const toHex = (c: RGB): string => '#' + c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0')).join('');
 /** "#rrggbb" → RGB (0..1 display channels, no gamma). */
@@ -40,7 +52,7 @@ const fromHex = (h: string): RGB => [parseInt(h.slice(1, 3), 16) / 255, parseInt
  * selector):
  *   LEFT   — mode selector (Object / Edit)
  *   CENTER — transform orientation ▾ · pivot point ▾ · 🧲 Snap
- *   RIGHT  — ⬒ Overlays ▾ · 👓 X-ray · shading dropdown
+ *   RIGHT  — ◉ Show ▾ (object-type visibility/selectability) · ⬒ Overlays ▾ · 👓 X-ray · shading dropdown
  *
  * Purely reflects/drives Scene + snap/xray state; update() is ticked from the
  * frame loop (signature-diffed so it's a cheap no-op when nothing changed), and
@@ -56,6 +68,9 @@ export class ViewportHeader {
   private readonly overlaysBtn: HTMLButtonElement;
   private overlaysPanel: HTMLElement | null = null;
   private overlaysCleanup: (() => void) | null = null;
+  private readonly visBtn: HTMLButtonElement;
+  private visPanel: HTMLElement | null = null;
+  private visCleanup: (() => void) | null = null;
   private lastSig = '';
 
   /** Set by main.ts — flips the 3D-cursor DOM overlay's visibility (the overlay
@@ -100,7 +115,10 @@ export class ViewportHeader {
     setTip(this.snapBtn, 'Grid snapping', 'Shift+Tab');
     const center = ViewportHeader.group('vh-center', this.orientSel, this.pivotSel, this.snapBtn);
 
-    // --- RIGHT: overlays · x-ray · shading ----------------------------------
+    // --- RIGHT: visibility · overlays · x-ray · shading ---------------------
+    this.visBtn = ViewportHeader.button('vh-vis', '◉ Show ▾', () => this.toggleVisibility());
+    setTip(this.visBtn, 'Object types visibility & selectability');
+
     this.overlaysBtn = ViewportHeader.button('vh-overlays', '⬒ Overlays ▾', () => this.toggleOverlays());
     setTip(this.overlaysBtn, 'Viewport overlays');
 
@@ -109,7 +127,7 @@ export class ViewportHeader {
       this.update();
     });
     setTip(this.xrayBtn, 'X-ray / select-through', 'Alt+Z');
-    const right = ViewportHeader.group('vh-right', this.overlaysBtn, this.xrayBtn, shadingMenu.element);
+    const right = ViewportHeader.group('vh-right', this.visBtn, this.overlaysBtn, this.xrayBtn, shadingMenu.element);
 
     el.append(left, ViewportHeader.spacer(), center, ViewportHeader.spacer(), right);
     this.element = el;
@@ -163,6 +181,95 @@ export class ViewportHeader {
     this.overlaysPanel?.remove();
     this.overlaysPanel = null;
     this.overlaysBtn.classList.remove('vh-on');
+  }
+
+  // --- Object-type visibility / selectability popover ------------------------
+  /** Toggle the Show/Select panel anchored under its button. */
+  private toggleVisibility(): void {
+    if (this.visPanel) { this.closeVisibility(); return; }
+
+    const panel = document.createElement('div');
+    panel.className = 'vh-overlays-panel vh-vis-panel';
+    this.buildVisibilityPanel(panel);
+    document.body.appendChild(panel);
+    this.visPanel = panel;
+
+    const r = this.visBtn.getBoundingClientRect();
+    panel.style.top = `${r.bottom + 4}px`;
+    panel.style.left = `${Math.max(4, r.right - panel.offsetWidth)}px`;
+
+    const onOutside = (e: PointerEvent): void => {
+      const t = e.target as Node;
+      if (!panel.contains(t) && t !== this.visBtn) this.closeVisibility();
+    };
+    const register = (): void => document.addEventListener('pointerdown', onOutside, true);
+    const raf = requestAnimationFrame(register);
+    this.visCleanup = () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('pointerdown', onOutside, true);
+    };
+    this.visBtn.classList.add('vh-on');
+  }
+
+  private closeVisibility(): void {
+    this.visCleanup?.();
+    this.visCleanup = null;
+    this.visPanel?.remove();
+    this.visPanel = null;
+    this.visBtn.classList.remove('vh-on');
+  }
+
+  /** One row per object type: a Show (eye) toggle + a Select toggle, both
+   *  initialized from `objectTypes` and persisted on change. */
+  private buildVisibilityPanel(panel: HTMLElement): void {
+    const heading = document.createElement('div');
+    heading.className = 'vh-overlays-heading';
+    heading.textContent = 'Object Types';
+    panel.appendChild(heading);
+
+    // Column header: 👁 = visible in viewport, ➤ = selectable (clickable).
+    const head = document.createElement('div');
+    head.className = 'vh-vis-row vh-vis-head';
+    const hSpacer = document.createElement('span');
+    hSpacer.className = 'vh-vis-label';
+    const hShow = document.createElement('span');
+    hShow.textContent = '👁';
+    setTip(hShow, 'Visible in viewport');
+    const hSel = document.createElement('span');
+    hSel.textContent = '➤';
+    setTip(hSel, 'Selectable');
+    head.append(hSpacer, hShow, hSel);
+    panel.appendChild(head);
+
+    for (const [kind, icon, label] of TYPE_ROWS) {
+      const row = document.createElement('div');
+      row.className = 'vh-vis-row';
+      row.dataset.kind = kind;
+
+      const name = document.createElement('span');
+      name.className = 'vh-vis-label';
+      name.textContent = `${icon}  ${label}`;
+
+      const show = ViewportHeader.checkbox(objectTypes[kind].show, (on) => {
+        objectTypes[kind].show = on;
+        // A hidden type can't be picked either (typePickable requires show), so
+        // grey the Select box out — but keep its stored value so re-showing
+        // restores the previous selectability.
+        sel.disabled = !on;
+        saveObjectTypePrefs();
+      });
+      show.dataset.role = 'show';
+
+      const sel = ViewportHeader.checkbox(objectTypes[kind].select, (on) => {
+        objectTypes[kind].select = on;
+        saveObjectTypePrefs();
+      });
+      sel.dataset.role = 'select';
+      sel.disabled = !objectTypes[kind].show;
+
+      row.append(name, show, sel);
+      panel.appendChild(row);
+    }
   }
 
   /** Populate the panel with rows initialized from the current `overlays`. */
@@ -279,5 +386,13 @@ export class ViewportHeader {
     b.textContent = label;
     b.addEventListener('click', onClick);
     return b;
+  }
+
+  private static checkbox(checked: boolean, onChange: (on: boolean) => void): HTMLInputElement {
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = checked;
+    box.addEventListener('change', () => onChange(box.checked));
+    return box;
   }
 }

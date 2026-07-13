@@ -362,6 +362,8 @@
 .properties-input::-webkit-outer-spin-button,
 .properties-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .properties-input:focus { border-color: var(--vb-accent, #fe730f); box-shadow: 0 0 0 1px var(--vb-accent, #fe730f); }
+/* Draggable (scrub) numeric fields hint the horizontal drag; text edit on click. */
+.properties-input-scrub:not(:focus) { cursor: ew-resize; }
 .properties-empty { padding: 6px 0; color: var(--vb-text-dim, #8a8a8a); font-style: italic; }
 
 /* ------------------------------------------------------------- N-panel (P6-2) */

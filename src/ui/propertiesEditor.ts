@@ -216,6 +216,8 @@ export class TransformFields {
       input.type = 'number';
       input.step = String(step);
       input.addEventListener('change', () => this.commit(kind));
+      // Click-drag to scrub the value (Blender-style); Shift = fine.
+      this.attachScrub(input, kind, step, kind === 'rotation' ? 1 : 3);
 
       field.append(label, input);
       row.appendChild(field);
@@ -269,29 +271,83 @@ export class TransformFields {
     return new Vec3(x, y, z);
   }
 
+  /** The transform implied by a group's current inputs, layered on `before`.
+   *  Null if any value is non-finite. Pure — mutates nothing. */
+  private computeAfter(kind: 'location' | 'rotation' | 'scale', before: SceneObject['transform']): SceneObject['transform'] | null {
+    if (kind === 'location') {
+      const p = this.readGroup(this.location);
+      return p ? before.withPosition(p) : null;
+    }
+    if (kind === 'scale') {
+      const s = this.readGroup(this.scale);
+      return s ? before.withScale(s) : null;
+    }
+    const deg = this.readGroup(this.rotation);
+    return deg ? before.withRotation(Quat.fromEulerXYZ(deg.x * RAD, deg.y * RAD, deg.z * RAD)) : null;
+  }
+
   private commit(kind: 'location' | 'rotation' | 'scale'): void {
     const obj = this.scene.activeObject;
     if (!obj) return;
     const before = obj.transform;
-
-    let after;
-    if (kind === 'location') {
-      const p = this.readGroup(this.location);
-      if (!p) return this.restore();
-      after = before.withPosition(p);
-    } else if (kind === 'scale') {
-      const s = this.readGroup(this.scale);
-      if (!s) return this.restore();
-      after = before.withScale(s);
-    } else {
-      const deg = this.readGroup(this.rotation);
-      if (!deg) return this.restore();
-      after = before.withRotation(Quat.fromEulerXYZ(deg.x * RAD, deg.y * RAD, deg.z * RAD));
-    }
+    const after = this.computeAfter(kind, before);
+    if (!after) return this.restore();
 
     // Undo convention: apply the final state first, then push the command.
     obj.transform = after;
     this.undo.push(new TransformCommand('Set Transform', [{ object: obj, before, after }]));
+  }
+
+  /**
+   * Blender-style click-drag scrub on a numeric transform field: drag left/right
+   * to slide the value, Shift for fine control. A plain click (no drag past a few
+   * px) falls through to normal text editing. Live-applies to the object each
+   * move and pushes ONE undo command for the whole gesture on release.
+   */
+  private attachScrub(
+    input: HTMLInputElement,
+    kind: 'location' | 'rotation' | 'scale',
+    step: number,
+    decimals: number,
+  ): void {
+    input.classList.add('properties-input-scrub');
+    input.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const obj = this.scene.activeObject;
+      if (!obj) return;
+      const startX = e.clientX;
+      const startVal = parseFloat(input.value) || 0;
+      const before = obj.transform;
+      let dragging = false;
+
+      const onMove = (ev: PointerEvent): void => {
+        const dx = ev.clientX - startX;
+        if (!dragging) {
+          if (Math.abs(dx) < 3) return; // below threshold → still a click
+          dragging = true;
+          input.blur(); // leave text-edit mode; we're scrubbing now
+          document.body.style.cursor = 'ew-resize';
+        }
+        // ~4 px per step at 1×; Shift = 0.1× for fine control.
+        const perPx = step * 0.25 * (ev.shiftKey ? 0.1 : 1);
+        input.value = (startVal + dx * perPx).toFixed(decimals);
+        const active = this.scene.activeObject;
+        if (active) {
+          const after = this.computeAfter(kind, active.transform);
+          if (after) active.transform = after; // live preview, no undo yet
+        }
+      };
+      const onUp = (): void => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        if (!dragging) return; // a plain click — let the field focus/edit
+        document.body.style.cursor = '';
+        const active = this.scene.activeObject;
+        if (active) this.undo.push(new TransformCommand('Set Transform', [{ object: active, before, after: active.transform }]));
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
   }
 
   /** Discard bad input by forcing the next refresh to re-display current values. */

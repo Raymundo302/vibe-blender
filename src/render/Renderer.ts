@@ -33,6 +33,7 @@ import { ensureBaked } from '../core/nodes/bake';
 import { nodeImageCache } from '../core/nodes/imageCache';
 import { cameraFovY, type Material, type GlareSettings } from '../core/scene/objectData';
 import { overlays } from './overlayPrefs';
+import { typeShown, typePickable } from './objectTypePrefs';
 import { shadePrefs } from './shadePrefs';
 import { AoPass } from './passes/aoPass';
 import { GlarePass } from './passes/glarePass';
@@ -902,7 +903,9 @@ export class Renderer {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const { view, proj, eye, fovY } = this.resolveView(scene, camera);
-    const visible = scene.objects.filter((o) => scene.effectiveVisible(o));
+    // Object-type visibility (viewport-header dropdown): a hidden type is not
+    // drawn (and, in pick(), not selectable either).
+    const visible = scene.objects.filter((o) => scene.effectiveVisible(o) && typeShown(o.kind));
 
     // UR15-1: Rendered → Raytraced. The progressive path tracer accumulates into a
     // fullscreen textured quad instead of the rasterized RenderedPass. Any other
@@ -1408,7 +1411,7 @@ export class Renderer {
 
     this.pickingPass.begin();
     for (const obj of scene.objects) {
-      if (!scene.effectiveVisible(obj)) continue;
+      if (!scene.effectiveVisible(obj) || !typePickable(obj.kind)) continue;
       this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
       this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
     }
@@ -1420,7 +1423,7 @@ export class Renderer {
     // Light/camera icons — drawn last (iconPass switches GL programs, and
     // pickingPass.drawObject assumes the picking shader is still active). The
     // looked-through camera has no on-screen icon, so it is not pickable either.
-    const iconObjs = scene.objects.filter((o) => overlays.icons && scene.effectiveVisible(o) && o.kind !== 'mesh' && o.id !== this.cameraViewId);
+    const iconObjs = scene.objects.filter((o) => overlays.icons && scene.effectiveVisible(o) && typePickable(o.kind) && o.kind !== 'mesh' && o.id !== this.cameraViewId);
     if (iconObjs.length > 0) {
       this.iconPass.begin(viewProj, canvas.width, canvas.height);
       for (const obj of iconObjs) this.iconPass.drawPick(scene.worldTransformOf(obj).position, obj.id + 1);
@@ -1469,7 +1472,7 @@ export class Renderer {
     this.pickingPass.begin();
     gl.disable(gl.DEPTH_TEST);
     for (const obj of scene.objects) {
-      if (!scene.effectiveVisible(obj) || obj.kind !== 'mesh') continue;
+      if (!scene.effectiveVisible(obj) || obj.kind !== 'mesh' || !typePickable(obj.kind)) continue;
       this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
       this.gpuMesh(obj, scene).edges.draw(gl.LINES);
     }
@@ -1497,7 +1500,7 @@ export class Renderer {
    * non-zero pixel within a small window. Null = no curve near the cursor.
    */
   private curveProximityPick(scene: Scene, viewProj: Mat4, px: number, py: number): number | null {
-    const curves = scene.objects.filter((o) => scene.effectiveVisible(o) && o.kind === 'curve' && o.curve && o.curve.points.length >= 2);
+    const curves = scene.objects.filter((o) => scene.effectiveVisible(o) && typePickable(o.kind) && o.kind === 'curve' && o.curve && o.curve.points.length >= 2);
     if (curves.length === 0) return null;
     const { gl, canvas } = this.ctx;
     this.pickingPass.begin();
