@@ -64,29 +64,6 @@ export class CameraCommand implements Command {
   }
 }
 
-/**
- * One undoable change of the scene's output resolution (UR5-5). Snapshots the
- * whole {width,height} before/after so undo restores both. Scene-level (not
- * per-camera), but hosted in the Camera tab's Format section — the closest
- * analogue to Blender's Output properties in this app.
- */
-export class SetRenderResolutionCommand implements Command {
-  readonly name = 'Set Resolution';
-  constructor(
-    private readonly scene: Scene,
-    private readonly before: { width: number; height: number },
-    private readonly after: { width: number; height: number },
-  ) {}
-
-  undo(): void {
-    this.scene.renderSettings = { ...this.before };
-  }
-
-  redo(): void {
-    this.scene.renderSettings = { ...this.after };
-  }
-}
-
 /** One undoable change of the scene's active camera. */
 export class SetActiveCameraCommand implements Command {
   readonly name = 'Set Active Camera';
@@ -112,8 +89,6 @@ class CameraTab {
   private readonly body: HTMLDivElement;
   /** Scene-level Format (output resolution) — always visible, independent of
    *  whether a camera is selected (UR5-5). */
-  private readonly resWInput: HTMLInputElement;
-  private readonly resHInput: HTMLInputElement;
   private readonly focalInput: HTMLInputElement;
   private readonly nearInput: HTMLInputElement;
   private readonly farInput: HTMLInputElement;
@@ -146,22 +121,20 @@ class CameraTab {
     this.body = document.createElement('div');
     this.body.className = 'properties-body';
 
-    // Format: output resolution (UR5-5) --------------------------------------
-    // Scene-level, so it lives in its OWN always-visible section (not inside the
-    // per-camera body). Drives the passepartout aspect, the through-camera
-    // projection letterbox and the F12/anim render dimensions.
+    // Format pointer (UR16-3) — the output resolution MOVED to Properties ▸ Render
+    // (still scene.renderSettings). The Camera tab keeps a one-line pointer so the
+    // control is discoverable where it used to live.
     const format = document.createElement('div');
     format.className = 'properties-body camera-tab-format';
     const formatTitle = document.createElement('div');
     formatTitle.className = 'properties-group-title camera-tab-format-title';
     formatTitle.textContent = 'Format';
     format.append(formatTitle);
-    this.resWInput = this.numberInput('resX', 1, undefined, 1);
-    this.resWInput.addEventListener('change', () => this.commitResolution('x'));
-    format.append(this.labelledRow('Resolution X', this.resWInput));
-    this.resHInput = this.numberInput('resY', 1, undefined, 1);
-    this.resHInput.addEventListener('change', () => this.commitResolution('y'));
-    format.append(this.labelledRow('Resolution Y', this.resHInput));
+    const formatPointer = document.createElement('div');
+    formatPointer.className = 'camera-tab-format-pointer';
+    formatPointer.dataset.field = 'resolution-pointer';
+    formatPointer.textContent = 'Resolution → Properties ▸ Render';
+    format.append(formatPointer);
 
     // Focal length (mm, 1..300) ---------------------------------------------
     this.focalInput = this.numberInput('focal', 1, 300, 1);
@@ -331,7 +304,6 @@ class CameraTab {
     this.body.append(activeRow);
 
     container.append(format, this.empty, this.body);
-    this.writeFormat();
     this.update();
   }
 
@@ -407,31 +379,7 @@ class CameraTab {
     return obj && obj.kind === 'camera' && obj.camera ? obj : null;
   }
 
-  /** Push one undoable resolution change (clamped to a positive integer). Never
-   *  overwrites the field the user is editing until it's committed. */
-  private commitResolution(axis: 'x' | 'y'): void {
-    const input = axis === 'x' ? this.resWInput : this.resHInput;
-    const raw = parseFloat(input.value);
-    if (!Number.isFinite(raw) || raw < 1) return this.writeFormat();
-    const v = Math.max(1, Math.round(raw));
-    const before = { ...this.scene.renderSettings };
-    const after = axis === 'x' ? { ...before, width: v } : { ...before, height: v };
-    if (after.width === before.width && after.height === before.height) return this.writeFormat();
-    this.scene.renderSettings = after;
-    this.undo.push(new SetRenderResolutionCommand(this.scene, before, after));
-    this.writeFormat();
-  }
-
-  /** Sync the resolution fields to the model (skips the one being edited). */
-  private writeFormat(): void {
-    const active = document.activeElement;
-    const rs = this.scene.renderSettings;
-    if (active !== this.resWInput) this.resWInput.value = String(rs.width);
-    if (active !== this.resHInput) this.resHInput.value = String(rs.height);
-  }
-
   update(): void {
-    this.writeFormat();
     const obj = this.activeCamera();
     if (!obj || !obj.camera) {
       this.empty.style.display = '';

@@ -1,0 +1,26 @@
+/* UR16-3 — Render Properties tab. Uses the shared propRow grid; only a few
+   tab-local touches (section title spacing + a left-aligned checkbox control). */
+
+.render-tab {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.render-tab-section {
+  margin-top: 8px;
+  margin-bottom: 2px;
+}
+
+/* Checkbox controls sit LEFT (the propRow control column would otherwise
+   stretch the label full-width). */
+.render-tab-check {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.render-tab-check > input[type='checkbox'] {
+  margin: 0;
+  cursor: pointer;
+}

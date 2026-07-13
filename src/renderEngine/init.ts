@@ -4,6 +4,7 @@ import { RenderWindow } from './renderWindow';
 import { buildSnapshot } from './snapshot';
 import { getGpuTracer } from './gpu/sharedTracer';
 import { viewPrefs, loadViewPrefs, saveViewPrefs, type RenderEngine } from '../render/viewPrefs';
+import { adaptBatch } from '../render/viewportRay';
 
 /** Everything the render engine needs from the app shell. */
 export interface RenderEngineContext {
@@ -49,9 +50,12 @@ export function getLastRender(): HTMLCanvasElement | null {
 
 /** Base RNG seed shared by both backends (matches animRender ANIM_SEED_BASE). */
 const RENDER_SEED = 0x1234567;
-/** Progressive GPU render: samples per rAF batch and the max total spp. */
-const GPU_BATCH = 4;
-const GPU_MAX_SAMPLES = 512;
+/** Progressive GPU render: samples per rAF batch when NOT limiting GPU load. */
+const GPU_BATCH = 16;
+/** Limit GPU load (UR16-3): adapt the per-batch spp to keep each accumulate()
+ *  tick under ~8 ms of GPU work (Ray's Vega mouse-stutter guard), capped small. */
+const GPU_LIMIT_TARGET_MS = 8;
+const GPU_LIMIT_BATCH_MAX = 8;
 /** Steady readback cadence (~4 Hz) — blit far less often than we accumulate. */
 const GPU_BLIT_MS = 250;
 
@@ -63,6 +67,8 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
   // Monotonic token: bumping it invalidates any in-flight GPU rAF loop (cancel).
   let gpuToken = 0;
   let gpuRAF = 0;
+  /** Largest per-batch spp used in the last GPU render (UR16-3 pacing probe). */
+  let gpuLastMaxBatch = 0;
 
   // Ensure the persisted engine pref is loaded, then probe GPU availability once
   // (constructs the shared tracer / GL context up front so the select tooltip is
@@ -71,6 +77,7 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
   const probe = getGpuTracer();
   win.setGpuAvailability(probe.available, probe.unavailableReason);
   win.setEngine(viewPrefs.renderEngine);
+  win.setSamples(viewPrefs.renderSamples);
 
   const stopWorker = (): void => {
     if (worker) {
@@ -118,7 +125,11 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     worker.onmessage = (e: MessageEvent) => {
       const msg = e.data;
       if (msg && msg.type === 'frame') {
-        win.updateFrame(msg.accum as Float32Array, msg.sample as number, performance.now() - startTime);
+        win.updateFrame(
+          msg.accum as Float32Array, msg.sample as number,
+          performance.now() - startTime,
+          (msg.coverage as Float32Array | undefined) ?? null,
+        );
       }
     };
     worker.postMessage({
@@ -127,6 +138,7 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
       width: win.width,
       height: win.height,
       seed: RENDER_SEED,
+      maxSamples: win.samples,
     });
   };
 
@@ -137,12 +149,18 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
   const presentGpu = (avg: Float32Array, sampleCount: number, elapsed: number): void => {
     const n = win.width * win.height;
     const rgb = new Float32Array(n * 3);
+    // Transparent film (UR16-3): the GPU alpha channel is the coverage FRACTION
+    // (hits/samples). Rebuild the summed coverage the tonemap seam wants so it can
+    // present straight alpha exactly like the CPU path.
+    const transparent = ctx.scene.renderSettings.transparent ?? false;
+    const cov = transparent ? new Float32Array(n) : null;
     for (let i = 0; i < n; i++) {
       rgb[i * 3] = avg[i * 4] * sampleCount;
       rgb[i * 3 + 1] = avg[i * 4 + 1] * sampleCount;
       rgb[i * 3 + 2] = avg[i * 4 + 2] * sampleCount;
+      if (cov) cov[i] = avg[i * 4 + 3] * sampleCount;
     }
-    win.updateFrame(rgb, sampleCount, elapsed);
+    win.updateFrame(rgb, sampleCount, elapsed, cov);
   };
 
   const startGpuRender = (snapshot = prepareSnapshot()): void => {
@@ -156,6 +174,13 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     const w = win.width, h = win.height;
     if (!tracer.beginProgressive(w, h, RENDER_SEED)) { startCpuRender(snapshot); return; }
     let lastBlit = 0;
+    const maxSamples = win.samples;
+    // Limit GPU load (UR16-3): adapt the per-batch spp to keep each tick ≤ ~8 ms
+    // of GPU work and yield between batches (already per-rAF) so the compositor
+    // stays responsive on a weak GPU. Off → the historical fixed batch.
+    const limit = viewPrefs.limitGpuLoad;
+    let batch = limit ? 2 : GPU_BATCH;
+    gpuLastMaxBatch = 0;
 
     const onLost = (): void => {
       stopGpu();
@@ -167,11 +192,16 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     const step = (): void => {
       if (myToken !== gpuToken) return; // superseded / cancelled
       if (tracer.contextLost) { onLost(); return; }
-      const remaining = GPU_MAX_SAMPLES - tracer.accumulatedSamples;
-      tracer.accumulate(Math.min(GPU_BATCH, remaining));
+      const remaining = maxSamples - tracer.accumulatedSamples;
+      const thisBatch = Math.min(batch, remaining);
+      if (thisBatch > gpuLastMaxBatch) gpuLastMaxBatch = thisBatch;
+      const t0 = performance.now();
+      tracer.accumulate(thisBatch);
       if (tracer.contextLost) { onLost(); return; }
       const now = performance.now();
-      const done = tracer.accumulatedSamples >= GPU_MAX_SAMPLES;
+      // Adapt the next batch under the load limiter (bounded small); fixed otherwise.
+      if (limit) batch = adaptBatch(batch, now - t0, GPU_LIMIT_TARGET_MS, GPU_LIMIT_BATCH_MAX);
+      const done = tracer.accumulatedSamples >= maxSamples;
       if (now - lastBlit > GPU_BLIT_MS || done) {
         const buf = tracer.readbackProgressive();
         if (buf) presentGpu(buf, tracer.accumulatedSamples, now - startTime);
@@ -190,6 +220,8 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     // passepartout frame and what F12 produces is the real frame.
     const rs = ctx.scene.renderSettings;
     win.resize(rs.width, rs.height);
+    // Transparent film (UR16-3): show a checker behind the canvas so alpha reads.
+    win.setTransparentPreview(rs.transparent ?? false);
     const snapshot = prepareSnapshot();
     openForRender();
     // Pick the backend: honor the pref, but downgrade GPU→CPU when unavailable.
@@ -214,6 +246,12 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
   // Changing the Engine select persists the pref and re-renders on the new backend.
   win.onEngineChange = () => {
     viewPrefs.renderEngine = win.engine;
+    saveViewPrefs();
+    if (win.isOpen) startRender();
+  };
+  // Changing the Samples field persists the pref (Render tab syncs) + re-renders.
+  win.onSamplesChange = () => {
+    viewPrefs.renderSamples = win.samples;
     saveViewPrefs();
     if (win.isOpen) startRender();
   };
@@ -247,6 +285,22 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     gpuAvailable: () => getGpuTracer().available,
     /** GPU-unavailable reason (null when available). */
     gpuReason: () => getGpuTracer().unavailableReason,
+    /** Current F12 samples cap (UR16-3). */
+    samples: () => win.samples,
+    /** Set + persist the samples cap and re-render if open (Render tab + e2e). */
+    setSamples: (n: number) => {
+      win.setSamples(n);
+      viewPrefs.renderSamples = win.samples;
+      saveViewPrefs();
+      if (win.isOpen) startRender();
+    },
+    /** Whether the GPU-load limiter is on (UR16-3 pacing probe). */
+    limitGpuLoad: () => viewPrefs.limitGpuLoad,
+    /** The per-batch spp cap in effect (limited → small; unlimited → the fixed
+     *  batch). e2e asserts this shrinks when Limit GPU load is on. */
+    gpuBatchCap: () => (viewPrefs.limitGpuLoad ? GPU_LIMIT_BATCH_MAX : GPU_BATCH),
+    /** Largest per-batch spp actually used in the last GPU render (pacing probe). */
+    gpuLastMaxBatch: () => gpuLastMaxBatch,
     /** Set + persist the engine pref and re-render if open (used by e2e + the
      *  CPU-path regression suites to pin the backend). */
     setEngine: (e: RenderEngine) => {

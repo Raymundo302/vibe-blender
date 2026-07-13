@@ -1,4 +1,4 @@
-/* Material properties tab (P8-3). Prefix: material-tab- */
+/* Material properties tab (P8-3 → UR16-2 shader-first socket rows). */
 
 .material-tab-slot-row {
   display: flex;
@@ -23,111 +23,28 @@
   gap: 4px;
 }
 
-.material-tab-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.material-tab-field > span.material-tab-label {
-  flex: 1;
-  min-width: 0;
-}
-
-.material-tab-field input[type='range'] {
-  flex: 1;
-  min-width: 0;
-}
-
-.material-tab-field input[type='number'] {
-  width: 70px;
-  flex: none;
-}
-
-.material-tab-field input[type='color'] {
-  flex: none;
-}
-
-.material-tab-field .material-tab-num {
-  width: 46px;
-  flex: none;
-  text-align: right;
-}
-
-.material-tab-texkind {
-  flex: 1;
-  min-width: 0;
-}
-
-.material-tab-texfile {
-  flex: 1;
-  min-width: 0;
+/* UR16-2 — Ray's "make the color box the same height": EVERY color input in the
+ * tab (channel swatches AND the gradient sub-row endpoints, which aren't direct
+ * children of .prop-row-control) is the same fixed height as the sliders. */
+.material-tab-fields input[type='color'] {
+  height: 22px;
+  box-sizing: border-box;
+  padding: 1px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
 }
 
 .material-tab-texthumb {
   flex: none;
-  width: 32px;
-  height: 32px;
+  width: 22px;
+  height: 22px;
   object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.15);
   image-rendering: pixelated;
 }
 
-/* P13 map slots */
-.material-tab-maps-title {
-  margin-top: 8px;
-  margin-bottom: 2px;
-}
+/* Gradient sub-row endpoint swatches: a touch wider than the channel swatch. */
+.material-tab-gradient input[type='color'] { width: 34px; }
+.material-tab-gradient .material-tab-grad-axis-btn { font-size: inherit; }
 
-.material-tab-mapfile {
-  flex: 1;
-  min-width: 0;
-}
-
-.material-tab-mapclear {
-  flex: none;
-  cursor: pointer;
-  line-height: 1;
-  padding: 0 6px;
-}
-
-.material-tab-field input[type='checkbox'].material-tab-normal-bump {
-  flex: none;
-}
-
-.material-tab-field input[type='range'].material-tab-normal-strength {
-  flex: 1;
-  min-width: 0;
-}
-
-/* UR10-3 glass: transmission slider + IOR + preset buttons */
-.material-tab-field input[type='range'].material-tab-transmission {
-  flex: 1;
-  min-width: 0;
-}
-
-.material-tab-field input[type='number'].material-tab-ior {
-  flex: 1;
-  min-width: 0;
-}
-
-.material-tab-presets {
-  display: flex;
-  gap: 6px;
-  margin: 4px 0 8px;
-}
-
-.material-tab-presets button {
-  flex: 1;
-  cursor: pointer;
-  padding: 4px 6px;
-  font: inherit;
-  color: #ddd;
-  background: #3a3a3a;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
-}
-
-.material-tab-presets button:hover {
-  background: #484848;
-}
+.material-tab-nodes-title { margin-top: 8px; margin-bottom: 2px; }

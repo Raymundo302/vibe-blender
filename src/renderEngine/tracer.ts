@@ -931,6 +931,8 @@ export interface TraceScene {
   /** Emissive mesh lights (UR10-2 Part A) — null when no emissive geometry, so
    *  the NEE + emission-gating stay off and non-emissive renders are unchanged. */
   emitters: EmitterList | null;
+  /** Transparent film (UR16-3): skip the world backdrop for the PRIMARY ray. */
+  transparent: boolean;
 }
 
 export function prepareScene(snap: Snapshot): TraceScene {
@@ -948,6 +950,7 @@ export function prepareScene(snap: Snapshot): TraceScene {
     world: snap.world ?? defaultSnapWorld(),
     bvh: snap.tris.length >= 9 ? buildBVH(snap.tris) : null,
     emitters: buildEmitters(snap.tris, snap.triMat, snap.materials),
+    transparent: snap.transparent ?? false,
   };
 }
 
@@ -1054,6 +1057,8 @@ function alphaAtHit(mat: SnapMaterial, loc: [number, number, number]): number {
 
 /**
  * Trace a single camera ray and return its radiance. `out` receives [r,g,b].
+ * When `out` has a 4th slot it receives COVERAGE (UR16-3): 1 if the PRIMARY ray
+ * hit geometry, 0 if it escaped to the world — the transparent-film alpha.
  * Deterministic given `rng`.
  */
 export function traceRay(
@@ -1061,7 +1066,7 @@ export function traceRay(
   ox: number, oy: number, oz: number,
   dx: number, dy: number, dz: number,
   rng: Rng,
-  out: [number, number, number],
+  out: number[],
 ): void {
   let tr = 1, tg = 1, tb = 1; // throughput
   let rr = 0, rg = 0, rb = 0; // radiance
@@ -1090,6 +1095,8 @@ export function traceRay(
   // emission is already gathered by the NEE at that vertex, so skip it to avoid
   // double counting. Irrelevant when there are no emitters (flag never consulted).
   let countEmission = true;
+  // Transparent-film coverage (UR16-3): 1 once the PRIMARY ray lands on geometry.
+  let coverage = 0;
 
   for (let depth = 0; depth < MAX_DEPTH; depth++) {
     let hit = scene.bvh
@@ -1130,10 +1137,17 @@ export function traceRay(
         : null;
     }
     if (!hit) {
-      worldSky(scene.world, dx, dy, dz, skyC);
-      rr += tr * skyC[0]; rg += tg * skyC[1]; rb += tb * skyC[2];
+      // Transparent film (UR16-3): the PRIMARY (depth-0) ray that escapes to the
+      // world contributes NO backdrop radiance and leaves coverage 0 (→ alpha 0).
+      // Deeper bounces still gather world lighting (world illuminates objects).
+      if (!(depth === 0 && scene.transparent)) {
+        worldSky(scene.world, dx, dy, dz, skyC);
+        rr += tr * skyC[0]; rg += tg * skyC[1]; rb += tb * skyC[2];
+      }
       break;
     }
+    // Primary ray hit real geometry → this pixel sample is covered (alpha 1).
+    if (depth === 0) coverage = 1;
     const mat = scene.materials[scene.triMat[hit.tri]] ?? scene.materials[0];
     // Effective albedo = baseColor × texture, sampled through the interpolated
     // per-corner UV (barycentric: A weight = 1-u-v, B = u, C = v — the corner
@@ -1413,12 +1427,18 @@ export function traceRay(
     }
   }
   out[0] = rr; out[1] = rg; out[2] = rb;
+  if (out.length > 3) out[3] = coverage;
 }
 
 /**
  * Render one full sample pass into `accum` (length w*h*3, added in place).
  * `sampleIndex` seeds per-pixel RNG so each pass is independent yet
  * deterministic. Pixel (0,0) is top-left.
+ *
+ * `coverageAccum` (UR16-3, length w*h) — when supplied, receives the summed
+ * transparent-film coverage per pixel (primary-ray hit fraction). Omit it (the
+ * default) for the opaque path: no coverage slot is written and the render is
+ * byte-identical to the pre-UR16-3 tracer.
  */
 export function renderSample(
   scene: TraceScene,
@@ -1427,6 +1447,7 @@ export function renderSample(
   h: number,
   sampleIndex: number,
   seed: number,
+  coverageAccum?: Float32Array,
 ): void {
   const cam = scene.camera;
   const aspect = w / h;
@@ -1439,10 +1460,13 @@ export function renderSample(
   // RNG stream (and therefore the image) is byte-identical to the old tracer.
   const aperture = cam.aperture ?? 0;
   const focus = cam.focusDistance ?? 5;
-  const out: [number, number, number] = [0, 0, 0];
+  // 4-slot out so traceRay can report coverage (out[3]) when transparent film is
+  // wanted; the extra slot is ignored on the opaque path.
+  const out: number[] = [0, 0, 0, 0];
   let i = 0;
+  let p = 0;
   for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++, i += 3) {
+    for (let px = 0; px < w; px++, i += 3, p++) {
       const rng = mulberry32((seed ^ (i * 9781) ^ (sampleIndex * 0x9e3779b1)) >>> 0);
       // Jittered sub-pixel sample.
       const sx = ((px + rng()) / w) * 2 - 1;
@@ -1476,6 +1500,7 @@ export function renderSample(
       accum[i] += out[0];
       accum[i + 1] += out[1];
       accum[i + 2] += out[2];
+      if (coverageAccum) coverageAccum[p] += out[3];
     }
   }
 }

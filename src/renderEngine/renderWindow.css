@@ -59,7 +59,8 @@
   font-variant-numeric: tabular-nums;
 }
 .render-win-aperture,
-.render-win-focus {
+.render-win-focus,
+.render-win-samples {
   width: 52px;
   background: var(--vb-input, #1f1f1f);
   border: 1px solid var(--vb-border, #3d3d3d);
@@ -68,6 +69,7 @@
   font: inherit;
   padding: 1px 4px;
 }
+.render-win-samples { width: 58px; }
 
 .render-win-engine {
   background: var(--vb-input, #1f1f1f);
@@ -84,4 +86,15 @@
   background: #000;
   max-width: 90vw;
   max-height: 80vh;
+}
+/* Transparent-film preview (UR16-3): a checkerboard behind the canvas so alpha
+   shows through. Only the on-screen preview — the saved PNG carries real alpha.
+   Two-class selector so it beats `.render-win-canvas { background:#000 }`. */
+.render-win-canvas.render-win-canvas-alpha {
+  background-color: #bdbdbd;
+  background-image:
+    linear-gradient(45deg, #7a7a7a 25%, transparent 25%, transparent 75%, #7a7a7a 75%),
+    linear-gradient(45deg, #7a7a7a 25%, transparent 25%, transparent 75%, #7a7a7a 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 9px 9px;
 }

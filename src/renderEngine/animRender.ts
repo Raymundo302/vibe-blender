@@ -6,6 +6,7 @@ import { buildSnapshot } from './snapshot';
 import { prepareScene, renderSample } from './tracer';
 import { getGpuTracer } from './gpu/sharedTracer';
 import { tonemapAccumToRgba } from './renderWindow';
+import { viewPrefs, saveViewPrefs, type AnimFormat } from '../render/viewPrefs';
 import './animRender.css';
 
 /**
@@ -369,7 +370,15 @@ export class AnimRender {
     this.formatSel = document.createElement('select');
     this.formatSel.className = 'anim-render-input';
     this.formatSel.dataset.testid = 'anim-format';
-    this.formatSel.addEventListener('change', () => this.updateHint());
+    this.formatSel.addEventListener('change', () => {
+      // Persist so the Render tab's Output ▸ Animation select stays in sync (UR16-3).
+      const v = this.formatSel.value;
+      if (v === 'webm' || v === 'mp4' || v === 'png') {
+        viewPrefs.animFormat = v as AnimFormat;
+        saveViewPrefs();
+      }
+      this.updateHint();
+    });
     grid.append(this.label('Format'), this.formatSel);
 
     // PNG assembly hint (full-width row under Format; shown only for PNG).
@@ -451,7 +460,9 @@ export class AnimRender {
       opt.textContent = label;
       sel.appendChild(opt);
     }
-    sel.value = opts.some(([v]) => v === prev) ? prev : 'webm';
+    // Prefer the last-open selection, else the persisted Render-tab default (UR16-3).
+    const want = prev || viewPrefs.animFormat;
+    sel.value = opts.some(([v]) => v === want) ? want : 'webm';
     this.updateHint();
   }
 
@@ -624,7 +635,11 @@ export class AnimRender {
     const total = frameCount(start, end);
     let blob: Blob | null = null;
     try {
-      if (format === 'png') blob = await this.renderPngSeq(engine, start, end, total, samples, tw, th);
+      // Transparent film (UR16-3): only the PNG sequence carries alpha (WebM/MP4
+      // have no alpha channel → the world is composited black, per the snapshot's
+      // primary-miss skip). Documented in the modal hint below.
+      const wantAlpha = format === 'png' && traced && (scene.renderSettings.transparent ?? false);
+      if (format === 'png') blob = await this.renderPngSeq(engine, start, end, total, samples, tw, th, wantAlpha);
       else blob = await this.renderVideo(engine, videoMime, blobType, start, end, fps, total, samples, tw, th);
     } finally {
       renderer.shadingMode = saved.shading;
@@ -669,6 +684,7 @@ export class AnimRender {
     w: number,
     h: number,
     samples: number,
+    wantAlpha: boolean,
     onSample: (s: number, total: number) => void,
   ): Promise<Uint8ClampedArray | null> {
     const { scene, camera } = this.ctx;
@@ -677,11 +693,13 @@ export class AnimRender {
     await this.ctx.htmlDriver?.prepareFrame(frame); // UR7-1: exact page-clock raster
     const traceScene = prepareScene(buildSnapshot(scene, camera));
     const accum = new Float32Array(w * h * 3);
+    // Transparent film (UR16-3): accumulate coverage for straight-alpha PNG output.
+    const coverage = wantAlpha ? new Float32Array(w * h) : null;
     const seed = seedForFrame(frame);
     let lastYield = performance.now();
     for (let s = 0; s < samples; s++) {
       if (this.cancelled) return null;
-      renderSample(traceScene, accum, w, h, s, seed);
+      renderSample(traceScene, accum, w, h, s, seed, coverage ?? undefined);
       const now = performance.now();
       // Yield (and refresh progress) on a ~30ms cadence so the click/timeout
       // that sets `cancelled` can run and the counter updates; always report the
@@ -696,9 +714,10 @@ export class AnimRender {
     const rgba = new Uint8ClampedArray(w * h * 4);
     // Camera Glare (UR10-2 Part B): same tonemap seam as F12 — the active
     // camera's glare blooms the HDR radiance before tonemap so an animation
-    // render carries the identical halo.
+    // render carries the identical halo. Transparent film (UR16-3): coverage →
+    // straight alpha (glare is skipped on that path).
     tonemapAccumToRgba(accum, samples, rgba,
-      { width: w, height: h, glare: scene.activeCamera?.camera?.glare ?? null });
+      { width: w, height: h, glare: scene.activeCamera?.camera?.glare ?? null, coverage });
     return rgba;
   }
 
@@ -718,6 +737,7 @@ export class AnimRender {
     h: number,
     samples: number,
     fullRepack: boolean,
+    wantAlpha: boolean,
     onSample: (s: number, total: number) => void,
   ): Promise<Uint8ClampedArray | null> {
     const { scene, camera } = this.ctx;
@@ -749,14 +769,18 @@ export class AnimRender {
     // averaged radiance with sample count 1 (updateFrame's divide is a no-op),
     // so Camera Glare blooms the identical HDR before Reinhard+gamma.
     const rgb = new Float32Array(w * h * 3);
+    // Transparent film (UR16-3): avg alpha is the coverage FRACTION; with sample
+    // count 1 the coverage sum equals the fraction, so straight alpha comes out right.
+    const coverage = wantAlpha ? new Float32Array(w * h) : null;
     for (let i = 0; i < w * h; i++) {
       rgb[i * 3] = avg[i * 4];
       rgb[i * 3 + 1] = avg[i * 4 + 1];
       rgb[i * 3 + 2] = avg[i * 4 + 2];
+      if (coverage) coverage[i] = avg[i * 4 + 3];
     }
     const rgba = new Uint8ClampedArray(w * h * 4);
     tonemapAccumToRgba(rgb, 1, rgba,
-      { width: w, height: h, glare: scene.activeCamera?.camera?.glare ?? null });
+      { width: w, height: h, glare: scene.activeCamera?.camera?.glare ?? null, coverage });
     return rgba;
   }
 
@@ -769,11 +793,12 @@ export class AnimRender {
     h: number,
     samples: number,
     fullRepack: boolean,
+    wantAlpha: boolean,
     onSample: (s: number, total: number) => void,
   ): Promise<Uint8ClampedArray | null> {
     return engine === 'gpu'
-      ? this.traceGpuFrame(frame, w, h, samples, fullRepack, onSample)
-      : this.tracePathFrame(frame, w, h, samples, onSample);
+      ? this.traceGpuFrame(frame, w, h, samples, fullRepack, wantAlpha, onSample)
+      : this.tracePathFrame(frame, w, h, samples, wantAlpha, onSample);
   }
 
   /**
@@ -826,6 +851,7 @@ export class AnimRender {
     samples: number,
     tw: number,
     th: number,
+    wantAlpha: boolean,
   ): Promise<Blob | null> {
     const entries: ZipEntry[] = [];
     let done = 0;
@@ -836,7 +862,7 @@ export class AnimRender {
         await this.drawViewportFrame(f);
         source = this.captureToScratch();
       } else {
-        const rgba = await this.traceFrame(engine, f, tw, th, samples, f === start, (s, n) =>
+        const rgba = await this.traceFrame(engine, f, tw, th, samples, f === start, wantAlpha, (s, n) =>
           this.setProgress(done + 1, total, s, n));
         if (this.cancelled || !rgba) break;
         source = this.putRgbaToScratch(rgba, tw, th);
@@ -907,7 +933,9 @@ export class AnimRender {
       let done = 0;
       for (let f = start; f <= end; f++) {
         if (this.cancelled) break;
-        const rgba = await this.traceFrame(engine, f, tw, th, samples, f === start, (s, n) =>
+        // Video (WebM/MP4) has no alpha channel — trace opaque (world→black when
+        // the film is transparent, per the snapshot's primary-miss skip).
+        const rgba = await this.traceFrame(engine, f, tw, th, samples, f === start, false, (s, n) =>
           this.setProgress(done + 1, total, s, n));
         if (this.cancelled || !rgba) break;
         frames.push(rgba);

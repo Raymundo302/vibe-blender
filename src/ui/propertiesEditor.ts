@@ -60,9 +60,13 @@ export interface PropertiesTab {
 
 const registry: PropertiesTab[] = [];
 
-/** Register a tab type. Ignores duplicate ids (same pattern as modifiers). */
-export function registerPropertiesTab(tab: PropertiesTab): void {
-  if (!registry.some((t) => t.id === tab.id)) registry.push(tab);
+/** Register a tab type. Ignores duplicate ids (same pattern as modifiers).
+ *  `prepend` puts the tab at the FRONT of the strip (UR16-3 Render tab sits
+ *  above Object, which self-registers when this module loads). */
+export function registerPropertiesTab(tab: PropertiesTab, prepend = false): void {
+  if (registry.some((t) => t.id === tab.id)) return;
+  if (prepend) registry.unshift(tab);
+  else registry.push(tab);
 }
 
 /** All registered tabs, in registration order. */

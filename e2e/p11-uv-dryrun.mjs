@@ -341,11 +341,14 @@ runE2e(async (t) => {
   // Material tab → set texKind through the real select.
   await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="material"]')?.click()`);
   await t.sleep(120);
-  t.check('S4: Material tab texture-kind select exists',
-    await t.evaluate(`!!document.querySelector('.material-tab-texkind')`));
+  t.check('S4: Material tab colour channel row exists',
+    await t.evaluate(`!!document.querySelector('.material-tab-fields .prop-row[data-channel="color"]')`));
 
+  // UR16-2: texture kind is folded into the colour socket — Checker via
+  // setChecker(), none by resetting the colour socket to a value.
   const setTexKind = async (kind) => {
-    await t.evaluate(`(() => { const sel = document.querySelector('.material-tab-texkind'); sel.value = '${kind}'; sel.dispatchEvent(new Event('change')); })()`);
+    if (kind === 'checker') await t.evaluate(`window.__materialTab.setChecker()`);
+    else await t.evaluate(`window.__materialTab.setChannelValue('color')`);
     await t.sleep(120);
   };
   // Full-frame luminance capture (stored in-page) for none-vs-checker diffs.

@@ -33,6 +33,14 @@ export interface SceneCollection {
   visible: boolean;
 }
 
+/** Scene output settings (UR5-5 resolution + UR16-3 transparent film). */
+export interface RenderSettings {
+  width: number;
+  height: number;
+  /** Transparent film (UR16-3): render the world backdrop as alpha 0. Default false. */
+  transparent?: boolean;
+}
+
 export class SceneObject {
   transform = new Transform();
   visible = true;
@@ -129,8 +137,12 @@ export class Scene {
    * aspect (width/height) the passepartout marks and the through-camera
    * projection letterboxes to. Defaults to 1920×1080; loading an old file that
    * predates it also lands here.
+   *
+   * `transparent` (UR16-3) — a transparent film: when true the F12 / Ctrl+F12
+   * renders skip the world backdrop behind the geometry and output ALPHA
+   * (primary-ray miss = 0). Defaults off; version-tolerant on load.
    */
-  renderSettings: { width: number; height: number } = { width: 1920, height: 1080 };
+  renderSettings: RenderSettings = { width: 1920, height: 1080, transparent: false };
   /** Environment (background + image-based lighting). Default reproduces the
    *  path tracer's original hardcoded sky, so pre-World scenes are unchanged. */
   world: World = defaultWorld();

@@ -51,3 +51,11 @@
 .camera-tab-active-badge[hidden] {
   display: none;
 }
+
+/* UR16-3: the Format section now points at Properties ▸ Render (resolution moved). */
+.camera-tab-format-pointer {
+  color: var(--vb-text-dim, #8a8a8a);
+  font-size: 11px;
+  margin-top: 4px;
+  padding: 2px 0;
+}

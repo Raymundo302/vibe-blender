@@ -21,8 +21,38 @@ export function tonemapAccumToRgba(
   accum: Float32Array,
   sample: number,
   out: Uint8ClampedArray,
-  glareOpts?: { width: number; height: number; glare: GlareSettings | null | undefined },
+  glareOpts?: {
+    width: number;
+    height: number;
+    glare: GlareSettings | null | undefined;
+    /**
+     * Transparent film (UR16-3): summed per-pixel coverage (length w*h). When
+     * present, alpha = coverage fraction (0..1)×255 and the RGB is UNassociated
+     * (STRAIGHT) alpha — averaged over the COVERED samples only (divide by the
+     * coverage sum, not the sample count), so a viewer compositing color×alpha
+     * reproduces the premultiplied radiance. Documented choice: straight, not
+     * premultiplied. Glare is skipped on this path (transparent + glare is an
+     * edge case; the glare bloom would need HDR premultiplied compositing).
+     */
+    coverage?: Float32Array | null;
+  },
 ): void {
+  if (glareOpts && glareOpts.coverage) {
+    const cov = glareOpts.coverage;
+    const invS = sample > 0 ? 1 / sample : 0;
+    for (let i = 0, j = 0, p = 0; i < accum.length; i += 3, j += 4, p++) {
+      const c = cov[p];
+      const f = Math.min(1, c * invS);          // coverage fraction → alpha
+      const cinv = c > 0 ? 1 / c : 0;           // straight: average covered samples
+      let r = accum[i] * cinv, g = accum[i + 1] * cinv, b = accum[i + 2] * cinv;
+      r = r / (r + 1); g = g / (g + 1); b = b / (b + 1); // Reinhard
+      out[j] = Math.min(255, Math.pow(r, 1 / 2.2) * 255);
+      out[j + 1] = Math.min(255, Math.pow(g, 1 / 2.2) * 255);
+      out[j + 2] = Math.min(255, Math.pow(b, 1 / 2.2) * 255);
+      out[j + 3] = Math.round(f * 255);
+    }
+    return;
+  }
   const inv = sample > 0 ? 1 / sample : 1;
   if (glareOpts && glareOpts.glare && glareOpts.glare.enabled) {
     // Average → glare on linear HDR → tonemap. (Extra buffer only when glaring.)
@@ -73,6 +103,7 @@ export class RenderWindow {
   private readonly focusInput: HTMLInputElement;
   private readonly engineSel: HTMLSelectElement;
   private readonly gpuOption: HTMLOptionElement;
+  private readonly samplesInput: HTMLInputElement;
 
   isOpen = false;
   sample = 0;
@@ -95,6 +126,11 @@ export class RenderWindow {
   engine: RenderEngine = 'gpu';
   /** Fired when the user changes the Engine select (init.ts persists + restarts). */
   onEngineChange: () => void = () => {};
+  /** F12 default samples cap (UR16-3). Syncs with the Render tab's Samples row
+   *  and viewPrefs.renderSamples; both engines accumulate up to it. */
+  samples = 512;
+  /** Fired when the user changes the Samples field (init.ts persists + restarts). */
+  onSamplesChange: () => void = () => {};
 
   constructor(host: HTMLElement, width = 960, height = 540) {
     this.host = host;
@@ -184,7 +220,28 @@ export class RenderWindow {
       this.onEngineChange();
     });
 
-    header.append(title, this.readout, this.engineSel, dof, saveBtn, closeBtn);
+    // Samples field (UR16-3) — the F12 spp cap; syncs with the Render tab.
+    this.samplesInput = document.createElement('input');
+    this.samplesInput.type = 'number';
+    this.samplesInput.className = 'render-win-samples';
+    this.samplesInput.dataset.testid = 'render-samples';
+    this.samplesInput.min = '1';
+    this.samplesInput.max = '4096';
+    this.samplesInput.step = '1';
+    this.samplesInput.value = String(this.samples);
+    this.samplesInput.title = 'Samples per pixel (F12 render cap)';
+    this.samplesInput.addEventListener('change', () => {
+      const v = parseInt(this.samplesInput.value, 10);
+      this.samples = Number.isFinite(v) ? Math.max(1, Math.min(4096, v)) : this.samples;
+      this.samplesInput.value = String(this.samples);
+      this.onSamplesChange();
+    });
+    const spLabel = document.createElement('span');
+    spLabel.className = 'render-win-dof-label';
+    spLabel.textContent = 'spp';
+    spLabel.title = 'Samples per pixel (F12 render cap)';
+
+    header.append(title, this.readout, this.engineSel, spLabel, this.samplesInput, dof, saveBtn, closeBtn);
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'render-win-canvas';
@@ -252,6 +309,18 @@ export class RenderWindow {
     this.engineSel.value = e;
   }
 
+  /** Set the samples cap and reflect it in the field (no event fired). */
+  setSamples(n: number): void {
+    this.samples = Number.isFinite(n) ? Math.max(1, Math.min(4096, Math.round(n))) : this.samples;
+    this.samplesInput.value = String(this.samples);
+  }
+
+  /** Toggle the transparent-film preview look — a checkerboard behind the canvas
+   *  so alpha shows through (UR16-3). Pure CSS; no effect on the saved PNG. */
+  setTransparentPreview(on: boolean): void {
+    this.canvas.classList.toggle('render-win-canvas-alpha', on);
+  }
+
   /**
    * Reflect GPU availability: when unavailable the GPU option is disabled and its
    * tooltip carries the reason (the render-window Engine select shows it), and the
@@ -283,10 +352,10 @@ export class RenderWindow {
    * Blit an accumulation buffer (length w*h*3, summed radiance over `sample`
    * passes) to the canvas: average, Reinhard tonemap, gamma 1/2.2.
    */
-  updateFrame(accum: Float32Array, sample: number, elapsedMs: number): void {
+  updateFrame(accum: Float32Array, sample: number, elapsedMs: number, coverage?: Float32Array | null): void {
     this.sample = sample;
     tonemapAccumToRgba(accum, sample, this.imageData.data,
-      { width: this.width, height: this.height, glare: this.glare });
+      { width: this.width, height: this.height, glare: this.glare, coverage });
     this.ctx.putImageData(this.imageData, 0, 0);
     this.readout.textContent = `Sample ${sample} · ${(elapsedMs / 1000).toFixed(1)}s`;
   }

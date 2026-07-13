@@ -283,9 +283,16 @@ runE2e(async (t) => {
       && Math.abs(afterMetal.base[0] - 0.3) < 1e-9,
     JSON.stringify(afterMetal));
 
-  // Preset buttons exist in the DOM (real one-click affordance).
-  const buttonsExist = await t.evaluate(`!!window.__materialTab.presetButton('glass') && !!window.__materialTab.presetButton('metal')`);
-  t.check('Glass + Metal preset buttons render in the Material tab', buttonsExist);
+  // UR16-2: the floating Glass/Metal preset BUTTONS were removed — the shader
+  // chooser replaces them. Verify the chooser offers Glass + Metal instead.
+  await t.evaluate(`document.querySelector('.properties-tab-btn[data-tab="material"]')?.click()`);
+  await t.sleep(120);
+  await t.evaluate(`document.querySelector('.material-tab-shader-socket')?.click()`);
+  await t.sleep(80);
+  const chooserLabels = await t.evaluate(`[...document.querySelectorAll('.material-shader-option')].map((e) => e.textContent)`);
+  t.check('shader chooser offers Glass + Metal (replaces the preset buttons)',
+    chooserLabels.includes('Glass') && chooserLabels.includes('Metal'), JSON.stringify(chooserLabels));
+  await t.key('Escape', 'Escape', 0);
 
   // === Eyes-on hero: glass + gold spheres on a checker floor under an area light
   await evalAsync(`(async () => {

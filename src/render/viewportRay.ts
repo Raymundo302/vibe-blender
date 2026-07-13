@@ -158,6 +158,10 @@ export class ViewportRay {
     // viewport pose so the traced image aligns with the viewport / overlays. Keep
     // buildSnapshot's aperture/focus (matches F12 for the DoF-camera case).
     const snap = buildSnapshot(scene, orbit);
+    // Transparent film (UR16-3) is an F12/Ctrl+F12 OUTPUT setting only — the
+    // viewport raytraced preview always shows the world backdrop. Force it off so
+    // toggling the render's transparent flag never blanks the viewport sky.
+    snap.transparent = false;
     const m = rv.view.m;
     snap.camera.position = [rv.eye.x, rv.eye.y, rv.eye.z];
     snap.camera.forward = [-m[2], -m[6], -m[10]];

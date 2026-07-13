@@ -107,6 +107,9 @@ export class GpuTracer {
   private accumH = 0;
 
   private scene: GpuScene | null = null;
+  /** Transparent film (UR16-3): skip the world backdrop for the primary ray. Set
+   *  from the snapshot on every setSnapshot; a plain uniform (no re-pack). */
+  private transparent = false;
 
   // Change-detection signatures for incremental per-frame re-packing (UR12-3).
   private geoKey = 0;
@@ -281,6 +284,8 @@ export class GpuTracer {
     if (!this.gl) return;
     const gl = this.gl;
     const world = snap.world ?? defaultSnapWorld();
+    // Transparent film (UR16-3) — a plain uniform, updated on every snapshot.
+    this.transparent = snap.transparent ?? false;
 
     if (!incremental || !this.scene) {
       // --- full build ---
@@ -417,6 +422,7 @@ export class GpuTracer {
     gl.uniform1f(this.u('uFocus'), cam.focusDistance ?? 5);
     gl.uniform2f(this.u('uResolution'), w, h);
     gl.uniform1f(this.u('uJitter'), jitter ? 1 : 0);
+    gl.uniform1f(this.u('uTransparent'), this.transparent ? 1 : 0);
     gl.uniform1ui(this.u('uFrameSeed'), seed >>> 0);
     gl.uniform1i(this.u('uNodeCount'), this.scene.nodeCount);
     gl.uniform1i(this.u('uNumLights'), this.scene.numLights);

@@ -11,6 +11,9 @@
 /** Which path-tracing backend F12 / Ctrl+F12 use (UR12-3). */
 export type RenderEngine = 'cpu' | 'gpu';
 
+/** Animation output container (UR16-3 Render tab ▸ Output; syncs Ctrl+F12). */
+export type AnimFormat = 'webm' | 'mp4' | 'png';
+
 export interface ViewPrefs {
   /** Show the darkened passepartout border while in camera view. */
   passepartout: boolean;
@@ -21,6 +24,18 @@ export interface ViewPrefs {
    * window's Engine select disables the GPU option with the reason as tooltip).
    */
   renderEngine: RenderEngine;
+  /** F12 default samples-per-pixel cap (UR16-3). Render tab + render window sync
+   *  this; both engines accumulate up to it. Clamped 1..4096. */
+  renderSamples: number;
+  /**
+   * Limit GPU load (UR16-3) — Ray's Beelink mouse-stutter guard. When on, F12 /
+   * anim GPU renders use small per-batch spp and yield between batches (target
+   * ≤ 8 ms GPU work per rAF). Off by default (a fast GPU won't care). Machine
+   * preference, NOT scene data — persisted here, never serialized.
+   */
+  limitGpuLoad: boolean;
+  /** Animation Output container the Ctrl+F12 modal defaults to (UR16-3). */
+  animFormat: AnimFormat;
 }
 
 const STORAGE_KEY = 'vibe-view-v1';
@@ -31,7 +46,18 @@ export function defaultViewPrefs(): ViewPrefs {
     passepartout: true,
     // Prefer the GPU tracer when available (probed at render time).
     renderEngine: 'gpu',
+    // Preserve the historical F12 progressive cap (512 spp).
+    renderSamples: 512,
+    // Off by default — only Ray's weak Vega needs the pacing.
+    limitGpuLoad: false,
+    animFormat: 'webm',
   };
+}
+
+/** Clamp a samples value into the accepted F12 range (1..4096, integer). */
+export function clampRenderSamples(n: number): number {
+  if (!Number.isFinite(n)) return 512;
+  return Math.max(1, Math.min(4096, Math.round(n)));
 }
 
 /** The live singleton the Passepartout overlay + View tab read/write. */
@@ -60,6 +86,12 @@ export function loadViewPrefs(): ViewPrefs {
   if (viewPrefs.renderEngine !== 'cpu' && viewPrefs.renderEngine !== 'gpu') {
     viewPrefs.renderEngine = d.renderEngine;
   }
+  // animFormat is a string union too.
+  if (!['webm', 'mp4', 'png'].includes(viewPrefs.animFormat)) {
+    viewPrefs.animFormat = d.animFormat;
+  }
+  // renderSamples must be a sane integer spp.
+  viewPrefs.renderSamples = clampRenderSamples(viewPrefs.renderSamples);
   return viewPrefs;
 }
 

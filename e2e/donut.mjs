@@ -437,6 +437,9 @@ runE2e(async (t) => {
   await t.sleep(150);
   const icingMatId = await t.evaluate(`window.__app.scene.get(${icingId}).materialId`);
   t.check('S6: New material assigned to the icing via the UI', icingMatId !== null && icingMatId !== undefined);
+  // UR16-2: subsurface lives under the SUPER shader — switch to it for the SSS row.
+  await t.evaluate(`window.__materialTab.setShader('super')`);
+  await t.sleep(140);
   await t.evaluate(`(() => {
     const set = (cls, ev, val) => { const i = document.querySelector(cls); i.value = val; i.dispatchEvent(new Event(ev)); };
     set('.material-tab-basecolor', 'change', '#e7a6c4'); // pink

@@ -1,10 +1,33 @@
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack, Command } from '../core/undo/UndoStack';
-import type { Material } from '../core/scene/objectData';
+import type { Material, MaterialShader, MaterialChannelName, GradientInput, ChannelInput } from '../core/scene/objectData';
+import {
+  MATERIAL_SHADERS, channelsForShader, materialShader,
+  getMaterialChannel, setMaterialChannel, cloneGradient, cloneAlpha,
+} from '../core/scene/objectData';
 import { srgbToLinear } from '../core/scene/worldData';
 import { registerPropertiesTab } from './propertiesEditor';
 import { InsertKeysCommand } from '../core/anim/animCommands';
+import { propRow, socketButton } from './propRow';
+import { Popover } from './popover';
 import './materialTab.css';
+
+/** Human-facing label for each named shader (the chooser + the Shader row). */
+const SHADER_LABELS: Record<MaterialShader, string> = {
+  diffuse: 'Diffuse',
+  super: 'Super Shader',
+  metal: 'Metal',
+  glass: 'Glass',
+  emit: 'Emit',
+};
+
+/** Human-facing label for each socketable channel. */
+const LABELS: Record<MaterialChannelName, string> = {
+  color: 'Color',
+  roughness: 'Roughness',
+  metallic: 'Metallic',
+  alpha: 'Alpha',
+};
 
 /** Decoded base-color image cache: linear RGB, row 0 = top. */
 type TexImage = { width: number; height: number; pixels: Float32Array };
@@ -357,6 +380,118 @@ export class MaterialPresetCommand implements Command {
   redo(): void { this.write(this.after); }
 }
 
+// ------------------------------------------------------ shader / socket cmds --
+
+/** Change a material's top-level shader (UR16-2) in one undo step. Undo restores
+ *  both the shader and the `shadeless` flag (emit ⇒ shadeless). */
+export class ShaderEditCommand implements Command {
+  readonly name = 'Change Shader';
+  constructor(
+    private readonly material: Material,
+    private readonly before: { shader?: MaterialShader; shadeless?: boolean },
+    private readonly after: { shader?: MaterialShader; shadeless?: boolean },
+  ) {}
+  private write(s: { shader?: MaterialShader; shadeless?: boolean }): void {
+    this.material.shader = s.shader;
+    this.material.shadeless = s.shadeless;
+  }
+  undo(): void { this.write(this.before); }
+  redo(): void { this.write(this.after); }
+}
+
+/** The socket-relevant fields of a material — snapshotted so a socket-kind or
+ *  gradient change (which touches several fields at once) round-trips as ONE
+ *  undo entry. */
+export interface MatSocketSnap {
+  shader?: MaterialShader;
+  alpha?: ChannelInput<number>;
+  colorGradient?: GradientInput;
+  roughGradient?: GradientInput;
+  metalGradient?: GradientInput;
+  baseColor: [number, number, number];
+  roughness: number;
+  metallic: number;
+  texKind: Material['texKind'];
+  texDataUrl: string | null;
+  texImage: TexImage | undefined;
+  roughDataUrl: string | null;
+  roughImage: TexImage | undefined;
+  metalDataUrl: string | null;
+  metalImage: TexImage | undefined;
+  shadeless?: boolean;
+}
+
+/** Deep-copy the socket-relevant fields of a material. */
+export function snapMaterialSockets(m: Material): MatSocketSnap {
+  return {
+    shader: m.shader,
+    alpha: m.alpha ? cloneAlpha(m.alpha) : undefined,
+    colorGradient: m.colorGradient ? cloneGradient(m.colorGradient) : undefined,
+    roughGradient: m.roughGradient ? cloneGradient(m.roughGradient) : undefined,
+    metalGradient: m.metalGradient ? cloneGradient(m.metalGradient) : undefined,
+    baseColor: [m.baseColor[0], m.baseColor[1], m.baseColor[2]],
+    roughness: m.roughness,
+    metallic: m.metallic,
+    texKind: m.texKind,
+    texDataUrl: m.texDataUrl,
+    texImage: m.texImage,
+    roughDataUrl: m.roughDataUrl,
+    roughImage: m.roughImage,
+    metalDataUrl: m.metalDataUrl,
+    metalImage: m.metalImage,
+    shadeless: m.shadeless,
+  };
+}
+
+function restoreMaterialSockets(m: Material, s: MatSocketSnap): void {
+  m.shader = s.shader;
+  m.alpha = s.alpha ? cloneAlpha(s.alpha) : undefined;
+  m.colorGradient = s.colorGradient ? cloneGradient(s.colorGradient) : undefined;
+  m.roughGradient = s.roughGradient ? cloneGradient(s.roughGradient) : undefined;
+  m.metalGradient = s.metalGradient ? cloneGradient(s.metalGradient) : undefined;
+  m.baseColor = [s.baseColor[0], s.baseColor[1], s.baseColor[2]];
+  m.roughness = s.roughness;
+  m.metallic = s.metallic;
+  m.texKind = s.texKind;
+  m.texDataUrl = s.texDataUrl;
+  m.texImage = s.texImage;
+  m.roughDataUrl = s.roughDataUrl;
+  m.roughImage = s.roughImage;
+  m.metalDataUrl = s.metalDataUrl;
+  m.metalImage = s.metalImage;
+  m.shadeless = s.shadeless;
+}
+
+/**
+ * A socket-kind change or gradient edit as ONE undo entry (UR16-2). The socket
+ * accessors (setMaterialChannel) mutate several material fields at once, so the
+ * command snapshots the whole socket-relevant field set before + after.
+ */
+export class MaterialSocketCommand implements Command {
+  private constructor(
+    readonly name: string,
+    private readonly material: Material,
+    private readonly before: MatSocketSnap,
+    private readonly after: MatSocketSnap,
+  ) {}
+
+  /** Snapshot before, run `mutate`, snapshot after. */
+  static capture(name: string, material: Material, mutate: () => void): MaterialSocketCommand {
+    const before = snapMaterialSockets(material);
+    mutate();
+    return new MaterialSocketCommand(name, material, before, snapMaterialSockets(material));
+  }
+
+  /** Build from a `before` snapshot taken earlier (the mutation already ran —
+   *  e.g. live-preview gradient drags). Captures the current state as `after`. */
+  static fromBefore(name: string, material: Material, before: MatSocketSnap): MaterialSocketCommand {
+    return new MaterialSocketCommand(name, material, before, snapMaterialSockets(material));
+  }
+
+  undo(): void { restoreMaterialSockets(this.material, this.before); }
+  redo(): void { restoreMaterialSockets(this.material, this.after); }
+}
+
 // ------------------------------------------------------------- color helpers --
 
 /** 0..1 RGB floats → lowercase "#rrggbb". */
@@ -379,46 +514,15 @@ class MaterialTab {
   private readonly slotSelect: HTMLSelectElement;
   private readonly fields: HTMLDivElement;
 
-  private nameInput!: HTMLInputElement;
-  private baseColorInput!: HTMLInputElement;
-  private metallicInput!: HTMLInputElement;
-  private metallicNum!: HTMLSpanElement;
-  private roughnessInput!: HTMLInputElement;
-  private roughnessNum!: HTMLSpanElement;
-  private transmissionInput!: HTMLInputElement;
-  private transmissionNum!: HTMLSpanElement;
-  private iorInput!: HTMLInputElement;
-  private iorRow!: HTMLElement;
-  private emissiveInput!: HTMLInputElement;
-  private emissiveStrengthInput!: HTMLInputElement;
-  private subsurfaceInput!: HTMLInputElement;
-  private subsurfaceNum!: HTMLSpanElement;
-  private subsurfaceRadiusInput!: HTMLInputElement;
-  private texKindSelect!: HTMLSelectElement;
-  private bakeResSelect!: HTMLSelectElement;
-  private texImageRow!: HTMLElement;
-  private texFileInput!: HTMLInputElement;
-  private texThumb!: HTMLImageElement;
-  /** UR8-3 C: "Always Textured" checkbox (image-texture section). */
-  private alwaysTexturedCheck!: HTMLInputElement;
-  private alwaysTexturedRow!: HTMLElement;
-
-  // P13 map slots.
-  private normalThumb!: HTMLImageElement;
-  private normalBumpCheck!: HTMLInputElement;
-  private normalStrengthInput!: HTMLInputElement;
-  private normalStrengthNum!: HTMLSpanElement;
-  private roughThumb!: HTMLImageElement;
-  private metalThumb!: HTMLImageElement;
-
+  /** Value captured when an input gained focus — the undo `before`. */
+  private editBefore: MaterialFieldValue | null = null;
+  /** Socket snapshot captured on focus for live-preview gradient/alpha edits. */
+  private socketBefore: MatSocketSnap | null = null;
   /** Value captured when the normal-strength slider gained focus. */
   private strengthBefore: number | null = null;
 
   /** Guards concurrent decode-on-select of the same map (keyed matId:slot:len). */
   private readonly pendingDecode = new Set<string>();
-
-  /** Value captured when an input gained focus — the undo `before`. */
-  private editBefore: MaterialFieldValue | null = null;
 
   /** Last rendered signature; null forces a rebuild. */
   private lastSig: string | null = null;
@@ -452,432 +556,592 @@ class MaterialTab {
 
     this.fields = document.createElement('div');
     this.fields.className = 'material-tab-fields';
-    this.buildFields();
     this.body.append(this.fields);
 
     container.append(this.empty, this.body);
 
-    // Debug handle for e2e (mirrors __world). Lets a suite drive an image-texture
-    // load with a generated data URL instead of a real file dialog.
+    // Debug handle for e2e (mirrors __world).
     (window as unknown as Record<string, unknown>).__materialTab = {
       material: () => this.material(),
-      loadTexture: (dataUrl: string) => this.loadTextureFromDataUrl(dataUrl),
+      // Legacy handles (kept for existing suites).
+      loadTexture: (dataUrl: string) => this.setChannelImage('color', dataUrl),
       setMap: (slot: MapSlot, dataUrl: string) => this.loadMapFromDataUrl(slot, dataUrl),
       clearMap: (slot: MapSlot) => this.onMapClear(slot),
-      // UR10-3: drive the Glass/Metal preset buttons (same path as a click).
       applyPreset: (kind: 'glass' | 'metal') => this.applyPreset(kind),
-      // The preset button elements (for an e2e that clicks the real DOM).
-      presetButton: (kind: 'glass' | 'metal') =>
-        this.fields.querySelector(kind === 'glass' ? '.material-tab-preset-glass' : '.material-tab-preset-metal'),
+      // UR16-2 socket/shader handles.
+      setShader: (s: MaterialShader) => this.setShader(s),
+      setChannelValue: (ch: MaterialChannelName) => this.setChannelValue(ch),
+      setChannelImage: (ch: MaterialChannelName, dataUrl: string) => this.setChannelImage(ch, dataUrl),
+      setGradient: (ch: MaterialChannelName, g: GradientInput) => this.setGradientExplicit(ch, g),
+      setChecker: () => this.setChecker(),
+      shaderLabels: () => ({ ...SHADER_LABELS }),
     };
 
     this.update();
   }
 
-  private buildFields(): void {
-    // Name (text)
-    this.nameInput = document.createElement('input');
-    this.nameInput.type = 'text';
-    this.nameInput.className = 'material-tab-name properties-name-input';
-    this.wireField(this.nameInput, 'name',
-      () => this.nameInput.value,
-      () => this.material()?.name ?? '');
-    this.fields.append(this.fieldRow('Name', this.nameInput));
+  // ---------------------------------------------------------------- update ---
 
-    // Base color
-    this.baseColorInput = document.createElement('input');
-    this.baseColorInput.type = 'color';
-    this.baseColorInput.className = 'material-tab-basecolor';
-    this.wireField(this.baseColorInput, 'baseColor',
-      () => hexToRgb(this.baseColorInput.value),
-      () => this.material()?.baseColor ?? [0, 0, 0]);
-    this.fields.append(this.fieldRow('Base Color', this.baseColorInput,
-      this.keyButton('material-tab-key-basecolor', 'Insert Base Color keyframe',
-        ['material.baseColor.r', 'material.baseColor.g', 'material.baseColor.b'])));
-
-    // Metallic (slider 0..1) + numeric readout
-    this.metallicNum = document.createElement('span');
-    this.metallicNum.className = 'material-tab-num';
-    this.metallicInput = this.slider('material-tab-metallic');
-    this.wireField(this.metallicInput, 'metallic',
-      () => parseFloat(this.metallicInput.value),
-      () => this.material()?.metallic ?? 0,
-      () => { this.metallicNum.textContent = Number(this.metallicInput.value).toFixed(2); });
-    this.fields.append(this.fieldRow('Metallic', this.metallicInput, this.metallicNum));
-
-    // Roughness (slider 0..1) + numeric readout
-    this.roughnessNum = document.createElement('span');
-    this.roughnessNum.className = 'material-tab-num';
-    this.roughnessInput = this.slider('material-tab-roughness');
-    this.wireField(this.roughnessInput, 'roughness',
-      () => parseFloat(this.roughnessInput.value),
-      () => this.material()?.roughness ?? 0,
-      () => { this.roughnessNum.textContent = Number(this.roughnessInput.value).toFixed(2); });
-    this.fields.append(this.fieldRow('Roughness', this.roughnessInput, this.roughnessNum,
-      this.keyButton('material-tab-key-roughness', 'Insert Roughness keyframe', ['material.roughness'])));
-
-    // Transmission (slider 0..1) + numeric readout — glass amount (UR10-3).
-    this.transmissionNum = document.createElement('span');
-    this.transmissionNum.className = 'material-tab-num';
-    this.transmissionInput = this.slider('material-tab-transmission');
-    this.wireField(this.transmissionInput, 'transmission',
-      () => parseFloat(this.transmissionInput.value),
-      () => this.material()?.transmission ?? 0,
-      () => {
-        this.transmissionNum.textContent = Number(this.transmissionInput.value).toFixed(2);
-        // Live-enable the IOR row so it tracks the slider without a rebuild.
-        this.iorInput.disabled = parseFloat(this.transmissionInput.value) <= 0;
-      });
-    this.fields.append(this.fieldRow('Transmission', this.transmissionInput, this.transmissionNum));
-
-    // IOR (number 1.0–2.5) — enabled only when transmission > 0.
-    this.iorInput = document.createElement('input');
-    this.iorInput.type = 'number';
-    this.iorInput.className = 'material-tab-ior properties-input';
-    this.iorInput.min = '1';
-    this.iorInput.max = '2.5';
-    this.iorInput.step = '0.01';
-    this.iorInput.title = 'Index of refraction (1.0–2.5). Used when Transmission > 0.';
-    this.wireField(this.iorInput, 'ior',
-      () => Math.max(1, Math.min(2.5, parseFloat(this.iorInput.value))),
-      () => this.material()?.ior ?? 1.45);
-    this.iorRow = this.fieldRow('IOR', this.iorInput);
-    this.fields.append(this.iorRow);
-
-    // Presets (UR10-3): one click each sets the whole glass / metal cluster in a
-    // single undo step.
-    const presetRow = document.createElement('div');
-    presetRow.className = 'material-tab-presets';
-    const glassBtn = document.createElement('button');
-    glassBtn.type = 'button';
-    glassBtn.className = 'material-tab-preset-glass';
-    glassBtn.textContent = 'Glass';
-    glassBtn.title = 'Transmission 1, IOR 1.45, smooth, clear glass';
-    glassBtn.addEventListener('click', () => this.applyPreset('glass'));
-    const metalBtn = document.createElement('button');
-    metalBtn.type = 'button';
-    metalBtn.className = 'material-tab-preset-metal';
-    metalBtn.textContent = 'Metal';
-    metalBtn.title = 'Metallic 1, low roughness — chrome/gold (uses the current base color as tint)';
-    metalBtn.addEventListener('click', () => this.applyPreset('metal'));
-    presetRow.append(glassBtn, metalBtn);
-    this.fields.append(presetRow);
-
-    // Emissive color
-    this.emissiveInput = document.createElement('input');
-    this.emissiveInput.type = 'color';
-    this.emissiveInput.className = 'material-tab-emissive';
-    this.wireField(this.emissiveInput, 'emissive',
-      () => hexToRgb(this.emissiveInput.value),
-      () => this.material()?.emissive ?? [0, 0, 0]);
-    this.fields.append(this.fieldRow('Emissive', this.emissiveInput));
-
-    // Emissive strength (number ≥ 0)
-    this.emissiveStrengthInput = document.createElement('input');
-    this.emissiveStrengthInput.type = 'number';
-    this.emissiveStrengthInput.className = 'material-tab-emissive-strength properties-input';
-    this.emissiveStrengthInput.min = '0';
-    // UR10-2 Part A: emission acts as a light source — allow strengths up to 100
-    // so a surface can glow bright enough to light a room (was effectively ~1).
-    this.emissiveStrengthInput.max = '100';
-    this.emissiveStrengthInput.step = '0.1';
-    this.emissiveStrengthInput.title = 'Emission strength (0–100). Above 0 the surface acts as a mesh light in F12 renders.';
-    this.wireField(this.emissiveStrengthInput, 'emissiveStrength',
-      () => Math.max(0, Math.min(100, parseFloat(this.emissiveStrengthInput.value))),
-      () => this.material()?.emissiveStrength ?? 0);
-    this.fields.append(this.fieldRow('Emit Strength', this.emissiveStrengthInput));
-
-    // Subsurface weight (slider 0..1) + numeric readout — the SSS glow amount.
-    this.subsurfaceNum = document.createElement('span');
-    this.subsurfaceNum.className = 'material-tab-num';
-    this.subsurfaceInput = this.slider('material-tab-subsurface');
-    this.wireField(this.subsurfaceInput, 'subsurfaceWeight',
-      () => parseFloat(this.subsurfaceInput.value),
-      () => this.material()?.subsurfaceWeight ?? 0,
-      () => { this.subsurfaceNum.textContent = Number(this.subsurfaceInput.value).toFixed(2); });
-    this.fields.append(this.fieldRow('Subsurface', this.subsurfaceInput, this.subsurfaceNum));
-
-    // Subsurface radius (number ≥ 0) — mean scatter distance in world units.
-    this.subsurfaceRadiusInput = document.createElement('input');
-    this.subsurfaceRadiusInput.type = 'number';
-    this.subsurfaceRadiusInput.className = 'material-tab-subsurface-radius properties-input';
-    this.subsurfaceRadiusInput.min = '0';
-    this.subsurfaceRadiusInput.step = '0.01';
-    this.wireField(this.subsurfaceRadiusInput, 'subsurfaceRadius',
-      () => Math.max(0, parseFloat(this.subsurfaceRadiusInput.value)),
-      () => this.material()?.subsurfaceRadius ?? 0.05);
-    this.fields.append(this.fieldRow('SSS Radius', this.subsurfaceRadiusInput));
-
-    // Texture kind (None / Checker / Image) — the base-color texture through UVs.
-    this.texKindSelect = document.createElement('select');
-    this.texKindSelect.className = 'material-tab-texkind';
-    for (const [value, label] of [['none', 'None'], ['checker', 'Checker'], ['image', 'Image']] as const) {
-      const opt = document.createElement('option');
-      opt.value = value;
-      opt.textContent = label;
-      this.texKindSelect.append(opt);
+  update(): void {
+    const obj = this.scene.activeObject;
+    const isMesh = !!obj && obj.kind === 'mesh';
+    if (!isMesh) {
+      this.empty.style.display = '';
+      this.body.style.display = 'none';
+      this.lastSig = null;
+      return;
     }
-    this.texKindSelect.addEventListener('change', () => this.onTexKindChange());
-    this.fields.append(this.fieldRow('Texture', this.texKindSelect));
+    this.empty.style.display = 'none';
+    this.body.style.display = '';
 
-    // Image row: file picker + thumbnail <img> (NOT a canvas). Shown only when
-    // texKind === 'image'.
-    this.texFileInput = document.createElement('input');
-    this.texFileInput.type = 'file';
-    this.texFileInput.accept = 'image/*';
-    this.texFileInput.className = 'material-tab-texfile';
-    this.texFileInput.addEventListener('change', () => this.onTexFile());
-    this.texThumb = document.createElement('img');
-    this.texThumb.className = 'material-tab-texthumb';
-    this.texThumb.alt = 'texture';
-    this.texImageRow = this.fieldRow('Image', this.texFileInput, this.texThumb);
-    this.fields.append(this.texImageRow);
+    // Never yank focus out from under an in-progress edit.
+    if (this.isPanelFocused()) return;
 
-    // Always Textured (UR8-3 C): show the base texture in every shading mode.
-    // On by default for image/HTML planes; toggle off → shades like any mesh.
-    this.alwaysTexturedCheck = document.createElement('input');
-    this.alwaysTexturedCheck.type = 'checkbox';
-    this.alwaysTexturedCheck.className = 'material-tab-always-textured';
-    this.alwaysTexturedCheck.addEventListener('change', () => this.onAlwaysTexturedToggle());
-    this.alwaysTexturedRow = this.fieldRow('Always Textured', this.alwaysTexturedCheck);
-    this.fields.append(this.alwaysTexturedRow);
-
-    this.buildMapFields();
-
-    // Node-bake resolution (P16 follow-up). The Rendered viewport bakes a
-    // useNodes graph to `bakeRes`² textures; higher = crisper procedural detail,
-    // slower to bake. Default 128 keeps a graph edit under a few ms.
-    const nodesHeading = document.createElement('div');
-    nodesHeading.className = 'material-tab-nodes-title properties-group-title';
-    nodesHeading.textContent = 'Nodes';
-    this.fields.append(nodesHeading);
-
-    this.bakeResSelect = document.createElement('select');
-    this.bakeResSelect.className = 'material-tab-bakeres';
-    for (const r of [128, 256, 512, 1024]) {
-      const opt = document.createElement('option');
-      opt.value = String(r);
-      opt.textContent = `${r}×${r}`;
-      this.bakeResSelect.append(opt);
-    }
-    this.bakeResSelect.addEventListener('change', () => this.onBakeResChange());
-    this.fields.append(this.fieldRow('Bake Res', this.bakeResSelect));
-  }
-
-  /** Change the material's node-bake resolution in one undo step. Bumps nothing
-   *  else — ensureBaked re-bakes because its cache key includes the size. */
-  private onBakeResChange(): void {
     const mat = this.material();
+    if (mat) this.ensureMapsDecoded(mat);
+    const sig = this.signature(obj!, mat);
+    if (sig === this.lastSig) return;
+    this.lastSig = sig;
+    this.rebuild(obj!, mat);
+  }
+
+  private signature(obj: SceneObject, mat: Material | null): string {
+    if (!mat) return `${obj.id}#-#${this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|')}`;
+    const g = (x?: GradientInput): string => (x ? `${x.axis}:${x.offset}:${x.scale}:${x.a.join(',')}:${x.b.join(',')}` : '-');
+    const a = mat.alpha;
+    const alphaSig = !a ? '1' : a.kind === 'value' ? `v${a.value}` : a.kind === 'gradient' ? `g${g(a)}` : `i`;
+    return [
+      obj.id, obj.materialId,
+      this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
+      materialShader(mat),
+      `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${mat.transmission ?? 0}:${mat.ior ?? 1.45}`,
+      `${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}`,
+      `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}:${mat.alwaysTextured === true}`,
+      `${mat.normalDataUrl ? mat.normalDataUrl.length : 0}:${mat.normalIsBump}:${mat.normalStrength}`,
+      `${mat.roughDataUrl ? mat.roughDataUrl.length : 0}:${mat.metalDataUrl ? mat.metalDataUrl.length : 0}`,
+      `${g(mat.colorGradient)}#${g(mat.roughGradient)}#${g(mat.metalGradient)}#${alphaSig}`,
+      `${mat.bakeRes ?? 128}`,
+    ].join('#');
+  }
+
+  private isPanelFocused(): boolean {
+    const active = document.activeElement;
+    return (
+      (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) &&
+      this.body.contains(active)
+    );
+  }
+
+  // -------------------------------------------------------------- rebuild ---
+
+  private rebuild(obj: SceneObject, mat: Material | null): void {
+    // Slot select: "(None)" + one option per library material.
+    this.slotSelect.replaceChildren();
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '(None)';
+    this.slotSelect.append(none);
+    for (const m of this.scene.materials) {
+      const opt = document.createElement('option');
+      opt.value = String(m.id);
+      opt.textContent = m.name;
+      this.slotSelect.append(opt);
+    }
+    this.slotSelect.value = obj.materialId === null ? '' : String(obj.materialId);
+
+    this.fields.replaceChildren();
+    this.fields.style.display = mat ? '' : 'none';
     if (!mat) return;
-    const after = Number(this.bakeResSelect.value);
-    const before = mat.bakeRes ?? 128;
-    if (before === after) return;
-    mat.bakeRes = after;
-    this.undo.push(new MaterialEditCommand(mat, 'bakeRes', before, after));
-    this.lastSig = null;
+
+    const shader = materialShader(mat);
+
+    // (1) Shader row — the socket circle opens the chooser.
+    this.fields.append(this.buildShaderRow(shader));
+
+    // (2) Name row.
+    this.fields.append(this.buildNameRow(mat));
+
+    // (3) Channel rows for this shader.
+    for (const ch of channelsForShader(shader)) {
+      this.fields.append(this.buildChannelRow(mat, ch));
+      // Always Textured sits next to the color row (super / image planes).
+      if (ch === 'color') {
+        const at = this.buildAlwaysTexturedRow(mat, shader);
+        if (at) this.fields.append(at);
+      }
+      // A gradient channel expands an indented sub-row directly under it.
+      const input = getMaterialChannel(mat, ch);
+      if (input.kind === 'gradient') this.fields.append(this.buildGradientSubrow(mat, ch, input));
+    }
+
+    // (4) Shader-specific value-only rows.
+    if (shader === 'glass') this.fields.append(this.buildIorRow(mat));
+    if (shader === 'emit') this.fields.append(this.buildStrengthRow(mat));
+
+    // (5) Super shader extras.
+    if (shader === 'super') this.buildSuperExtras(mat);
   }
 
-  /** P13 map-slot UI: Normal Map (file + Bump toggle + Strength), Roughness Map,
-   * Metallic Map. All rows follow the existing fieldRow pattern. */
-  private buildMapFields(): void {
-    const heading = document.createElement('div');
-    heading.className = 'material-tab-maps-title properties-group-title';
-    heading.textContent = 'Maps';
-    this.fields.append(heading);
+  // ---------------------------------------------------------- row builders ---
 
-    // --- Normal Map: file + thumb + clear ---
-    const normal = this.mapRow('Normal', 'normal');
-    this.normalThumb = normal.thumb;
-
-    // Bump (height) checkbox → normalIsBump.
-    this.normalBumpCheck = document.createElement('input');
-    this.normalBumpCheck.type = 'checkbox';
-    this.normalBumpCheck.className = 'material-tab-normal-bump';
-    this.normalBumpCheck.addEventListener('change', () => this.onBumpToggle());
-    this.fields.append(this.fieldRow('Bump (height)', this.normalBumpCheck));
-
-    // Strength slider 0..2 step 0.05 → normalStrength, with numeric readout.
-    this.normalStrengthNum = document.createElement('span');
-    this.normalStrengthNum.className = 'material-tab-num';
-    this.normalStrengthInput = document.createElement('input');
-    this.normalStrengthInput.type = 'range';
-    this.normalStrengthInput.className = 'material-tab-normal-strength';
-    this.normalStrengthInput.min = '0';
-    this.normalStrengthInput.max = '2';
-    this.normalStrengthInput.step = '0.05';
-    this.wireStrength();
-    this.fields.append(this.fieldRow('Strength', this.normalStrengthInput, this.normalStrengthNum));
-
-    // --- Roughness Map: file + thumb + clear ---
-    const rough = this.mapRow('Roughness', 'rough');
-    this.roughThumb = rough.thumb;
-
-    // --- Metallic Map: file + thumb + clear ---
-    const metal = this.mapRow('Metallic', 'metal');
-    this.metalThumb = metal.thumb;
+  private buildShaderRow(shader: MaterialShader): HTMLElement {
+    const socket = socketButton('value', (btn) => this.openShaderChooser(btn));
+    socket.classList.add('material-tab-shader-socket');
+    socket.title = 'Choose shader';
+    const value = document.createElement('button');
+    value.type = 'button';
+    value.className = 'prop-value-btn material-tab-shader-value';
+    value.textContent = SHADER_LABELS[shader];
+    value.style.cssText = 'flex:1;min-width:0;text-align:left;background:#333;color:#ddd;border:1px solid rgba(255,255,255,0.15);border-radius:3px;cursor:pointer;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    value.addEventListener('click', () => this.openShaderChooser(value));
+    return propRow({ label: 'Shader', socket, controls: [value], rowClass: 'material-tab-shader-row' });
   }
 
-  /** Build a file-input + thumbnail + clear-✕ row for a map slot, wire its
-   * handlers and append it. Returns the controls for value binding in rebuild. */
-  private mapRow(label: string, slot: MapSlot): { file: HTMLInputElement; thumb: HTMLImageElement } {
+  private buildNameRow(mat: Material): HTMLElement {
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.className = 'material-tab-name';
+    inp.value = mat.name;
+    this.wireField(inp, 'name', () => inp.value, () => this.material()?.name ?? '');
+    return propRow({ label: 'Name', controls: [inp] });
+  }
+
+  private buildChannelRow(mat: Material, ch: MaterialChannelName): HTMLElement {
+    const input = getMaterialChannel(mat, ch);
+    const socket = socketButton(input.kind, (btn) => this.openChannelSocketMenu(btn, ch));
+    socket.title = `${LABELS[ch]} input`;
+    const controls: HTMLElement[] = [];
+
+    if (ch === 'color') {
+      const swatch = document.createElement('input');
+      swatch.type = 'color';
+      swatch.className = 'material-tab-basecolor';
+      swatch.value = rgbToHex(mat.baseColor);
+      this.wireField(swatch, 'baseColor', () => hexToRgb(swatch.value), () => this.material()?.baseColor ?? [0, 0, 0]);
+      controls.push(swatch, this.keyButton('material-tab-key-basecolor', 'Insert Base Color keyframe',
+        ['material.baseColor.r', 'material.baseColor.g', 'material.baseColor.b']));
+      if (input.kind === 'image') controls.push(...this.imageControls('color', mat.texDataUrl, 'material-tab-texfile', 'material-tab-texthumb'));
+    } else if (ch === 'alpha') {
+      controls.push(...this.alphaControls(mat, input as ChannelInput<number>));
+    } else {
+      // roughness / metallic scalar slider + numeric readout.
+      const field = ch as 'roughness' | 'metallic';
+      const num = document.createElement('span');
+      num.className = 'prop-num';
+      const slider = this.slider(`material-tab-${field}`);
+      slider.value = String(mat[field]);
+      num.textContent = mat[field].toFixed(2);
+      this.wireField(slider, field, () => parseFloat(slider.value), () => this.material()?.[field] ?? 0,
+        () => { num.textContent = Number(slider.value).toFixed(2); });
+      controls.push(slider, num);
+      if (ch === 'roughness') controls.push(this.keyButton('material-tab-key-roughness', 'Insert Roughness keyframe', ['material.roughness']));
+      if (input.kind === 'image') {
+        const url = field === 'roughness' ? mat.roughDataUrl : mat.metalDataUrl;
+        controls.push(...this.imageControls(field, url, `material-tab-${field}file`, `material-tab-${field}thumb`));
+      }
+    }
+
+    return propRow({ label: LABELS[ch], socket, controls, data: { channel: ch } });
+  }
+
+  /** File re-pick + thumbnail + clear for an image-kind channel. */
+  private imageControls(ch: MaterialChannelName, dataUrl: string | null, fileCls: string, thumbCls: string): HTMLElement[] {
     const file = document.createElement('input');
     file.type = 'file';
     file.accept = 'image/*';
-    file.className = `material-tab-mapfile material-tab-${slot}file`;
-    file.addEventListener('change', () => this.onMapFile(slot, file));
-
+    file.className = `material-tab-mapfile ${fileCls}`;
+    file.style.cssText = 'flex:1;min-width:0;';
+    file.addEventListener('change', () => {
+      const f = file.files?.[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => { void this.setChannelImage(ch, String(reader.result)); };
+      reader.readAsDataURL(f);
+    });
     const thumb = document.createElement('img');
-    thumb.className = `material-tab-texthumb material-tab-mapthumb material-tab-${slot}thumb`;
-    thumb.alt = label;
-
+    thumb.className = `material-tab-texthumb ${thumbCls}`;
+    thumb.alt = LABELS[ch];
+    if (dataUrl) { thumb.src = dataUrl; } else thumb.style.display = 'none';
     const clear = document.createElement('button');
     clear.type = 'button';
-    clear.className = `material-tab-mapclear material-tab-${slot}clear`;
+    clear.className = 'material-tab-mapclear';
     clear.textContent = '✕';
-    clear.title = `Clear ${label} map`;
-    clear.addEventListener('click', () => this.onMapClear(slot));
-
-    this.fields.append(this.fieldRow(label, file, thumb, clear));
-    return { file, thumb };
+    clear.title = `Clear ${LABELS[ch]} image`;
+    clear.style.cssText = 'flex:none;cursor:pointer;line-height:1;padding:0 6px;';
+    clear.addEventListener('click', () => this.setChannelValue(ch));
+    return [file, thumb, clear];
   }
 
-  /** Live-preview + single-command wiring for the normal-strength slider. */
-  private wireStrength(): void {
-    this.normalStrengthInput.addEventListener('focus', () => {
-      this.strengthBefore = this.material()?.normalStrength ?? null;
+  /** Alpha value slider (0..1) + numeric readout, editing mat.alpha as a value. */
+  private alphaControls(mat: Material, input: ChannelInput<number>): HTMLElement[] {
+    const num = document.createElement('span');
+    num.className = 'prop-num';
+    const slider = this.slider('material-tab-alpha');
+    const cur = input.kind === 'value' ? input.value : 1;
+    slider.value = String(cur);
+    num.textContent = cur.toFixed(2);
+    slider.disabled = input.kind === 'gradient';
+    slider.addEventListener('focus', () => { this.socketBefore = mat ? snapMaterialSockets(this.material()!) : null; });
+    slider.addEventListener('input', () => {
+      const m = this.material();
+      if (!m) return;
+      if (this.socketBefore === null) this.socketBefore = snapMaterialSockets(m);
+      m.alpha = { kind: 'value', value: parseFloat(slider.value) };
+      num.textContent = Number(slider.value).toFixed(2);
     });
-    this.normalStrengthInput.addEventListener('input', () => {
-      const mat = this.material();
-      if (!mat) return;
-      if (this.strengthBefore === null) this.strengthBefore = mat.normalStrength;
-      mat.normalStrength = parseFloat(this.normalStrengthInput.value);
-      this.normalStrengthNum.textContent = Number(this.normalStrengthInput.value).toFixed(2);
+    slider.addEventListener('change', () => {
+      const m = this.material();
+      if (!m) { this.socketBefore = null; return; }
+      m.alpha = { kind: 'value', value: parseFloat(slider.value) };
+      const before = this.socketBefore ?? snapMaterialSockets(m);
+      this.socketBefore = null;
+      this.undo.push(MaterialSocketCommand.fromBefore('Edit Alpha', m, before));
+      this.lastSig = null;
     });
-    this.normalStrengthInput.addEventListener('change', () => {
-      const mat = this.material();
-      if (!mat) { this.strengthBefore = null; return; }
-      const after = parseFloat(this.normalStrengthInput.value);
-      const before = this.strengthBefore ?? after;
-      this.strengthBefore = null;
-      if (!Number.isFinite(after)) { this.lastSig = null; return; }
-      mat.normalStrength = after;
-      if (before === after) { this.lastSig = null; return; }
-      this.undo.push(new MapParamEditCommand(mat, 'normalStrength', before, after));
+    return [slider, num];
+  }
+
+  private buildAlwaysTexturedRow(mat: Material, shader: MaterialShader): HTMLElement | null {
+    // Meaningful only with an image color OR the everything shader.
+    if (!(mat.texKind === 'image' || shader === 'super')) return null;
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'material-tab-always-textured';
+    check.checked = mat.alwaysTextured === true;
+    check.addEventListener('change', () => this.onAlwaysTexturedToggle(check.checked));
+    return propRow({ label: 'Always Textured', controls: [check] });
+  }
+
+  private buildIorRow(mat: Material): HTMLElement {
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.className = 'material-tab-ior';
+    inp.min = '1'; inp.max = '2.5'; inp.step = '0.01';
+    inp.value = String(mat.ior ?? 1.45);
+    inp.title = 'Index of refraction (1.0–2.5).';
+    this.wireField(inp, 'ior', () => Math.max(1, Math.min(2.5, parseFloat(inp.value))), () => this.material()?.ior ?? 1.45);
+    return propRow({ label: 'IOR', controls: [inp], rowClass: 'material-tab-ior-row' });
+  }
+
+  private buildStrengthRow(mat: Material): HTMLElement {
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.className = 'material-tab-emissive-strength';
+    inp.min = '0'; inp.max = '100'; inp.step = '0.1';
+    inp.value = String(mat.emissiveStrength);
+    inp.title = 'Emission strength (0–100).';
+    this.wireField(inp, 'emissiveStrength', () => Math.max(0, Math.min(100, parseFloat(inp.value))), () => this.material()?.emissiveStrength ?? 0);
+    return propRow({ label: 'Strength', controls: [inp], rowClass: 'material-tab-strength-row' });
+  }
+
+  private buildGradientSubrow(mat: Material, ch: MaterialChannelName, g: GradientInput): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'prop-subrow material-tab-gradient';
+    wrap.dataset.channel = ch;
+
+    // Endpoints A / B.
+    const endpoints = document.createElement('div');
+    endpoints.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const mkEndpoint = (which: 'a' | 'b'): HTMLElement => {
+      if (ch === 'color') {
+        const sw = document.createElement('input');
+        sw.type = 'color';
+        sw.className = `material-tab-grad-${which}`;
+        sw.value = rgbToHex(g[which]);
+        this.wireGradient(mat, ch, sw, (grad) => { grad[which] = hexToRgb(sw.value); });
+        return sw;
+      }
+      const n = document.createElement('input');
+      n.type = 'number'; n.min = '0'; n.max = '1'; n.step = '0.01';
+      n.className = `material-tab-grad-${which}`;
+      n.value = String(g[which][0]);
+      this.wireGradient(mat, ch, n, (grad) => { const v = Math.max(0, Math.min(1, parseFloat(n.value))); grad[which] = [v, v, v]; });
+      return n;
+    };
+    const la = document.createElement('span'); la.textContent = 'A'; la.style.opacity = '0.7';
+    const lb = document.createElement('span'); lb.textContent = 'B'; lb.style.opacity = '0.7';
+    endpoints.append(la, mkEndpoint('a'), lb, mkEndpoint('b'));
+    wrap.append(endpoints);
+
+    // Axis segmented X | Y | Z.
+    const axisRow = document.createElement('div');
+    axisRow.className = 'material-tab-grad-axis';
+    axisRow.style.cssText = 'display:flex;gap:0;';
+    for (const ax of ['x', 'y', 'z'] as const) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'material-tab-grad-axis-btn' + (g.axis === ax ? ' is-active' : '');
+      b.dataset.axis = ax;
+      b.textContent = ax.toUpperCase();
+      b.style.cssText = `flex:1;cursor:pointer;padding:2px 0;border:1px solid rgba(255,255,255,0.15);background:${g.axis === ax ? '#e8a33d' : '#333'};color:${g.axis === ax ? '#000' : '#ccc'};`;
+      b.addEventListener('click', () => {
+        const m = this.material();
+        if (!m) return;
+        this.undo.push(MaterialSocketCommand.capture('Gradient Axis', m, () => {
+          const grad = getMaterialChannel(m, ch);
+          if (grad.kind === 'gradient') grad.axis = ax;
+        }));
+        this.lastSig = null;
+      });
+      axisRow.append(b);
+    }
+    wrap.append(axisRow);
+
+    // Offset / Scale numerics.
+    const os = document.createElement('div');
+    os.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const mkNum = (label: string, cls: string, val: number, apply: (grad: GradientInput, v: number) => void): void => {
+      const l = document.createElement('span'); l.textContent = label; l.style.opacity = '0.7';
+      const n = document.createElement('input');
+      n.type = 'number'; n.step = '0.05'; n.className = cls; n.value = String(val);
+      n.style.cssText = 'width:64px;';
+      this.wireGradient(mat, ch, n, (grad) => apply(grad, parseFloat(n.value)));
+      os.append(l, n);
+    };
+    mkNum('Off', 'material-tab-grad-offset', g.offset, (grad, v) => { grad.offset = Number.isFinite(v) ? v : 0; });
+    mkNum('Scl', 'material-tab-grad-scale', g.scale, (grad, v) => { grad.scale = Number.isFinite(v) ? v : 1; });
+    wrap.append(os);
+
+    return wrap;
+  }
+
+  /** Wire a gradient sub-control: capture before on focus, live-mutate on input,
+   *  commit ONE MaterialSocketCommand on change. */
+  private wireGradient(mat: Material, ch: MaterialChannelName, el: HTMLInputElement, mutate: (g: GradientInput) => void): void {
+    el.addEventListener('focus', () => { this.socketBefore = snapMaterialSockets(this.material() ?? mat); });
+    el.addEventListener('input', () => {
+      const m = this.material();
+      if (!m) return;
+      if (this.socketBefore === null) this.socketBefore = snapMaterialSockets(m);
+      const g = getMaterialChannel(m, ch);
+      if (g.kind === 'gradient') mutate(g);
+    });
+    el.addEventListener('change', () => {
+      const m = this.material();
+      if (!m) { this.socketBefore = null; return; }
+      const g = getMaterialChannel(m, ch);
+      if (g.kind === 'gradient') mutate(g);
+      const before = this.socketBefore ?? snapMaterialSockets(m);
+      this.socketBefore = null;
+      this.undo.push(MaterialSocketCommand.fromBefore('Edit Gradient', m, before));
       this.lastSig = null;
     });
   }
 
-  private onBumpToggle(): void {
-    const mat = this.material();
-    if (!mat) return;
-    const before = mat.normalIsBump;
-    const after = this.normalBumpCheck.checked;
-    if (before === after) return;
-    mat.normalIsBump = after;
-    this.undo.push(new MapParamEditCommand(mat, 'normalIsBump', before, after));
-    this.lastSig = null;
-  }
+  private buildSuperExtras(mat: Material): void {
+    // Emissive color + strength.
+    const emis = document.createElement('input');
+    emis.type = 'color';
+    emis.className = 'material-tab-emissive';
+    emis.value = rgbToHex(mat.emissive);
+    this.wireField(emis, 'emissive', () => hexToRgb(emis.value), () => this.material()?.emissive ?? [0, 0, 0]);
+    this.fields.append(propRow({ label: 'Emissive', controls: [emis] }));
+    this.fields.append(this.buildStrengthRow(mat));
 
-  private onAlwaysTexturedToggle(): void {
-    const mat = this.material();
-    if (!mat) return;
-    const before = mat.alwaysTextured === true;
-    const after = this.alwaysTexturedCheck.checked;
-    if (before === after) return;
-    mat.alwaysTextured = after;
-    this.undo.push(new AlwaysTexturedEditCommand(mat, before, after));
-    this.lastSig = null;
-  }
+    // Subsurface weight + radius.
+    const ssNum = document.createElement('span'); ssNum.className = 'prop-num';
+    const ss = this.slider('material-tab-subsurface');
+    ss.value = String(mat.subsurfaceWeight); ssNum.textContent = mat.subsurfaceWeight.toFixed(2);
+    this.wireField(ss, 'subsurfaceWeight', () => parseFloat(ss.value), () => this.material()?.subsurfaceWeight ?? 0,
+      () => { ssNum.textContent = Number(ss.value).toFixed(2); });
+    this.fields.append(propRow({ label: 'Subsurface', controls: [ss, ssNum] }));
 
-  /** Apply a Glass or Metal preset to the active material (one undo entry). */
-  private applyPreset(kind: 'glass' | 'metal'): void {
-    const mat = this.material();
-    if (!mat) return;
-    let after: MaterialPresetState;
-    let name: string;
-    if (kind === 'glass') {
-      // Clear, smooth glass: full transmission, typical glass IOR, no metal,
-      // mirror-smooth, near-white base (the transmitted-ray Beer tint).
-      after = { baseColor: [0.95, 0.95, 0.95], metallic: 0, roughness: 0, transmission: 1, ior: 1.45 };
-      name = 'Apply Glass Preset';
-    } else {
-      // Chrome/gold: full metallic, slightly rough mirror, no transmission. Keep
-      // the existing base color as the reflection tint (grey → chrome, yellow →
-      // gold) and the existing IOR (unused while opaque).
-      after = {
-        baseColor: cloneRgb(mat.baseColor),
-        metallic: 1, roughness: 0.15, transmission: 0, ior: mat.ior ?? 1.45,
-      };
-      name = 'Apply Metal Preset';
+    const ssr = document.createElement('input');
+    ssr.type = 'number'; ssr.min = '0'; ssr.step = '0.01';
+    ssr.className = 'material-tab-subsurface-radius';
+    ssr.value = String(mat.subsurfaceRadius);
+    this.wireField(ssr, 'subsurfaceRadius', () => Math.max(0, parseFloat(ssr.value)), () => this.material()?.subsurfaceRadius ?? 0.05);
+    this.fields.append(propRow({ label: 'SSS Radius', controls: [ssr] }));
+
+    // Normal / bump map — joins the material as its own row + sub-row.
+    this.buildNormalRows(mat);
+
+    // Nodes — bake resolution.
+    const nodesHeading = document.createElement('div');
+    nodesHeading.className = 'material-tab-nodes-title properties-group-title';
+    nodesHeading.textContent = 'Nodes';
+    nodesHeading.style.marginTop = '8px';
+    this.fields.append(nodesHeading);
+
+    const bake = document.createElement('select');
+    bake.className = 'material-tab-bakeres';
+    for (const r of [128, 256, 512, 1024]) {
+      const opt = document.createElement('option');
+      opt.value = String(r); opt.textContent = `${r}×${r}`;
+      bake.append(opt);
     }
-    this.undo.push(MaterialPresetCommand.perform(name, mat, after));
+    bake.value = String(mat.bakeRes ?? 128);
+    bake.addEventListener('change', () => this.onBakeResChange(Number(bake.value)));
+    this.fields.append(propRow({ label: 'Bake Res', controls: [bake] }));
+  }
+
+  private buildNormalRows(mat: Material): void {
+    const file = document.createElement('input');
+    file.type = 'file'; file.accept = 'image/*';
+    file.className = 'material-tab-mapfile material-tab-normalfile';
+    file.style.cssText = 'flex:1;min-width:0;';
+    file.addEventListener('change', () => this.onMapFile('normal', file));
+    const thumb = document.createElement('img');
+    thumb.className = 'material-tab-texthumb material-tab-normalthumb';
+    thumb.alt = 'Normal';
+    if (mat.normalDataUrl) thumb.src = mat.normalDataUrl; else thumb.style.display = 'none';
+    const clear = document.createElement('button');
+    clear.type = 'button'; clear.className = 'material-tab-mapclear'; clear.textContent = '✕';
+    clear.title = 'Clear Normal map';
+    clear.style.cssText = 'flex:none;cursor:pointer;line-height:1;padding:0 6px;';
+    clear.addEventListener('click', () => this.onMapClear('normal'));
+    const socket = socketButton(mat.normalDataUrl ? 'image' : 'value', () => file.click());
+    socket.title = 'Normal map';
+    this.fields.append(propRow({ label: 'Normal', socket, controls: [file, thumb, clear], data: { channel: 'normal' } }));
+
+    // Bump + Strength sub-row.
+    const bump = document.createElement('input');
+    bump.type = 'checkbox'; bump.className = 'material-tab-normal-bump';
+    bump.checked = mat.normalIsBump;
+    bump.addEventListener('change', () => this.onBumpToggle(bump.checked));
+    this.fields.append(propRow({ label: 'Bump (height)', controls: [bump] }));
+
+    const num = document.createElement('span'); num.className = 'prop-num';
+    const strength = document.createElement('input');
+    strength.type = 'range'; strength.className = 'material-tab-normal-strength';
+    strength.min = '0'; strength.max = '2'; strength.step = '0.05';
+    strength.value = String(mat.normalStrength);
+    num.textContent = mat.normalStrength.toFixed(2);
+    this.wireStrength(strength, num);
+    this.fields.append(propRow({ label: 'Strength', controls: [strength, num] }));
+  }
+
+  // -------------------------------------------------------- socket actions ---
+
+  private openShaderChooser(anchor: HTMLElement): void {
+    const mat = this.material();
+    if (!mat) return;
+    const cur = materialShader(mat);
+    new Popover(anchor, MATERIAL_SHADERS.map((s) => ({
+      label: SHADER_LABELS[s],
+      active: s === cur,
+      data: { shader: s },
+      run: () => this.setShader(s),
+    })), { itemClass: 'material-shader-option' });
+  }
+
+  private openChannelSocketMenu(anchor: HTMLElement, ch: MaterialChannelName): void {
+    const mat = this.material();
+    if (!mat) return;
+    const cur = getMaterialChannel(mat, ch).kind;
+    const items = [
+      { label: ch === 'color' ? 'Color' : 'Value', active: cur === 'value', data: { kind: 'value' }, run: () => this.setChannelValue(ch) },
+    ];
+    if (ch !== 'alpha') items.push({ label: 'Image', active: cur === 'image', data: { kind: 'image' }, run: () => this.pickChannelImage(ch) });
+    items.push({ label: 'Gradient', active: cur === 'gradient', data: { kind: 'gradient' }, run: () => this.setChannelGradient(ch) });
+    new Popover(anchor, items, { itemClass: 'material-socket-option' });
+  }
+
+  private setShader(s: MaterialShader): void {
+    const mat = this.material();
+    if (!mat) return;
+    const before = { shader: mat.shader, shadeless: mat.shadeless };
+    const after = { shader: s, shadeless: s === 'emit' };
+    if (before.shader === after.shader && (before.shadeless ?? false) === after.shadeless) return;
+    mat.shader = after.shader;
+    mat.shadeless = after.shadeless;
+    this.undo.push(new ShaderEditCommand(mat, before, after));
     this.lastSig = null;
   }
 
-  private onMapFile(slot: MapSlot, input: HTMLInputElement): void {
-    const file = input.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => { void this.loadMapFromDataUrl(slot, String(reader.result)); };
-    reader.readAsDataURL(file);
-  }
-
-  private onMapClear(slot: MapSlot): void {
+  private setChannelValue(ch: MaterialChannelName): void {
     const mat = this.material();
     if (!mat) return;
-    if (mat[MAP_URL_FIELD[slot]] === null && mat[MAP_IMG_FIELD[slot]] === undefined) return;
-    const before = this.mapState(mat, slot);
-    mat[MAP_URL_FIELD[slot]] = null;
-    mat[MAP_IMG_FIELD[slot]] = undefined;
-    this.undo.push(new MapImageEditCommand(mat, slot, before, this.mapState(mat, slot)));
+    let value: [number, number, number] | number;
+    if (ch === 'color') value = [mat.baseColor[0], mat.baseColor[1], mat.baseColor[2]];
+    else if (ch === 'roughness') value = mat.roughness;
+    else if (ch === 'metallic') value = mat.metallic;
+    else value = mat.alpha && mat.alpha.kind === 'value' ? mat.alpha.value : 1;
+    this.undo.push(MaterialSocketCommand.capture(`Set ${LABELS[ch]} Value`, mat, () => {
+      setMaterialChannel(mat, ch, { kind: 'value', value } as ChannelInput<[number, number, number]> | ChannelInput<number>);
+      if (ch === 'color') mat.texImage = undefined;
+      else if (ch === 'roughness') mat.roughImage = undefined;
+      else if (ch === 'metallic') mat.metalImage = undefined;
+    }));
     this.lastSig = null;
   }
 
-  /** Snapshot the current data url + decoded cache of a map slot. */
-  private mapState(mat: Material, slot: MapSlot): MapImgState {
-    return { dataUrl: mat[MAP_URL_FIELD[slot]], image: mat[MAP_IMG_FIELD[slot]] };
-  }
-
-  /**
-   * Decode a packed image RAW (no sRGB) and set it on a map slot in one undo
-   * step (both url and decoded cache captured). Exposed via __materialTab for
-   * e2e. No-op when no material is active.
-   */
-  async loadMapFromDataUrl(slot: MapSlot, dataUrl: string): Promise<void> {
+  private setChannelGradient(ch: MaterialChannelName): void {
     const mat = this.material();
     if (!mat) return;
-    const image = await decodeRawTextureDataUrl(dataUrl);
-    // The active material may have changed while decoding; re-fetch and bail if so.
+    this.undo.push(MaterialSocketCommand.capture(`Set ${LABELS[ch]} Gradient`, mat, () => {
+      setMaterialChannel(mat, ch, this.defaultGradient(mat, ch) as ChannelInput<[number, number, number]> | ChannelInput<number>);
+    }));
+    this.lastSig = null;
+  }
+
+  private setGradientExplicit(ch: MaterialChannelName, g: GradientInput): void {
+    const mat = this.material();
+    if (!mat) return;
+    this.undo.push(MaterialSocketCommand.capture(`Set ${LABELS[ch]} Gradient`, mat, () => {
+      setMaterialChannel(mat, ch, cloneGradient(g) as ChannelInput<[number, number, number]> | ChannelInput<number>);
+    }));
+    this.lastSig = null;
+  }
+
+  private defaultGradient(mat: Material, ch: MaterialChannelName): GradientInput {
+    if (ch === 'color') {
+      const a: [number, number, number] = [mat.baseColor[0], mat.baseColor[1], mat.baseColor[2]];
+      const b: [number, number, number] = [1 - a[0], 1 - a[1], 1 - a[2]];
+      return { kind: 'gradient', a, b, axis: 'z', offset: 0.5, scale: 0.5 };
+    }
+    const v = ch === 'roughness' ? mat.roughness : ch === 'metallic' ? mat.metallic : (mat.alpha && mat.alpha.kind === 'value' ? mat.alpha.value : 1);
+    return { kind: 'gradient', a: [v, v, v], b: [1 - v, 1 - v, 1 - v], axis: 'z', offset: 0.5, scale: 0.5 };
+  }
+
+  private pickChannelImage(ch: MaterialChannelName): void {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.style.display = 'none';
+    input.addEventListener('change', () => {
+      const f = input.files?.[0];
+      if (!f) { input.remove(); return; }
+      const reader = new FileReader();
+      reader.onload = () => { void this.setChannelImage(ch, String(reader.result)); input.remove(); };
+      reader.readAsDataURL(f);
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+
+  /** Load an image into a channel's socket (color = sRGB decode, rough/metal =
+   *  RAW decode) in ONE undo step, clearing any gradient on that channel. */
+  async setChannelImage(ch: MaterialChannelName, dataUrl: string): Promise<void> {
+    const mat = this.material();
+    if (!mat) return;
+    const decode = ch === 'color' ? decodeTextureDataUrl : decodeRawTextureDataUrl;
+    let image: TexImage;
+    try { image = await decode(dataUrl); } catch { return; }
     if (this.material() !== mat) return;
-    const before = this.mapState(mat, slot);
-    mat[MAP_URL_FIELD[slot]] = dataUrl;
-    mat[MAP_IMG_FIELD[slot]] = image;
-    this.undo.push(new MapImageEditCommand(mat, slot, before, this.mapState(mat, slot)));
+    const before = snapMaterialSockets(mat);
+    setMaterialChannel(mat, ch, { kind: 'image', dataUrl } as ChannelInput<[number, number, number]> | ChannelInput<number>);
+    if (ch === 'color') mat.texImage = image;
+    else if (ch === 'roughness') mat.roughImage = image;
+    else if (ch === 'metallic') mat.metalImage = image;
+    this.undo.push(MaterialSocketCommand.fromBefore(`Set ${LABELS[ch]} Image`, mat, before));
     this.lastSig = null;
   }
 
-  /**
-   * Decode-on-select: for each present-but-uncached map, decode its data url
-   * RAW into the material cache asynchronously so the tracer sees it (e.g. after
-   * a scene load or when a map's cache was nulled by undo). Idempotent + guarded
-   * against duplicate concurrent decodes.
-   */
-  private ensureMapsDecoded(mat: Material): void {
-    for (const slot of ['normal', 'rough', 'metal'] as MapSlot[]) {
-      const url = mat[MAP_URL_FIELD[slot]];
-      if (!url || mat[MAP_IMG_FIELD[slot]]) continue;
-      const key = `${mat.id}:${slot}:${url.length}`;
-      if (this.pendingDecode.has(key)) continue;
-      this.pendingDecode.add(key);
-      decodeRawTextureDataUrl(url)
-        .then((decoded) => {
-          if (mat[MAP_URL_FIELD[slot]] === url) mat[MAP_IMG_FIELD[slot]] = decoded;
-          this.pendingDecode.delete(key);
-          this.lastSig = null;
-        })
-        .catch(() => { this.pendingDecode.delete(key); });
-    }
+  /** Set the color channel to the procedural checker (legacy texKind). */
+  private setChecker(): void {
+    const mat = this.material();
+    if (!mat) return;
+    this.undo.push(MaterialSocketCommand.capture('Set Checker', mat, () => {
+      mat.colorGradient = undefined;
+      mat.texKind = 'checker';
+      mat.texDataUrl = null;
+      mat.texImage = undefined;
+    }));
+    this.lastSig = null;
   }
+
+  // ----------------------------------------------------- shared value wiring --
 
   private slider(cls: string): HTMLInputElement {
     const input = document.createElement('input');
@@ -889,12 +1153,6 @@ class MaterialTab {
     return input;
   }
 
-  /**
-   * A small ● insert-keyframe button (P15-4) that keys `channels` on the active
-   * mesh object's material at scene.frameCurrent through one undoable
-   * InsertKeysCommand. No-op when nothing is keyable (no active mesh, or no
-   * assigned material so the channel is unresolvable / the frozen default).
-   */
   private keyButton(className: string, title: string, channels: string[]): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -902,7 +1160,7 @@ class MaterialTab {
     btn.textContent = '●';
     btn.title = title;
     btn.style.cssText =
-      'margin-left:6px;background:none;border:none;color:#e8a33d;cursor:pointer;font-size:11px;line-height:1;padding:2px 3px;';
+      'flex:none;margin-left:2px;background:none;border:none;color:#e8a33d;cursor:pointer;font-size:11px;line-height:1;padding:2px 3px;';
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       const obj = this.scene.activeObject;
@@ -913,22 +1171,6 @@ class MaterialTab {
     return btn;
   }
 
-  private fieldRow(label: string, ...controls: HTMLElement[]): HTMLElement {
-    const row = document.createElement('label');
-    row.className = 'material-tab-field';
-    const span = document.createElement('span');
-    span.className = 'material-tab-label properties-group-title';
-    span.style.marginBottom = '0';
-    span.textContent = label;
-    row.append(span, ...controls);
-    return row;
-  }
-
-  /**
-   * Common wiring: capture `before` on focus, live-preview on input (so rendered
-   * mode updates while dragging), commit one MaterialEditCommand on change. The
-   * optional `onInput` updates any adjacent readout.
-   */
   private wireField(
     input: HTMLInputElement,
     field: MaterialFieldKey,
@@ -964,7 +1206,6 @@ class MaterialTab {
     return Array.isArray(v) ? cloneRgb(v) : v;
   }
 
-  /** Write a field on the material without touching the undo stack. */
   private applyLive(mat: Material, field: MaterialFieldKey, v: MaterialFieldValue): void {
     if (field === 'baseColor' || field === 'emissive') {
       mat[field] = cloneRgb(v as [number, number, number]);
@@ -984,7 +1225,6 @@ class MaterialTab {
     const mat = this.material();
     if (!mat) { this.editBefore = null; return; }
 
-    // Reject bad input (empty name / non-finite number): snap back and bail.
     let after = rawAfter;
     if (field === 'name') {
       const trimmed = (rawAfter as string).trim();
@@ -996,17 +1236,13 @@ class MaterialTab {
 
     const before = this.editBefore ?? this.snapshot(after);
     this.editBefore = null;
-
-    // Make sure the final value is on the material (live preview may have used a
-    // pre-clamp/trim value), then record the command against it.
     this.applyLive(mat, field, after);
 
     if (this.valuesEqual(before, after)) { this.lastSig = null; return; }
     this.undo.push(new MaterialEditCommand(mat, field, before, after));
-    this.lastSig = null; // reflect e.g. a rename in the slot select on next update
+    this.lastSig = null;
   }
 
-  /** The active object's assigned material, or null. */
   private material(): Material | null {
     const obj = this.scene.activeObject;
     if (!obj || obj.kind !== 'mesh' || obj.materialId === null) return null;
@@ -1032,160 +1268,147 @@ class MaterialTab {
     this.lastSig = null;
   }
 
-  /** Current texture state of a material as a fresh snapshot. */
-  private texState(mat: Material): TexState {
-    return { texKind: mat.texKind, texDataUrl: mat.texDataUrl, texImage: mat.texImage };
-  }
-
-  /** Kind select changed: swap texKind, keeping any packed url so switching back
-   * to Image restores it. One undo command. */
-  private onTexKindChange(): void {
+  private applyPreset(kind: 'glass' | 'metal'): void {
     const mat = this.material();
     if (!mat) return;
-    const kind = this.texKindSelect.value as Material['texKind'];
-    if (kind === mat.texKind) return;
-    const before = this.texState(mat);
-    mat.texKind = kind;
-    this.undo.push(new TextureEditCommand(mat, before, this.texState(mat)));
+    let after: MaterialPresetState;
+    let name: string;
+    if (kind === 'glass') {
+      after = { baseColor: [0.95, 0.95, 0.95], metallic: 0, roughness: 0, transmission: 1, ior: 1.45 };
+      name = 'Apply Glass Preset';
+    } else {
+      after = { baseColor: cloneRgb(mat.baseColor), metallic: 1, roughness: 0.15, transmission: 0, ior: mat.ior ?? 1.45 };
+      name = 'Apply Metal Preset';
+    }
+    this.undo.push(MaterialPresetCommand.perform(name, mat, after));
     this.lastSig = null;
   }
 
-  private onTexFile(): void {
-    const file = this.texFileInput.files?.[0];
+  private onAlwaysTexturedToggle(checked: boolean): void {
+    const mat = this.material();
+    if (!mat) return;
+    const before = mat.alwaysTextured === true;
+    if (before === checked) return;
+    mat.alwaysTextured = checked;
+    this.undo.push(new AlwaysTexturedEditCommand(mat, before, checked));
+    this.lastSig = null;
+  }
+
+  private onBakeResChange(after: number): void {
+    const mat = this.material();
+    if (!mat) return;
+    const before = mat.bakeRes ?? 128;
+    if (before === after) return;
+    mat.bakeRes = after;
+    this.undo.push(new MaterialEditCommand(mat, 'bakeRes', before, after));
+    this.lastSig = null;
+  }
+
+  // ------------------------------------------------------------ map slots ----
+
+  private wireStrength(input: HTMLInputElement, num: HTMLSpanElement): void {
+    input.addEventListener('focus', () => { this.strengthBefore = this.material()?.normalStrength ?? null; });
+    input.addEventListener('input', () => {
+      const mat = this.material();
+      if (!mat) return;
+      if (this.strengthBefore === null) this.strengthBefore = mat.normalStrength;
+      mat.normalStrength = parseFloat(input.value);
+      num.textContent = Number(input.value).toFixed(2);
+    });
+    input.addEventListener('change', () => {
+      const mat = this.material();
+      if (!mat) { this.strengthBefore = null; return; }
+      const after = parseFloat(input.value);
+      const before = this.strengthBefore ?? after;
+      this.strengthBefore = null;
+      if (!Number.isFinite(after)) { this.lastSig = null; return; }
+      mat.normalStrength = after;
+      if (before === after) { this.lastSig = null; return; }
+      this.undo.push(new MapParamEditCommand(mat, 'normalStrength', before, after));
+      this.lastSig = null;
+    });
+  }
+
+  private onBumpToggle(checked: boolean): void {
+    const mat = this.material();
+    if (!mat) return;
+    const before = mat.normalIsBump;
+    if (before === checked) return;
+    mat.normalIsBump = checked;
+    this.undo.push(new MapParamEditCommand(mat, 'normalIsBump', before, checked));
+    this.lastSig = null;
+  }
+
+  private onMapFile(slot: MapSlot, input: HTMLInputElement): void {
+    const file = input.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => { void this.loadTextureFromDataUrl(String(reader.result)); };
+    reader.onload = () => { void this.loadMapFromDataUrl(slot, String(reader.result)); };
     reader.readAsDataURL(file);
   }
 
-  /**
-   * Decode a packed image data URL, set it as the active material's base-color
-   * texture (kind → 'image'), and push ONE undo command with the old/new state.
-   * Exposed via __materialTab for e2e. Returns silently if no material is active.
-   */
-  async loadTextureFromDataUrl(dataUrl: string): Promise<void> {
+  private onMapClear(slot: MapSlot): void {
     const mat = this.material();
     if (!mat) return;
-    const image = await decodeTextureDataUrl(dataUrl);
-    const before = this.texState(mat);
-    mat.texKind = 'image';
-    mat.texDataUrl = dataUrl;
-    mat.texImage = image;
-    this.undo.push(new TextureEditCommand(mat, before, this.texState(mat)));
+    if (mat[MAP_URL_FIELD[slot]] === null && mat[MAP_IMG_FIELD[slot]] === undefined) return;
+    const before = this.mapState(mat, slot);
+    mat[MAP_URL_FIELD[slot]] = null;
+    mat[MAP_IMG_FIELD[slot]] = undefined;
+    this.undo.push(new MapImageEditCommand(mat, slot, before, this.mapState(mat, slot)));
     this.lastSig = null;
   }
 
-  update(): void {
-    const obj = this.scene.activeObject;
-    const isMesh = !!obj && obj.kind === 'mesh';
-    if (!isMesh) {
-      this.empty.style.display = '';
-      this.body.style.display = 'none';
-      this.lastSig = null;
-      return;
-    }
-    this.empty.style.display = 'none';
-    this.body.style.display = '';
+  private mapState(mat: Material, slot: MapSlot): MapImgState {
+    return { dataUrl: mat[MAP_URL_FIELD[slot]], image: mat[MAP_IMG_FIELD[slot]] };
+  }
 
-    // Never yank focus out from under an in-progress edit.
-    if (this.isPanelFocused()) return;
-
+  async loadMapFromDataUrl(slot: MapSlot, dataUrl: string): Promise<void> {
     const mat = this.material();
-    // Decode-on-select: fill any present-but-uncached map caches for the tracer.
-    if (mat) this.ensureMapsDecoded(mat);
-    const sig = [
-      obj!.id,
-      obj!.materialId,
-      this.scene.materials.map((m) => `${m.id}:${m.name}`).join('|'),
-      mat ? `${rgbToHex(mat.baseColor)}:${mat.metallic}:${mat.roughness}:${mat.transmission ?? 0}:${mat.ior ?? 1.45}:${rgbToHex(mat.emissive)}:${mat.emissiveStrength}:${mat.subsurfaceWeight}:${mat.subsurfaceRadius}` : '-',
-      mat ? `${mat.texKind}:${mat.texDataUrl ? mat.texDataUrl.length : 0}:${mat.alwaysTextured === true}:${mat.alphaBlend === true}` : '-',
-      mat ? `${mat.normalDataUrl ? mat.normalDataUrl.length : 0}:${mat.normalIsBump}:${mat.normalStrength}:${mat.roughDataUrl ? mat.roughDataUrl.length : 0}:${mat.metalDataUrl ? mat.metalDataUrl.length : 0}` : '-',
-      mat ? `${mat.bakeRes ?? 128}` : '-',
-    ].join('#');
-    if (sig === this.lastSig) return;
-    this.lastSig = sig;
-    this.rebuild(obj!, mat);
-  }
-
-  private isPanelFocused(): boolean {
-    const active = document.activeElement;
-    return (
-      (active instanceof HTMLInputElement || active instanceof HTMLSelectElement) &&
-      this.body.contains(active)
-    );
-  }
-
-  private rebuild(obj: SceneObject, mat: Material | null): void {
-    // Slot select: "(None)" + one option per library material.
-    this.slotSelect.replaceChildren();
-    const none = document.createElement('option');
-    none.value = '';
-    none.textContent = '(None)';
-    this.slotSelect.append(none);
-    for (const m of this.scene.materials) {
-      const opt = document.createElement('option');
-      opt.value = String(m.id);
-      opt.textContent = m.name;
-      this.slotSelect.append(opt);
-    }
-    this.slotSelect.value = obj.materialId === null ? '' : String(obj.materialId);
-
-    // Fields visible only when a material is assigned.
-    this.fields.style.display = mat ? '' : 'none';
     if (!mat) return;
-
-    this.nameInput.value = mat.name;
-    this.baseColorInput.value = rgbToHex(mat.baseColor);
-    this.metallicInput.value = String(mat.metallic);
-    this.metallicNum.textContent = mat.metallic.toFixed(2);
-    this.roughnessInput.value = String(mat.roughness);
-    this.roughnessNum.textContent = mat.roughness.toFixed(2);
-    const transmission = mat.transmission ?? 0;
-    this.transmissionInput.value = String(transmission);
-    this.transmissionNum.textContent = transmission.toFixed(2);
-    this.iorInput.value = String(mat.ior ?? 1.45);
-    this.iorInput.disabled = transmission <= 0;
-    this.emissiveInput.value = rgbToHex(mat.emissive);
-    this.emissiveStrengthInput.value = String(mat.emissiveStrength);
-    this.subsurfaceInput.value = String(mat.subsurfaceWeight);
-    this.subsurfaceNum.textContent = mat.subsurfaceWeight.toFixed(2);
-    this.subsurfaceRadiusInput.value = String(mat.subsurfaceRadius);
-
-    // Texture: kind select + image row (file + thumbnail) visible only for Image.
-    this.texKindSelect.value = mat.texKind;
-    this.texImageRow.style.display = mat.texKind === 'image' ? '' : 'none';
-    // Always Textured (UR8-3 C) — part of the image-texture section.
-    this.alwaysTexturedRow.style.display = mat.texKind === 'image' ? '' : 'none';
-    this.alwaysTexturedCheck.checked = mat.alwaysTextured === true;
-    if (mat.texKind === 'image' && mat.texDataUrl) {
-      this.texThumb.src = mat.texDataUrl;
-      this.texThumb.style.display = '';
-    } else {
-      this.texThumb.removeAttribute('src');
-      this.texThumb.style.display = 'none';
-    }
-
-    // P13 map slots.
-    this.setMapThumb(this.normalThumb, mat.normalDataUrl);
-    this.normalBumpCheck.checked = mat.normalIsBump;
-    this.normalStrengthInput.value = String(mat.normalStrength);
-    this.normalStrengthNum.textContent = mat.normalStrength.toFixed(2);
-    this.setMapThumb(this.roughThumb, mat.roughDataUrl);
-    this.setMapThumb(this.metalThumb, mat.metalDataUrl);
-
-    // Nodes: bake resolution (default 128 when unset).
-    this.bakeResSelect.value = String(mat.bakeRes ?? 128);
+    const image = await decodeRawTextureDataUrl(dataUrl);
+    if (this.material() !== mat) return;
+    const before = this.mapState(mat, slot);
+    mat[MAP_URL_FIELD[slot]] = dataUrl;
+    mat[MAP_IMG_FIELD[slot]] = image;
+    this.undo.push(new MapImageEditCommand(mat, slot, before, this.mapState(mat, slot)));
+    this.lastSig = null;
   }
 
-  /** Show a map thumbnail when a data url is present, else hide it. */
-  private setMapThumb(thumb: HTMLImageElement, dataUrl: string | null): void {
-    if (dataUrl) {
-      thumb.src = dataUrl;
-      thumb.style.display = '';
-    } else {
-      thumb.removeAttribute('src');
-      thumb.style.display = 'none';
+  private ensureMapsDecoded(mat: Material): void {
+    for (const slot of ['normal', 'rough', 'metal'] as MapSlot[]) {
+      const url = mat[MAP_URL_FIELD[slot]];
+      if (!url || mat[MAP_IMG_FIELD[slot]]) continue;
+      const key = `${mat.id}:${slot}:${url.length}`;
+      if (this.pendingDecode.has(key)) continue;
+      this.pendingDecode.add(key);
+      decodeRawTextureDataUrl(url)
+        .then((decoded) => {
+          if (mat[MAP_URL_FIELD[slot]] === url) mat[MAP_IMG_FIELD[slot]] = decoded;
+          this.pendingDecode.delete(key);
+          this.lastSig = null;
+        })
+        .catch(() => { this.pendingDecode.delete(key); });
     }
+    // Also decode a present-but-uncached color texture (so socket→image after a
+    // scene load fills the tracer cache).
+    if (mat.texKind === 'image' && mat.texDataUrl && !mat.texImage) {
+      const key = `${mat.id}:color:${mat.texDataUrl.length}`;
+      if (!this.pendingDecode.has(key)) {
+        this.pendingDecode.add(key);
+        const url = mat.texDataUrl;
+        decodeTextureDataUrl(url)
+          .then((decoded) => {
+            if (mat.texDataUrl === url) mat.texImage = decoded;
+            this.pendingDecode.delete(key);
+            this.lastSig = null;
+          })
+          .catch(() => { this.pendingDecode.delete(key); });
+      }
+    }
+  }
+
+  async loadTextureFromDataUrl(dataUrl: string): Promise<void> {
+    return this.setChannelImage('color', dataUrl);
   }
 }
 

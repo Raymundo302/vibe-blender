@@ -195,6 +195,12 @@ export interface Snapshot {
   camera: SnapCamera;
   /** Sky/environment; optional so pre-P10-4 snapshots default to the old sky. */
   world?: SnapWorld;
+  /**
+   * Transparent film (UR16-3): when true the engines skip the world backdrop for
+   * the PRIMARY (camera) ray — a depth-0 miss contributes no radiance and 0
+   * coverage — so the render carries alpha (primary-ray miss = 0). Deeper bounces
+   * still gather world lighting. Absent/false → opaque (byte-identical). */
+  transparent?: boolean;
 }
 
 function cloneGrad(g: GradientInput | undefined): GradientInput | null {
@@ -442,6 +448,8 @@ export function buildSnapshot(scene: Scene, orbit: OrbitCamera): Snapshot {
     lights,
     camera,
     world,
+    // Transparent film (UR16-3) — scene-level Output setting.
+    transparent: scene.renderSettings.transparent ?? false,
   };
 }
 

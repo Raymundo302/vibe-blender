@@ -22,7 +22,13 @@ describe('viewPrefs persistence', () => {
   });
 
   it('defaults: passepartout on, render engine gpu', () => {
-    expect(defaultViewPrefs()).toEqual({ passepartout: true, renderEngine: 'gpu' });
+    expect(defaultViewPrefs()).toEqual({
+      passepartout: true,
+      renderEngine: 'gpu',
+      renderSamples: 512,
+      limitGpuLoad: false,
+      animFormat: 'webm',
+    });
   });
 
   it('round-trips the render engine through localStorage', () => {

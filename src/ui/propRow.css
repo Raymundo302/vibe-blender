@@ -1,0 +1,101 @@
+/*
+ * UR16-2 — shared two-column property-row layout. A row is:
+ *   [ socket? ] [ label (fixed col) ] [ control (adjacent, no ocean) ]
+ * Other Properties tabs adopt this later (UR14-3); it lives here as a standalone
+ * module so nothing material-specific leaks into it.
+ *
+ * Uniform control heights: EVERY control (color swatch, slider, number, select,
+ * text) is the same height as the others — Ray: "make the color box the same
+ * height" as the sliders.
+ */
+
+:root {
+  --prop-row-h: 22px;
+  --prop-label-w: 110px;
+  --prop-socket-w: 16px;
+  --prop-gap: 6px;
+}
+
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: var(--prop-gap);
+  min-height: var(--prop-row-h);
+}
+
+/* The socket column: always present so labels line up whether or not a row has
+ * a socket circle. A spacer keeps the width without an interactive control. */
+.prop-socket,
+.prop-socket-spacer {
+  flex: none;
+  width: var(--prop-socket-w);
+  height: var(--prop-socket-w);
+  box-sizing: border-box;
+}
+
+.prop-socket {
+  border-radius: 50%;
+  border: 1.5px solid #8a8a8a;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  line-height: 0;
+}
+.prop-socket:hover { border-color: #e8a33d; }
+/* Filled = image/gradient input is driving the channel. */
+.prop-socket.is-filled { background: #e8a33d; border-color: #e8a33d; }
+.prop-socket.is-image { background: #5aa9e6; border-color: #5aa9e6; }
+.prop-socket.is-gradient { background: linear-gradient(90deg, #444, #e8a33d); border-color: #e8a33d; }
+
+.prop-row-label {
+  flex: none;
+  width: var(--prop-label-w);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The control column sits IMMEDIATELY next to the label (only --prop-gap of
+ * space), and grows to fill the rest of the row. */
+.prop-row-control {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--prop-gap);
+}
+
+/* Uniform heights for every control kind. */
+.prop-row-control > input,
+.prop-row-control > select,
+.prop-row-control > button.prop-value-btn {
+  height: var(--prop-row-h);
+  box-sizing: border-box;
+}
+.prop-row-control > input[type='range'] { flex: 1; min-width: 0; }
+.prop-row-control > input[type='color'] {
+  flex: none;
+  width: 40px;
+  padding: 1px;
+}
+.prop-row-control > input[type='number'] { width: 64px; flex: none; }
+.prop-row-control > input[type='text'] { flex: 1; min-width: 0; }
+.prop-row-control > select { flex: 1; min-width: 0; }
+
+/* Numeric readout beside a slider. */
+.prop-row-control > .prop-num {
+  flex: none;
+  width: 40px;
+  text-align: right;
+}
+
+/* An indented sub-row (gradient editor) hangs under its channel row. Indented
+ * just past the socket column so its own controls have the panel's full width
+ * (a full label-column indent overflowed the narrow Properties dock). */
+.prop-subrow {
+  margin-left: calc(var(--prop-socket-w) + var(--prop-gap) * 2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

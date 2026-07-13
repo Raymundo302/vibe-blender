@@ -47,6 +47,11 @@ runE2e(async (t) => {
   const matId = await t.evaluate('window.__app.scene.activeObject.materialId');
   t.check('New assigns a material to the cube', matId !== null);
 
+  // UR16-2: normal/rough/metal maps live under the SUPER (everything) shader —
+  // switch to it so the map affordances appear.
+  await t.evaluate(`window.__materialTab.setShader('super')`);
+  await t.sleep(140);
+
   // Map-slot UI is present.
   t.check('normal-map file input rendered',
     await t.evaluate(`!!document.querySelector('.material-tab-normalfile')`));
@@ -57,8 +62,10 @@ runE2e(async (t) => {
       const s = document.querySelector('.material-tab-normal-strength');
       return !!s && s.min === '0' && s.max === '2' && s.step === '0.05';
     })()`));
-  t.check('roughness + metallic file inputs rendered',
-    await t.evaluate(`!!document.querySelector('.material-tab-roughfile') && !!document.querySelector('.material-tab-metalfile')`));
+  // UR16-2: roughness/metallic maps attach through their channel sockets (image
+  // kind) rather than standalone file rows — verify those channel rows exist.
+  t.check('roughness + metallic channel rows rendered',
+    await t.evaluate(`!!document.querySelector('.prop-row[data-channel="roughness"]') && !!document.querySelector('.prop-row[data-channel="metallic"]')`));
 
   // Rendered shading + a pre-map full-frame capture stashed in-page for a
   // deterministic before/after diff (rasterized rendered mode is stable across

@@ -91,6 +91,7 @@ uniform vec2  uResolution;
 uniform int   uSampleIndex;
 uniform uint  uFrameSeed;
 uniform float uJitter;            // 1.0 = sub-pixel jitter on, 0.0 = center rays
+uniform float uTransparent;       // 1.0 = transparent film: skip world for primary ray (UR16-3)
 uniform highp sampler2D uPrevAccum;
 
 out vec4 fragColor;
@@ -457,7 +458,12 @@ vec4 traceRay(vec3 orig, vec3 dir) {
       h = traceClosest(ox, dd);
     }
     if (depth == 0) primaryHit = h.tri >= 0 ? 1.0 : 0.0;
-    if (h.tri < 0) { rad += thr * worldSky(dd); break; }
+    if (h.tri < 0) {
+      // Transparent film (UR16-3): the PRIMARY (depth-0) miss adds NO world
+      // backdrop (alpha stays via primaryHit=0); deeper misses still light.
+      if (!(depth == 0 && uTransparent > 0.5)) rad += thr * worldSky(dd);
+      break;
+    }
     int mat = int(fetchTexel(uTris, uTrisW, h.tri * TRI_TEXELS).w + 0.5);
     vec4 m0 = matT(mat, 0), m1 = matT(mat, 1), m2 = matT(mat, 2), m3 = matT(mat, 3);
     vec3 albedo = m0.rgb;

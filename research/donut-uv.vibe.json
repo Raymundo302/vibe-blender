@@ -1,6 +1,6 @@
 {
   "format": "vibe-blender-scene",
-  "version": 9,
+  "version": 20,
   "camera": {
     "target": [
       -0.090318,
@@ -41,18 +41,36 @@
   "frameStart": 1,
   "frameEnd": 120,
   "frameCurrent": 1,
+  "renderSettings": {
+    "width": 960,
+    "height": 540
+  },
   "collections": [],
   "materials": [
     {
       "id": 0,
       "name": "Material.001",
-      "baseColor": [
-        0.905882,
-        0.65098,
-        0.768627
-      ],
-      "metallic": 0,
-      "roughness": 0.25,
+      "shader": "diffuse",
+      "color": {
+        "kind": "checker",
+        "value": [
+          0.905882,
+          0.65098,
+          0.768627
+        ]
+      },
+      "roughness": {
+        "kind": "value",
+        "value": 0.25
+      },
+      "metallic": {
+        "kind": "value",
+        "value": 0
+      },
+      "alpha": {
+        "kind": "value",
+        "value": 1
+      },
       "emissive": [
         0,
         0,
@@ -60,27 +78,32 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0.4,
-      "subsurfaceRadius": 0.05,
-      "texKind": "checker",
-      "texDataUrl": null,
-      "normalDataUrl": null,
-      "normalIsBump": false,
-      "normalStrength": 1,
-      "roughDataUrl": null,
-      "metalDataUrl": null,
-      "nodeGraph": null,
-      "useNodes": false
+      "subsurfaceRadius": 0.05
     },
     {
       "id": 1,
       "name": "DonutBrown",
-      "baseColor": [
-        0.45,
-        0.24,
-        0.12
-      ],
-      "metallic": 0,
-      "roughness": 0.55,
+      "shader": "diffuse",
+      "color": {
+        "kind": "value",
+        "value": [
+          0.45,
+          0.24,
+          0.12
+        ]
+      },
+      "roughness": {
+        "kind": "value",
+        "value": 0.55
+      },
+      "metallic": {
+        "kind": "value",
+        "value": 0
+      },
+      "alpha": {
+        "kind": "value",
+        "value": 1
+      },
       "emissive": [
         0,
         0,
@@ -88,27 +111,32 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0.6,
-      "subsurfaceRadius": 0.1,
-      "texKind": "none",
-      "texDataUrl": null,
-      "normalDataUrl": null,
-      "normalIsBump": false,
-      "normalStrength": 1,
-      "roughDataUrl": null,
-      "metalDataUrl": null,
-      "nodeGraph": null,
-      "useNodes": false
+      "subsurfaceRadius": 0.1
     },
     {
       "id": 2,
       "name": "Ceramic",
-      "baseColor": [
-        0.92,
-        0.92,
-        0.9
-      ],
-      "metallic": 0,
-      "roughness": 0.15,
+      "shader": "diffuse",
+      "color": {
+        "kind": "value",
+        "value": [
+          0.92,
+          0.92,
+          0.9
+        ]
+      },
+      "roughness": {
+        "kind": "value",
+        "value": 0.15
+      },
+      "metallic": {
+        "kind": "value",
+        "value": 0
+      },
+      "alpha": {
+        "kind": "value",
+        "value": 1
+      },
       "emissive": [
         0,
         0,
@@ -116,27 +144,32 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0,
-      "subsurfaceRadius": 0.05,
-      "texKind": "none",
-      "texDataUrl": null,
-      "normalDataUrl": null,
-      "normalIsBump": false,
-      "normalStrength": 1,
-      "roughDataUrl": null,
-      "metalDataUrl": null,
-      "nodeGraph": null,
-      "useNodes": false
+      "subsurfaceRadius": 0.05
     },
     {
       "id": 3,
       "name": "TableGrey",
-      "baseColor": [
-        0.18,
-        0.18,
-        0.2
-      ],
-      "metallic": 0,
-      "roughness": 0.8,
+      "shader": "diffuse",
+      "color": {
+        "kind": "value",
+        "value": [
+          0.18,
+          0.18,
+          0.2
+        ]
+      },
+      "roughness": {
+        "kind": "value",
+        "value": 0.8
+      },
+      "metallic": {
+        "kind": "value",
+        "value": 0
+      },
+      "alpha": {
+        "kind": "value",
+        "value": 1
+      },
       "emissive": [
         0,
         0,
@@ -144,16 +177,7 @@
       ],
       "emissiveStrength": 0,
       "subsurfaceWeight": 0,
-      "subsurfaceRadius": 0.05,
-      "texKind": "none",
-      "texDataUrl": null,
-      "normalDataUrl": null,
-      "normalIsBump": false,
-      "normalStrength": 1,
-      "roughDataUrl": null,
-      "metalDataUrl": null,
-      "nodeGraph": null,
-      "useNodes": false
+      "subsurfaceRadius": 0.05
     }
   ],
   "objects": [
@@ -37253,7 +37277,9 @@
         "focalLength": 50,
         "near": 0.1,
         "far": 500,
-        "lockToView": false
+        "lockToView": false,
+        "dof": false,
+        "fStop": 2.8
       }
     },
     {

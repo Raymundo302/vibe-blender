@@ -40,8 +40,10 @@ runE2e(async (t) => {
     if (b) b.click();
   })()`);
   await t.sleep(80);
-  t.check('Material tab texture kind select exists',
-    await t.evaluate(`!!document.querySelector('.material-tab-texkind')`));
+  // UR16-2: the detached "Texture" kind select was folded into the colour
+  // socket. The colour channel row now carries the texture affordance.
+  t.check('Material tab colour channel row exists',
+    await t.evaluate(`!!document.querySelector('.material-tab-fields .prop-row[data-channel="color"]')`));
 
   // Luminance spread across a horizontal strip through the viewport center — a
   // checkered face straddles multiple cells → large spread; a flat face → small.
@@ -71,12 +73,9 @@ runE2e(async (t) => {
   const noneSpread = await centerStripSpread();
   t.check('untextured face is near-uniform (regression baseline)', noneSpread < 30, `spread ${noneSpread.toFixed(1)}`);
 
-  // --- Checker via the Material tab select ---
-  await t.evaluate(`(() => {
-    const sel = document.querySelector('.material-tab-texkind');
-    sel.value = 'checker';
-    sel.dispatchEvent(new Event('change'));
-  })()`);
+  // --- Checker via the tab (UR16-2: setChecker sets the colour channel to the
+  //     procedural checker in one undo step). ---
+  await t.evaluate(`window.__materialTab.setChecker()`);
   await t.sleep(80);
   t.check('material texKind is now checker',
     (await t.evaluate(`window.__materialTab.material().texKind`)) === 'checker');

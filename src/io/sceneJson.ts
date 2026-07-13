@@ -428,6 +428,8 @@ export function serializeScene(scene: Scene, camera: OrbitCamera): string {
     renderSettings: {
       width: scene.renderSettings.width,
       height: scene.renderSettings.height,
+      // Transparent film (UR16-3) — omitted-tolerant on load (old scenes → false).
+      transparent: scene.renderSettings.transparent ?? false,
     },
     collections: scene.collections.map((c) => ({ name: c.name, visible: c.visible })),
     // Materials in the v20 socket format (named shader + per-channel inputs).
@@ -537,8 +539,8 @@ interface SceneData {
   frameStart: number;
   frameEnd: number;
   frameCurrent: number;
-  /** Output resolution (absent pre-v12 → 1920×1080). */
-  renderSettings: { width: number; height: number };
+  /** Output resolution (absent pre-v12 → 1920×1080) + transparent film (UR16-3). */
+  renderSettings: { width: number; height: number; transparent: boolean };
   /** File format version, for load-time migrations (v8: Y-up → Z-up). */
   version: number;
 }
@@ -707,8 +709,8 @@ function parseWorld(v: unknown): World {
  * Parse the output resolution block (absent pre-v12 → 1920×1080). Dimensions
  * must be positive integers; non-integers are floored, sub-1 values clamped to 1.
  */
-function parseRenderSettings(v: unknown): { width: number; height: number } {
-  if (v === undefined || v === null) return { width: 1920, height: 1080 };
+function parseRenderSettings(v: unknown): { width: number; height: number; transparent: boolean } {
+  if (v === undefined || v === null) return { width: 1920, height: 1080, transparent: false };
   if (typeof v !== 'object' || Array.isArray(v)) fail('renderSettings must be an object');
   const r = v as Record<string, unknown>;
   const dim = (raw: unknown, where: string): number => {
@@ -718,6 +720,8 @@ function parseRenderSettings(v: unknown): { width: number; height: number } {
   return {
     width: r.width === undefined ? 1920 : dim(r.width, 'renderSettings.width'),
     height: r.height === undefined ? 1080 : dim(r.height, 'renderSettings.height'),
+    // Transparent film (UR16-3): absent pre-UR16-3 → false; any non-boolean → false.
+    transparent: r.transparent === true,
   };
 }
 
@@ -1597,8 +1601,12 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   scene.frameStart = data.frameStart;
   scene.frameEnd = data.frameEnd;
   scene.frameCurrent = data.frameCurrent;
-  // Output resolution (v12/UR5-5).
-  scene.renderSettings = { width: data.renderSettings.width, height: data.renderSettings.height };
+  // Output resolution (v12/UR5-5) + transparent film (UR16-3).
+  scene.renderSettings = {
+    width: data.renderSettings.width,
+    height: data.renderSettings.height,
+    transparent: data.renderSettings.transparent,
+  };
   for (const [i, { od }] of built.entries()) {
     if (od.anim) rebuilt[i].anim = od.anim;
   }

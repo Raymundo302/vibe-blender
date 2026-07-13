@@ -1,0 +1,30 @@
+/* UR16-2 — shared viewport-clamped popover (socket menus, shader chooser). */
+.vb-popover {
+  position: fixed;
+  z-index: 10000;
+  min-width: 120px;
+  background: #2b2b2b;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.vb-popover-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ddd;
+  font: inherit;
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.vb-popover-item:hover { background: #3d6ea5; color: #fff; }
+.vb-popover-item.is-active { color: #e8a33d; }

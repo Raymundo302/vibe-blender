@@ -83,6 +83,11 @@ runE2e(async (t) => {
     (await t.evaluate('window.__app.scene.activeObject.materialId')) !== null);
   const matId = await t.evaluate('window.__app.scene.activeObject.materialId');
 
+  // UR16-2: subsurface lives under the SUPER (everything) shader — switch to it
+  // so the subsurface weight/radius controls appear in the tab.
+  await t.evaluate(`window.__materialTab.setShader('super')`);
+  await t.sleep(140);
+
   // Warm skin-ish base color via the UI so the SSS glow is tinted AND so donut
   // pixels are separable from the neutral floor by their R-B warmth.
   await t.evaluate(`(() => {

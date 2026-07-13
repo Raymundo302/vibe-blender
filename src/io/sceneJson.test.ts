@@ -1005,7 +1005,7 @@ describe('sceneJson output resolution (v12 / UR5-5)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.renderSettings).toEqual({ width: 1920, height: 1080 });
+    expect(json.renderSettings).toEqual({ width: 1920, height: 1080, transparent: false });
   });
 
   it('round-trips a custom resolution', () => {
@@ -1014,7 +1014,7 @@ describe('sceneJson output resolution (v12 / UR5-5)', () => {
     scene.renderSettings = { width: 1000, height: 1000 };
     const dst = new Scene();
     applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
-    expect(dst.renderSettings).toEqual({ width: 1000, height: 1000 });
+    expect(dst.renderSettings).toEqual({ width: 1000, height: 1000, transparent: false });
   });
 
   it('a non-square resolution survives byte-identically', () => {
@@ -1036,7 +1036,27 @@ describe('sceneJson output resolution (v12 / UR5-5)', () => {
     const dst = new Scene();
     dst.renderSettings = { width: 640, height: 480 }; // prove it is overwritten
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
-    expect(dst.renderSettings).toEqual({ width: 1920, height: 1080 });
+    expect(dst.renderSettings).toEqual({ width: 1920, height: 1080, transparent: false });
+  });
+
+  it('round-trips the transparent-film flag (UR16-3)', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    scene.renderSettings = { width: 800, height: 600, transparent: true };
+    const dst = new Scene();
+    applySceneJson(serializeScene(scene, new OrbitCamera()), dst, new OrbitCamera());
+    expect(dst.renderSettings).toEqual({ width: 800, height: 600, transparent: true });
+  });
+
+  it('old files without a transparent key default it to false (UR16-3)', () => {
+    const scene = new Scene();
+    scene.add('Cube', makeCube());
+    const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    delete json.renderSettings.transparent; // pre-UR16-3 file
+    const dst = new Scene();
+    dst.renderSettings = { width: 1, height: 1, transparent: true }; // prove overwrite
+    applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
+    expect(dst.renderSettings.transparent).toBe(false);
   });
 
   it('clamps sub-1 / non-integer dimensions on load', () => {
@@ -1046,7 +1066,7 @@ describe('sceneJson output resolution (v12 / UR5-5)', () => {
     json.renderSettings = { width: 0, height: 720.7 };
     const dst = new Scene();
     applySceneJson(JSON.stringify(json), dst, new OrbitCamera());
-    expect(dst.renderSettings).toEqual({ width: 1, height: 720 });
+    expect(dst.renderSettings).toEqual({ width: 1, height: 720, transparent: false });
   });
 });
 
