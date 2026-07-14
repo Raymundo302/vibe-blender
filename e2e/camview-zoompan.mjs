@@ -65,6 +65,21 @@ runE2e(async (t) => {
   t.check('render pick hits the cube through the zoomed/panned frame', check.pickId === check.cubeId);
   t.check('input ray matches the render frame after zoom+pan (miss ≈ 0)', check.miss < 0.02, `miss ${check.miss.toFixed(4)}`);
 
+  // Zooming the frame past the canvas must NOT overflow #viewport-wrap — an
+  // oversized passepartout used to trigger scrollbars, shrinking the canvas and
+  // oscillating the frame every rAF ("stuck between two zoom positions").
+  await t.evaluate(`(() => { window.__app.renderer.camView = { zoom: 3, panX: 0.1, panY: 0.05 }; })()`);
+  await t.sleep(120);
+  const over = await t.evaluate(`(() => {
+    const wrap = document.getElementById('viewport-wrap');
+    const de = document.scrollingElement || document.documentElement;
+    return Math.max(0, wrap.scrollWidth - wrap.clientWidth, wrap.scrollHeight - wrap.clientHeight,
+      de.scrollWidth - de.clientWidth, de.scrollHeight - de.clientHeight);
+  })()`);
+  t.check('a zoomed-in passepartout does not overflow the viewport (no scrollbar loop)', over <= 1, `overflow ${over}px`);
+  await t.evaluate(`(() => { window.__app.renderer.camView = { zoom: 1, panX: 0, panY: 0 }; })()`);
+  await t.sleep(60);
+
   // A plain MMB (no shift) still EXITS camera view.
   const rect = await t.evaluate(`(() => { const r = document.querySelector('canvas').getBoundingClientRect(); return { x: r.left + r.width/2, y: r.top + r.height/2 }; })()`);
   await t.mouse('mouseMoved', rect.x, rect.y);

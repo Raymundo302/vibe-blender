@@ -12,6 +12,12 @@
   inset: 0;
   pointer-events: none;
   z-index: 15; /* over the canvas, under the N-panel (z 30+) and menus */
+  /* Camera-view zoom can push the frame + edge strips past the viewport (a
+   * zoomed-IN frame is larger than the canvas, at negative offsets). Clip them
+   * to the viewport box so they never overflow #viewport-wrap and trigger
+   * scrollbars — which would shrink the canvas, reflow the frame, and oscillate
+   * every frame ("stuck between two zoom positions"). */
+  overflow: hidden;
 }
 
 .passepartout-mask {
