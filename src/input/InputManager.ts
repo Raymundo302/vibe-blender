@@ -64,6 +64,7 @@ import { ExtractElementController } from '../ui/extractOverlay';
 import { textEditState, TextEditSession } from '../tools/textEdit';
 import { TextCommand } from '../core/undo/textCommands';
 import { CurveMoveOperator, appendCurvePoint } from '../tools/curveMove';
+import { SurfaceMoveOperator } from '../tools/surfaceMove';
 import { CurveCommand } from '../core/undo/curveCommands';
 import { handleKey } from '../core/curve/CurveEdit';
 import { JoinObjectsCommand } from '../core/undo/joinCommand';
@@ -908,6 +909,12 @@ export class InputManager {
         else this.pickCurvePointAt(e.shiftKey);
         return;
       }
+      // Surface edit mode (NB-A2): click selects the nearest net point; Shift
+      // toggles; a miss (no Shift) clears the selection.
+      if (this.ctx.scene.surfaceEdit) {
+        this.pickSurfacePointAt(e.shiftKey);
+        return;
+      }
       // Edit mode: click-select the vert/edge/face under the cursor for the
       // current element mode. Alt = loop select; Shift toggles/extends; a miss
       // (no Shift) clears all.
@@ -1259,6 +1266,12 @@ export class InputManager {
         this.ctx.setStatus('');
         return;
       }
+      // Already in surface edit → Tab exits back to Object Mode (NB-A2).
+      if (scene.surfaceEdit) {
+        scene.exitSurfaceEdit();
+        this.ctx.setStatus('');
+        return;
+      }
       // Already browsing → Tab exits page mode (cancel any Extract tool first).
       if (pageModeState.object) {
         extractState.controller?.cancel();
@@ -1291,6 +1304,13 @@ export class InputManager {
       if (!scene.editMode && active?.kind === 'curve' && active.curve) {
         scene.enterCurveEdit(active.id);
         this.ctx.setStatus('Curve Edit — click points, G: move, Ctrl+click: add, X: delete, Tab/Esc: exit');
+        return;
+      }
+      // Surface object active → Surface Edit mode (control net), NOT mesh edit
+      // (a surface has no base mesh; its mesh is tessellated) — NB-A2.
+      if (!scene.editMode && active?.kind === 'surface' && active.surface) {
+        scene.enterSurfaceEdit(active.id);
+        this.ctx.setStatus('Surface Edit — click points, G: move, Tab/Esc: exit');
         return;
       }
       if (scene.editMode) {
@@ -1449,6 +1469,12 @@ export class InputManager {
     // beside the mesh edit-mode branch so the same globals above still apply.
     if (this.ctx.scene.curveEdit) {
       this.onCurveEditKey(e, key);
+      return;
+    }
+
+    // Surface edit mode (NB-A2): its own small keymap (G / A / Esc).
+    if (this.ctx.scene.surfaceEdit) {
+      this.onSurfaceEditKey(e, key);
       return;
     }
 
@@ -1912,6 +1938,60 @@ export class InputManager {
     this.ctx.undo.push(cmd);
     sel.clearSelection();
     this.ctx.setStatus(`Deleted ${idx.length} control point(s)`);
+  }
+
+  // --- Surface edit mode (NB-A2) ---------------------------------------------
+
+  /** Surface-edit keymap: G move, A (de)select all, Esc exit. */
+  private onSurfaceEditKey(e: KeyboardEvent, key: string): void {
+    const scene = this.ctx.scene;
+    const sel = scene.surfaceEdit!;
+    const obj = scene.surfaceEditObject;
+    if (!obj || !obj.surface) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      scene.exitSurfaceEdit();
+      this.ctx.setStatus('');
+      return;
+    }
+    if (key === 'a' && e.altKey && !e.ctrlKey) {
+      e.preventDefault();
+      sel.clearSelection();
+      return;
+    }
+    if (key === 'a' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      sel.points.clear();
+      obj.surface.points.forEach((_, i) => sel.points.add(i));
+      sel.touch();
+      return;
+    }
+    if (key === 'g' && !e.ctrlKey && !e.altKey) {
+      this.startSurfaceMove();
+      return;
+    }
+  }
+
+  /** Surface edit G: modal move of the selected control-net points. */
+  startSurfaceMove(): void {
+    this.startOperator(new SurfaceMoveOperator());
+  }
+
+  /** Click-select the net point under the cursor (Shift toggles). */
+  private pickSurfacePointAt(shift: boolean): void {
+    const scene = this.ctx.scene;
+    const sel = scene.surfaceEdit;
+    if (!sel) return;
+    const hit = this.renderer.pickSurfacePoint(scene, this.ctx.camera, this.pointer.x, this.pointer.y);
+    if (!hit) {
+      if (!shift) sel.clearSelection();
+      return;
+    }
+    if (!shift) sel.points.clear();
+    if (shift && sel.points.has(hit.index)) sel.points.delete(hit.index);
+    else sel.points.add(hit.index);
+    sel.touch();
   }
 
   /** Edit-mode keymap. Element tools (G/R/S, E, I, X, ...) arrive with P2-3..P2-6. */

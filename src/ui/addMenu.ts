@@ -2,8 +2,9 @@ import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import { PRIMITIVES, type PrimitiveDef } from '../core/mesh/primitives';
 import { AddObjectsCommand } from '../core/undo/objectCommands';
-import { CAMERA_SPAWN_ROTATION, type LightType } from '../core/scene/objectData';
+import { CAMERA_SPAWN_ROTATION, type LightType, type SurfaceData } from '../core/scene/objectData';
 import { curvePreset, type CurvePreset } from '../core/curve/presets';
+import { surfPatch, surfSphere, surfCylinder, surfCone, surfTorus } from '../core/nurbs/primitives';
 import { pickImagePlane, type ImagePlaneMode } from '../tools/imagePlane';
 import { regenerateTextMesh } from '../tools/textObject';
 import { WebAddDialog } from './webAddDialog';
@@ -20,6 +21,16 @@ const LIGHTS: { name: string; type: LightType }[] = [
   { name: 'Sun', type: 'sun' },
   { name: 'Spot', type: 'spot' },
   { name: 'Area', type: 'area' },
+];
+
+/** Add ▸ Surface ▸ (NB-A1): NURBS surface primitives. `label` is the menu row;
+ *  `name` is the object name (Blender's Surf* convention). */
+const SURFACES: { label: string; name: string; make: () => SurfaceData }[] = [
+  { label: 'Patch', name: 'SurfPatch', make: () => surfPatch() },
+  { label: 'Sphere', name: 'SurfSphere', make: () => surfSphere() },
+  { label: 'Cylinder', name: 'SurfCylinder', make: () => surfCylinder() },
+  { label: 'Cone', name: 'SurfCone', make: () => surfCone() },
+  { label: 'Torus', name: 'SurfTorus', make: () => surfTorus() },
 ];
 
 /** How long the flyout lingers after the pointer leaves it (gap-forgiveness). */
@@ -86,6 +97,10 @@ export class AddMenu {
         label: preset === 'bezier' ? 'Bezier' : preset === 'circle' ? 'Circle' : 'NURBS',
         run: () => this.addCurve(preset),
       })));
+    // Surface ▸ (NB-A1): NURBS surface primitives (exact rational quadrics),
+    // spawned at the cursor exactly like Curve ▸.
+    this.category('Surface', () =>
+      SURFACES.map((def) => ({ label: def.label, run: () => this.addSurface(def) })));
     this.directItem('Camera', () =>
       this.commitAdd('Camera', this.opts.scene.addCamera('Camera')));
     // Empty (UR5-7): a null object for rigging/targeting (DoF focus, look-at).
@@ -260,6 +275,11 @@ export class AddMenu {
     const { name, data } = curvePreset(preset);
     const obj = this.opts.scene.addCurve(name, data);
     this.commitAdd(name, obj);
+  }
+
+  private addSurface(def: { name: string; make: () => SurfaceData }): void {
+    const obj = this.opts.scene.addSurface(def.name, def.make());
+    this.commitAdd(def.name, obj);
   }
 
   private addPrimitive(def: PrimitiveDef): void {

@@ -1,0 +1,49 @@
+.surface-tab .surface-tab-section {
+  margin: 10px 0 4px 0;
+}
+.surface-tab .surface-tab-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+.surface-tab .surface-tab-label {
+  flex: 0 0 84px;
+  font-size: 10px;
+}
+.surface-tab-input,
+.surface-tab-select {
+  flex: 1;
+  min-width: 0;
+  background: #1d1d1d;
+  color: #e6e6e6;
+  border: 1px solid #3a3a3a;
+  border-radius: 3px;
+  padding: 2px 5px;
+}
+.surface-tab-input:disabled { opacity: 0.4; }
+.surface-tab-info {
+  font-size: 10px;
+  color: #9a9a9a;
+  margin: 4px 0 2px 0;
+}
+.surface-tab-btn-row {
+  display: flex;
+  gap: 6px;
+}
+.surface-tab-btn {
+  flex: 1;
+  background: #3a3a3a;
+  color: #f0f0f0;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  padding: 6px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.surface-tab-btn:hover { background: #474747; }
+.surface-tab-sel {
+  margin-top: 6px;
+  border-top: 1px solid #333;
+  padding-top: 2px;
+}

@@ -8,6 +8,17 @@ import { TransformCommand } from '../core/undo/commands';
 import { CameraCommand } from './cameraTab';
 import { focalLengthToFovY, fovYToFocalLength, clampCurveResolution } from '../core/scene/objectData';
 import { CurveCommand } from '../core/undo/curveCommands';
+import { curveDataDegree } from '../core/nurbs/curve';
+import {
+  clampCurveDegree,
+  curveKnotInfo,
+  insertCurveKnotAt,
+  largestSpanMid,
+  rebuildCurveData,
+  setCurveDegree,
+  CURVE_DEGREE_MIN,
+  CURVE_DEGREE_MAX,
+} from '../core/nurbs/curveOps';
 import { viewPrefs, loadViewPrefs, saveViewPrefs } from '../render/viewPrefs';
 
 /**
@@ -55,6 +66,13 @@ export class NPanel {
   private readonly curveResInput: HTMLInputElement;
   private readonly curveOrderRow: HTMLElement;
   private readonly curveOrderInput: HTMLInputElement;
+  // NB-A4: degree / rebuild / knot-insert operations.
+  private readonly curveDegreeRow: HTMLElement;
+  private readonly curveDegreeInput: HTMLInputElement;
+  private readonly curveRebuildCountInput: HTMLInputElement;
+  private readonly curveRebuildDegInput: HTMLInputElement;
+  private readonly curveInsertBtn: HTMLButtonElement;
+  private readonly curveKnotsEl: HTMLSpanElement;
 
   // --- View tab -----------------------------------------------------------
   private readonly viewBody: HTMLDivElement;
@@ -183,6 +201,67 @@ export class NPanel {
     this.curveOrderRow = this.labelledRow('Order', this.curveOrderInput);
     this.curveBody.appendChild(this.curveOrderRow);
 
+    // --- NB-A4: Degree stepper (shape-preserving elevate / rebuild) ---------
+    // Distinct from Order above: Order sets the raw order field; Degree runs the
+    // exact NURBS degree change (elevateDegree up / rebuild down) via setCurveDegree.
+    this.curveDegreeInput = this.numberInput('curve-degree', CURVE_DEGREE_MIN, CURVE_DEGREE_MAX, 1);
+    this.curveDegreeInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return this.updateItem();
+      // Bezier degree is fixed cubic (the field is disabled) — guard anyway.
+      if (obj.curve.kind === 'bezier') return this.updateItem();
+      const raw = parseFloat(this.curveDegreeInput.value);
+      if (!Number.isFinite(raw)) return this.updateItem();
+      const deg = clampCurveDegree(raw, obj.curve.points.length);
+      if (deg === curveDataDegree(obj.curve)) return this.updateItem();
+      this.undo.push(CurveCommand.capture('Curve Degree', obj, () => { obj.curve = setCurveDegree(obj.curve!, deg); }));
+      this.afterCurveOp(obj);
+    });
+    this.curveDegreeRow = this.labelledRow('Degree', this.curveDegreeInput);
+    this.curveBody.appendChild(this.curveDegreeRow);
+
+    // --- NB-A4: Rebuild row (Points + Degree + button) ----------------------
+    this.curveRebuildCountInput = this.numberInput('curve-rebuild-count', 2, 256, 1);
+    this.curveRebuildDegInput = this.numberInput('curve-rebuild-degree', CURVE_DEGREE_MIN, CURVE_DEGREE_MAX, 1);
+    const rebuildBtn = this.makeButton('curve-rebuild', 'Rebuild', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return;
+      const count = Math.round(parseFloat(this.curveRebuildCountInput.value));
+      const deg = Math.round(parseFloat(this.curveRebuildDegInput.value));
+      if (!Number.isFinite(count) || !Number.isFinite(deg)) return this.updateItem();
+      this.undo.push(CurveCommand.capture('Rebuild Curve', obj, () => { obj.curve = rebuildCurveData(obj.curve!, count, deg); }));
+      this.afterCurveOp(obj);
+    });
+    const rebuildRow = document.createElement('div');
+    rebuildRow.className = 'n-panel-field-row';
+    const rebuildLabel = document.createElement('span');
+    rebuildLabel.className = 'n-panel-field-label';
+    rebuildLabel.textContent = 'Rebuild';
+    this.curveRebuildCountInput.title = 'Control points';
+    this.curveRebuildDegInput.title = 'Degree';
+    rebuildRow.append(rebuildLabel, this.curveRebuildCountInput, this.curveRebuildDegInput, rebuildBtn);
+    this.curveBody.appendChild(rebuildRow);
+
+    // --- NB-A4: Insert Knot button (open NURBS only) ------------------------
+    this.curveInsertBtn = this.makeButton('curve-insert-knot', 'Insert Knot', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return;
+      const u = largestSpanMid(obj.curve);
+      if (u === null) return; // button is disabled in this state anyway
+      this.undo.push(CurveCommand.capture('Insert Knot', obj, () => { obj.curve = insertCurveKnotAt(obj.curve!, u); }));
+      this.afterCurveOp(obj);
+    });
+    const insertRow = document.createElement('div');
+    insertRow.className = 'n-panel-field-row';
+    insertRow.append(this.curveInsertBtn);
+    this.curveBody.appendChild(insertRow);
+
+    // --- NB-A4: Knots / spans read-out --------------------------------------
+    this.curveKnotsEl = document.createElement('span');
+    this.curveKnotsEl.className = 'n-panel-value';
+    this.curveKnotsEl.dataset.field = 'curve-knots';
+    this.curveBody.appendChild(this.labelledRow('Knots', this.curveKnotsEl));
+
     this.itemContent.appendChild(this.curveBody);
 
     content.appendChild(this.itemContent);
@@ -304,6 +383,26 @@ export class NPanel {
     input.max = String(max);
     input.step = String(step);
     return input;
+  }
+
+  private makeButton(field: string, label: string, onClick: () => void): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'n-panel-btn';
+    btn.dataset.action = field;
+    btn.textContent = label;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  /** Post-op housekeeping for the NB-A4 curve operations: keep any live curve-edit
+   *  selection in range of the (possibly changed) point count, refresh the overlay,
+   *  and re-render the panel. The polyline itself re-evaluates from the new payload. */
+  private afterCurveOp(obj: SceneObject): void {
+    const n = obj.curve?.points.length ?? 0;
+    if (this.scene.curveEdit && this.scene.curveEditObject === obj) this.scene.curveEdit.prune(n);
+    this.scene.curveEdit?.touch();
+    this.updateItem();
   }
 
   private labelledRow(text: string, control: HTMLElement): HTMLElement {
@@ -503,6 +602,36 @@ export class NPanel {
     } else {
       this.curveOrderRow.style.display = 'none';
     }
+
+    // NB-A4: Degree stepper — shows the effective degree; disabled (with a
+    // tooltip) for bezier, whose degree is fixed cubic (convert via Rebuild).
+    const degree = curveDataDegree(c);
+    if (document.activeElement !== this.curveDegreeInput) {
+      const s = String(degree);
+      if (this.curveDegreeInput.value !== s) this.curveDegreeInput.value = s;
+    }
+    const isBezier = c.kind === 'bezier';
+    this.curveDegreeInput.disabled = isBezier;
+    this.curveDegreeInput.title = isBezier ? 'Bezier is cubic' : '';
+
+    // NB-A4: Rebuild defaults track the current point count + degree.
+    if (document.activeElement !== this.curveRebuildCountInput) {
+      const s = String(c.points.length);
+      if (this.curveRebuildCountInput.value !== s) this.curveRebuildCountInput.value = s;
+    }
+    if (document.activeElement !== this.curveRebuildDegInput) {
+      const s = String(degree);
+      if (this.curveRebuildDegInput.value !== s) this.curveRebuildDegInput.value = s;
+    }
+
+    // NB-A4: Insert Knot — only meaningful for open NURBS (a real editable knot
+    // vector); disabled for bezier and cyclic curves.
+    this.curveInsertBtn.disabled = largestSpanMid(c) === null;
+
+    // NB-A4: knots/spans read-out so degree/span state is visible.
+    const info = curveKnotInfo(c);
+    const text = info ? `knots: ${info.knots} (spans: ${info.spans})` : '—';
+    if (this.curveKnotsEl.textContent !== text) this.curveKnotsEl.textContent = text;
   }
 
   private updateView(): void {

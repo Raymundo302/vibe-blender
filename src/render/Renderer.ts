@@ -12,6 +12,7 @@ import { PickingPass } from './passes/pickingPass';
 import { GizmoPass, GIZMO_PICK_BASE, GIZMO_PLANE_BASE, GIZMO_AXES, GIZMO_PLANES, gizmoScreenScale, type GizmoAxis, type GizmoPlane, type AxisColors } from './passes/gizmoPass';
 import { EditOverlayPass } from './passes/editOverlayPass';
 import { CurveEditPass } from './passes/curveEditPass';
+import { SurfaceNetPass } from './passes/surfaceNetPass';
 import { evaluateCurve, leftHandle, rightHandle } from '../core/curve/eval';
 import { WIRE_MIN_PX, WIRE_MAX_PX } from './passes/ribbon';
 import {
@@ -127,6 +128,7 @@ export class Renderer {
   private readonly gizmoPass: GizmoPass;
   private readonly editOverlayPass: EditOverlayPass;
   private readonly curveEditPass: CurveEditPass;
+  private readonly surfaceNetPass: SurfaceNetPass;
   private readonly elementPickPass: ElementPickPass;
   private readonly renderedPass: RenderedPass;
   private readonly shadowPass: ShadowPass;
@@ -249,6 +251,7 @@ export class Renderer {
     this.gizmoPass = new GizmoPass(gl);
     this.editOverlayPass = new EditOverlayPass(gl);
     this.curveEditPass = new CurveEditPass(gl);
+    this.surfaceNetPass = new SurfaceNetPass(gl);
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     this.renderedPass = new RenderedPass(gl);
     this.shadowPass = new ShadowPass(gl);
@@ -1318,6 +1321,26 @@ export class Renderer {
       this.curveEditPass.render(modelView, proj, curveEditObj.curve, scene.curveEdit);
     }
 
+    // Surface control net (NB-A2): the net of the surface being edited (with the
+    // orange selection tint), plus any object-mode surface whose showNet flag is
+    // on (neutral). Depth cleared so the net is always visible on top, like the
+    // curve edit overlay.
+    const surfEditObj = scene.surfaceEditObject;
+    const netObjs: SceneObject[] = [];
+    if (surfEditObj && scene.surfaceEdit && surfEditObj.surface && scene.effectiveVisible(surfEditObj)) {
+      netObjs.push(surfEditObj);
+    } else if (scene.surfaceEdit === null) {
+      for (const o of visible) if (o.kind === 'surface' && o.surface?.showNet) netObjs.push(o);
+    }
+    if (netObjs.length > 0) {
+      gl.clear(gl.DEPTH_BUFFER_BIT);
+      for (const obj of netObjs) {
+        const modelView = view.mul(scene.worldMatrix(obj));
+        const sel = obj === surfEditObj ? scene.surfaceEdit : null;
+        this.surfaceNetPass.render(obj.id, modelView, proj, obj.surface!, sel);
+      }
+    }
+
     // Translate gizmo — on top of everything (clear depth after outlines).
     // Overlays › Transform Gizmo toggles it; colors follow the axis prefs.
     const gz = overlays.gizmo ? this.gizmoTransform(scene, eye, fovY) : null;
@@ -1387,7 +1410,7 @@ export class Renderer {
    *  the current viewpoint's eye/fovY), or null when hidden. */
   private gizmoTransform(scene: Scene, eye: Vec3, fovY: number): { origin: Vec3; scale: number; quat: Quat } | null {
     if (!this.gizmoVisible) return null;
-    if (scene.editMode || scene.curveEdit) return null; // no object gizmo in edit/curve-edit mode
+    if (scene.editMode || scene.curveEdit || scene.surfaceEdit) return null; // no object gizmo in edit/curve/surface-edit mode
     const active = scene.activeObject;
     if (!active || !active.visible) return null;
     // Origin follows the transform pivot (median / individual→median / active /
@@ -1581,6 +1604,36 @@ export class Renderer {
           if (d < bestD) { bestD = d; best = { kind: 'handle', index: i, side }; }
         }
       }
+    });
+    return best;
+  }
+
+  /**
+   * Surface-edit net pick (NB-A2): the control-net point (FLAT index
+   * iu*pointsV + iv) nearest the cursor by CPU screen-space projection, within
+   * `radius` CSS px (the same tolerance curve edit uses), or null. Mirrors
+   * pickCurveElement — no faces to raster, so we project every control point.
+   */
+  pickSurfacePoint(
+    scene: Scene,
+    camera: OrbitCamera,
+    cssX: number,
+    cssY: number,
+    radius = 12,
+  ): { index: number } | null {
+    const obj = scene.surfaceEditObject;
+    const sel = scene.surfaceEdit;
+    if (!obj || !sel || !obj.surface) return null;
+    const { canvas } = this.ctx;
+    const mvp = camera.projMatrix(canvas.width / canvas.height).mul(camera.viewMatrix()).mul(scene.worldMatrix(obj));
+    let best: { index: number } | null = null;
+    let bestD = radius * radius;
+    obj.surface.points.forEach((pt, i) => {
+      const ndc = mvp.transformPoint(new Vec3(pt.co[0], pt.co[1], pt.co[2]));
+      const x = ((ndc.x + 1) / 2) * canvas.clientWidth;
+      const y = ((1 - ndc.y) / 2) * canvas.clientHeight;
+      const d = (x - cssX) ** 2 + (y - cssY) ** 2;
+      if (d <= bestD) { bestD = d; best = { index: i }; }
     });
     return best;
   }

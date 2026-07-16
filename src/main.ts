@@ -27,6 +27,7 @@ import './ui/lightTab'; // side-effect: registers the Light data tab (P8-1)
 import './ui/cameraTab'; // side-effect: registers the Camera data tab (P8-2)
 import './ui/worldTab'; // side-effect: registers the World tab (P10-4)
 import './ui/textTab'; // side-effect: registers the Text data tab (UR8-2)
+import './ui/surfaceTab'; // side-effect: registers the Surface data tab (NB-A3)
 import { TextDriver, regenerateTextMesh } from './tools/textObject'; // UR8-2 text mesh regen
 import { SurfaceDriver, regenerateSurfaceMesh } from './tools/surfaceObject'; // NB-CORE surface tessellation
 import { applyAnimation } from './core/anim/sampler';
