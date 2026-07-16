@@ -27,6 +27,7 @@ const DEFAULTS = {
   intersections: false, intersectColor: [0.45, 0.45, 0.48],
   hiddenLine: { matcap: true, studio: true, rendered: true, wireframe: false },
   sections: { ao: false, cavity: false, wire: false, intersect: false },
+  matcap: 'studio', // the matcap-gallery selection (2026-07-16)
 };
 
 describe('shadePrefs persistence', () => {
@@ -251,6 +252,18 @@ describe('shadePrefs persistence', () => {
     loadShadePrefs();
     expect(shadePrefs.renderedMode).toBe('live');
     expect(shadePrefs.rayEngine).toBe('gpu');
+  });
+
+  it('round-trips the matcap selection; garbage falls back to studio', () => {
+    localStorage.setItem(V7, JSON.stringify({ matcap: 'gold' }));
+    loadShadePrefs();
+    expect(shadePrefs.matcap).toBe('gold'); // unknown-id fallback happens at use (matcapById)
+    localStorage.setItem(V7, JSON.stringify({ matcap: 42 }));
+    loadShadePrefs();
+    expect(shadePrefs.matcap).toBe('studio');
+    localStorage.setItem(V7, JSON.stringify({ matcap: '' }));
+    loadShadePrefs();
+    expect(shadePrefs.matcap).toBe('studio');
   });
 
   it('round-trips cavity through a v6 blob', () => {

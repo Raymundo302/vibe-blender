@@ -4,6 +4,20 @@
  * Blender's studio look with zero lighting code and no binary assets.
  */
 export function createMatcapTexture(gl: WebGL2RenderingContext, size = 256): WebGLTexture {
+  const canvas = paintMatcapCanvas(size);
+  const tex = gl.createTexture()!;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+/** Paint the procedural Studio matcap into a fresh canvas — shared by the GL
+ *  upload above and the gallery's Studio thumbnail (shadingMenu). */
+export function paintMatcapCanvas(size = 256): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d')!;
@@ -40,12 +54,5 @@ export function createMatcapTexture(gl: WebGL2RenderingContext, size = 256): Web
   ctx.fillStyle = spec;
   ctx.fillRect(0, 0, size, size);
 
-  const tex = gl.createTexture()!;
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  return tex;
+  return canvas;
 }

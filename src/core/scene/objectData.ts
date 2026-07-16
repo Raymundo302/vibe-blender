@@ -549,6 +549,16 @@ export function defaultSurfaceData(): SurfaceData {
 
 // --- Materials ---------------------------------------------------------------
 
+/**
+ * Kinds that can carry a material (Material tab assignability + the renderer's
+ * material-driven draw predicates). Meshes always could; NURBS surfaces render
+ * through their tessellated mesh (NB) and curves through a generated tube
+ * (Pipe), so both consume materials exactly like meshes.
+ */
+export function kindHasMaterial(kind: ObjectKind): boolean {
+  return kind === 'mesh' || kind === 'surface' || kind === 'curve';
+}
+
 /** IOR clamp range (UR10-3). Below 1.0 is unphysical; 2.5 covers diamond. */
 export const IOR_MIN = 1.0;
 export const IOR_MAX = 2.5;

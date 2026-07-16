@@ -88,6 +88,10 @@ export interface ShadePrefs {
   /** Per-section expanded (disclosure) state in the shading dropdown; all
    *  default collapsed (false). UI-only — no render effect. */
   sections: { ao: boolean; cavity: boolean; wire: boolean; intersect: boolean };
+  /** Selected matcap id (render/matcaps.ts gallery). 'studio' = the procedural
+   *  default — bit-identical to the pre-gallery look. Unknown ids load as
+   *  'studio' (stale storage after a gallery rename). */
+  matcap: string;
 }
 
 /** Slider bounds — shared by the UI and the loader's clamping. */
@@ -147,6 +151,7 @@ export function defaultShadePrefs(): ShadePrefs {
     // off in wireframe (classic see-through is the historical default).
     hiddenLine: { matcap: true, studio: true, rendered: true, wireframe: false },
     sections: { ao: false, cavity: false, wire: false, intersect: false }, // all collapsed
+    matcap: 'studio', // the procedural default — pre-gallery look
   };
 }
 
@@ -237,6 +242,10 @@ export function loadShadePrefs(): ShadePrefs {
   }
   if (fromV3 && typeof src.wireHiddenLine === 'boolean') hl.wireframe = src.wireHiddenLine;
   shadePrefs.hiddenLine = hl;
+  // Matcap id: any non-empty string loads; matcapById falls back to Studio for
+  // ids the registry no longer knows (validated at use, not here, so the prefs
+  // module keeps zero imports from the registry).
+  if (typeof shadePrefs.matcap !== 'string' || shadePrefs.matcap === '') shadePrefs.matcap = 'studio';
   // UR15-1 string unions — reject anything that isn't a known value.
   if (shadePrefs.renderedMode !== 'live' && shadePrefs.renderedMode !== 'ray') shadePrefs.renderedMode = 'live';
   if (shadePrefs.rayEngine !== 'gpu' && shadePrefs.rayEngine !== 'cpu') shadePrefs.rayEngine = 'gpu';

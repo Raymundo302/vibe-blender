@@ -1,6 +1,8 @@
 import type { Renderer, ShadingMode } from '../render/Renderer';
 import { shadePrefs, saveShadePrefs, AO_METHODS, AO_RADIUS_RANGE, AO_STRENGTH_RANGE, AO_SAMPLES_RANGE, CAVITY_RANGE, WIRE_MIN_PX_RANGE, WIRE_MAX_PX_RANGE } from '../render/shadePrefs';
 import type { AoMode } from '../render/shadePrefs';
+import { MATCAPS } from '../render/matcaps';
+import { paintMatcapCanvas } from '../render/matcap';
 
 /**
  * Viewport-header shading dropdown (right side of the 3D Viewport area header,
@@ -109,6 +111,7 @@ export class ShadingMenu {
         }
         resyncHiddenLine();
         resyncRenderedSub();
+        resyncMatcapSub();
       });
       modeRows.push({ mode: m.mode, row, icon: m.icon, label: m.label });
       root.appendChild(row);
@@ -190,6 +193,52 @@ export class ShadingMenu {
     };
     root.appendChild(renderedSub);
     resyncRenderedSub();
+
+    // --- Matcap gallery (Ray's sphere sheets, 2026-07-16) -------------------
+    // A thumbnail grid beneath the mode rows, shown only while Matcap is the
+    // active mode (the renderedSub pattern). Click = select + persist; the
+    // Renderer's per-frame syncMatcap picks it up (lazy texture upload).
+    const matcapSub = document.createElement('div');
+    matcapSub.className = 'shading-section-body shading-matcap-sub';
+    matcapSub.dataset.matcapSub = '';
+    const matcapGrid = document.createElement('div');
+    matcapGrid.className = 'shading-matcap-grid';
+    const matcapThumbs = new Map<string, HTMLButtonElement>();
+    for (const entry of MATCAPS) {
+      const cell = document.createElement('button');
+      cell.type = 'button';
+      cell.className = 'shading-matcap-thumb';
+      cell.dataset.matcap = entry.id;
+      cell.title = entry.name;
+      if (entry.url) {
+        const img = document.createElement('img');
+        img.src = entry.url;
+        img.alt = entry.name;
+        img.draggable = false;
+        cell.appendChild(img);
+      } else {
+        // Studio: paint the procedural map small (shared painter).
+        const cnv = paintMatcapCanvas(64);
+        cnv.className = 'shading-matcap-canvas';
+        cell.appendChild(cnv);
+      }
+      cell.addEventListener('click', () => {
+        shadePrefs.matcap = entry.id;
+        saveShadePrefs();
+        for (const [id, el] of matcapThumbs) el.classList.toggle('shading-matcap-active', id === entry.id);
+      });
+      matcapThumbs.set(entry.id, cell);
+      matcapGrid.appendChild(cell);
+    }
+    matcapSub.appendChild(matcapGrid);
+    const resyncMatcapSub = (): void => {
+      matcapSub.style.display = this.renderer.shadingMode === 'matcap' ? '' : 'none';
+      for (const [id, el] of matcapThumbs) {
+        el.classList.toggle('shading-matcap-active', id === shadePrefs.matcap);
+      }
+    };
+    root.appendChild(matcapSub);
+    resyncMatcapSub();
 
     const optHeading = document.createElement('div');
     optHeading.className = 'topbar-menu-heading';

@@ -34,7 +34,7 @@ import { LightDirPass, hasAimArrow } from './passes/lightDirPass';
 import { EmptyAxesPass } from './passes/emptyAxesPass';
 import { ensureBaked } from '../core/nodes/bake';
 import { nodeImageCache } from '../core/nodes/imageCache';
-import { cameraFovY, type Material, type GlareSettings } from '../core/scene/objectData';
+import { kindHasMaterial, cameraFovY, type Material, type GlareSettings } from '../core/scene/objectData';
 import { overlays } from './overlayPrefs';
 import { typeShown, typePickable } from './objectTypePrefs';
 import { shadePrefs } from './shadePrefs';
@@ -44,6 +44,7 @@ import { RayPresentPass } from './passes/rayPresentPass';
 import { ViewportRay } from './viewportRay';
 import { SdfAtlas } from './sdfAtlas';
 import { createMatcapTexture } from './matcap';
+import { matcapById } from './matcaps';
 import { themeViewport } from '../ui/themes';
 import { meshToRenderData } from '../core/mesh/meshToGpu';
 import { meshIntersectionSegments } from '../core/mesh/intersect';
@@ -240,9 +241,16 @@ export class Renderer {
    */
   camView: CamView = identityCamView();
 
+  /** Matcap gallery textures by id ('studio' seeded below; images uploaded
+   *  lazily on first selection). */
+  private readonly matcapTextures = new Map<string, WebGLTexture>();
+  /** Image-matcap URLs currently loading (dedupe guard). */
+  private readonly matcapLoading = new Set<string>();
+
   constructor(private readonly ctx: GlContext) {
     const { gl, canvas } = ctx;
-    this.meshPass = new MeshPass(gl, createMatcapTexture(gl));
+    this.matcapTextures.set('studio', createMatcapTexture(gl));
+    this.meshPass = new MeshPass(gl, this.matcapTextures.get('studio')!);
     this.studioPass = new StudioPass(gl);
     this.texturedPass = new TexturedPass(gl);
     this.wirePass = new WirePass(gl);
@@ -835,20 +843,21 @@ export class Renderer {
     return g && g.enabled ? g : null;
   }
 
-  /** UR8-3: is this a mesh whose material shows its texture in every solid mode? */
+  /** UR8-3: is this a mesh whose material shows its texture in every solid mode?
+   *  (mesh/surface/curve — every material-carrying kind, see kindHasMaterial.) */
   private isAlwaysTextured(obj: SceneObject, scene: Scene): boolean {
-    return obj.kind === 'mesh' && scene.materialOf(obj).alwaysTextured === true;
+    return kindHasMaterial(obj.kind) && scene.materialOf(obj).alwaysTextured === true;
   }
 
   /** UR8-3: is this a mesh whose material alpha-blends (transparent cutout)? */
   private isAlphaBlend(obj: SceneObject, scene: Scene): boolean {
-    return obj.kind === 'mesh' && scene.materialOf(obj).alphaBlend === true;
+    return kindHasMaterial(obj.kind) && scene.materialOf(obj).alphaBlend === true;
   }
 
   /** UR10-3: is this a mesh whose material transmits (glass)? Drawn Cook-Torrance
    *  but alpha-blended with a Fresnel rim (the RenderedPass glass approximation). */
   private isGlass(obj: SceneObject, scene: Scene): boolean {
-    return obj.kind === 'mesh' && (scene.materialOf(obj).transmission ?? 0) > 0
+    return kindHasMaterial(obj.kind) && (scene.materialOf(obj).transmission ?? 0) > 0
       && scene.materialOf(obj).alphaBlend !== true;
   }
 
@@ -857,7 +866,7 @@ export class Renderer {
    *  in the same blended pass as glass — distinct from the shadeless alphaBlend
    *  cutout planes. Excludes glass/alphaBlend (handled by their own predicates). */
   private isBlendedAlpha(obj: SceneObject, scene: Scene): boolean {
-    if (obj.kind !== 'mesh') return false;
+    if (!kindHasMaterial(obj.kind)) return false;
     const mat = scene.materialOf(obj);
     if (mat.alphaBlend === true) return false;
     if ((mat.transmission ?? 0) > 0) return false;
@@ -906,8 +915,42 @@ export class Renderer {
     }
   }
 
+  /**
+   * Keep MeshPass sampling the matcap selected in shadePrefs (the gallery).
+   * Image matcaps upload lazily on first selection; while one is still
+   * loading the previous texture keeps drawing (a one-frame-later pop-in,
+   * never a black flash). Unknown ids resolve to Studio.
+   */
+  private syncMatcap(): void {
+    const entry = matcapById(shadePrefs.matcap);
+    const cached = this.matcapTextures.get(entry.id);
+    if (cached) {
+      this.meshPass.setMatcap(cached, entry.gain);
+      return;
+    }
+    if (!entry.url || this.matcapLoading.has(entry.id)) return;
+    this.matcapLoading.add(entry.id);
+    const img = new Image();
+    img.onload = () => {
+      const { gl } = this.ctx;
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      // Same orientation convention as the procedural canvas upload (no flip).
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.matcapTextures.set(entry.id, tex);
+      this.matcapLoading.delete(entry.id);
+    };
+    img.onerror = () => this.matcapLoading.delete(entry.id);
+    img.src = entry.url;
+  }
+
   render(scene: Scene, camera: OrbitCamera): void {
     const { gl, canvas } = this.ctx;
+    this.syncMatcap();
     if (this.ctx.syncSize()) {
       this.outlinePass.resize(canvas.width, canvas.height);
       this.pickingPass.resize(canvas.width, canvas.height);

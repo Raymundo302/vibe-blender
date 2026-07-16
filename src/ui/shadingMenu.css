@@ -97,3 +97,32 @@
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* Matcap gallery (Ray's sphere sheets, 2026-07-16) — a thumbnail grid under
+   the mode rows, visible only while Matcap is the active mode. */
+.shading-matcap-sub { padding: 2px 0 4px; }
+.shading-matcap-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  padding: 4px 10px 4px 24px; /* match the section-body indent */
+}
+.shading-matcap-thumb {
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  aspect-ratio: 1;
+  overflow: hidden;
+}
+.shading-matcap-thumb img,
+.shading-matcap-thumb .shading-matcap-canvas {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: block;
+}
+.shading-matcap-thumb:hover { border-color: var(--vb-hover, #4a4a4a); }
+.shading-matcap-thumb.shading-matcap-active { border-color: var(--vb-accent, #e78a3a); }

@@ -1,7 +1,7 @@
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack, Command } from '../core/undo/UndoStack';
 import type { Material, MaterialShader, MaterialChannelName, GradientInput, ChannelInput } from '../core/scene/objectData';
-import {
+import { kindHasMaterial,
   MATERIAL_SHADERS, channelsForShader, materialShader,
   getMaterialChannel, setMaterialChannel, cloneGradient, cloneAlpha,
 } from '../core/scene/objectData';
@@ -535,7 +535,7 @@ class MaterialTab {
   ) {
     this.empty = document.createElement('div');
     this.empty.className = 'properties-empty';
-    this.empty.textContent = 'Select a mesh object';
+    this.empty.textContent = 'Select a mesh, surface or curve object';
 
     this.body = document.createElement('div');
     this.body.className = 'properties-body';
@@ -589,7 +589,8 @@ class MaterialTab {
 
   update(): void {
     const obj = this.scene.activeObject;
-    const isMesh = !!obj && obj.kind === 'mesh';
+    // Meshes, NURBS surfaces and curves all carry materials (kindHasMaterial).
+    const isMesh = !!obj && kindHasMaterial(obj.kind);
     if (!isMesh) {
       this.empty.style.display = '';
       this.body.style.display = 'none';
@@ -1186,7 +1187,7 @@ class MaterialTab {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       const obj = this.scene.activeObject;
-      if (!obj || obj.kind !== 'mesh') return;
+      if (!obj || !kindHasMaterial(obj.kind)) return;
       const cmd = InsertKeysCommand.perform(title, this.scene, [obj], channels, this.scene.frameCurrent);
       if (cmd) this.undo.push(cmd);
     });
@@ -1267,13 +1268,13 @@ class MaterialTab {
 
   private material(): Material | null {
     const obj = this.scene.activeObject;
-    if (!obj || obj.kind !== 'mesh' || obj.materialId === null) return null;
+    if (!obj || !kindHasMaterial(obj.kind) || obj.materialId === null) return null;
     return this.scene.getMaterial(obj.materialId) ?? null;
   }
 
   private onSlotChange(): void {
     const obj = this.scene.activeObject;
-    if (!obj || obj.kind !== 'mesh') return;
+    if (!obj || !kindHasMaterial(obj.kind)) return;
     const raw = this.slotSelect.value;
     const after = raw === '' ? null : Number(raw);
     const before = obj.materialId;
@@ -1285,7 +1286,7 @@ class MaterialTab {
 
   private onNew(): void {
     const obj = this.scene.activeObject;
-    if (!obj || obj.kind !== 'mesh') return;
+    if (!obj || !kindHasMaterial(obj.kind)) return;
     this.undo.push(NewMaterialCommand.perform(this.scene, obj));
     this.lastSig = null;
   }

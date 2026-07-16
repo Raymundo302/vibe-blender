@@ -24,6 +24,10 @@ in vec3 v_viewNormal;
 in vec3 v_tint;
 uniform sampler2D u_matcap;
 uniform vec3 u_color; // per-object viewport tint (0..1)
+// Matcap exposure: 2.0 for the procedural Studio map (the historical constant),
+// ~1.45 for image matcaps so a default-grey object shows them as authored
+// (see render/matcaps.ts).
+uniform float u_matcapGain;
 uniform sampler2D u_ao;   // blurred SSAO, sampled by fragment coord (white when off)
 uniform vec2 u_aoTexel;
 out vec4 outColor;
@@ -32,18 +36,27 @@ void main() {
   if (!gl_FrontFacing) n = -n; // two-sided solid shading — light the back face too
   vec2 uv = n.xy * 0.495 + 0.5;
   float ao = texture(u_ao, gl_FragCoord.xy * u_aoTexel).r;
-  outColor = vec4(texture(u_matcap, uv).rgb * 2.0 * u_color * v_tint * ao, 1.0);
+  outColor = vec4(texture(u_matcap, uv).rgb * u_matcapGain * u_color * v_tint * ao, 1.0);
 }`;
 
 /** Matcap-shaded solid mesh pass. */
 export class MeshPass {
   readonly shader: Shader;
+  /** Matcap exposure multiplier (see FRAG comment); the gallery sets it with
+   *  the texture so procedural vs image maps each display as authored. */
+  private gain = 2.0;
 
-  constructor(gl: WebGL2RenderingContext, private readonly matcap: WebGLTexture) {
+  constructor(gl: WebGL2RenderingContext, private matcap: WebGLTexture) {
     this.shader = new Shader(gl, VERT, FRAG, 'mesh-matcap');
     this.gl = gl;
   }
   private readonly gl: WebGL2RenderingContext;
+
+  /** Swap the sampled matcap texture + its gain (the gallery's entry point). */
+  setMatcap(tex: WebGLTexture, gain: number): void {
+    this.matcap = tex;
+    this.gain = gain;
+  }
 
   /** Bind per-frame state; per-object uniforms are set by the caller.
    *  `ao` is the SSAO texture, or the AoPass 1×1 white when AO is off. */
@@ -55,6 +68,7 @@ export class MeshPass {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.matcap);
     this.shader.setInt('u_matcap', 0);
+    this.shader.setFloat('u_matcapGain', this.gain);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, ao);
     gl.activeTexture(gl.TEXTURE0);
