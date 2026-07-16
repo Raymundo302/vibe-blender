@@ -1,0 +1,65 @@
+/* ------------------------------------------------ NB-B2 curve Align popover */
+/* Self-contained so it never depends on theme.css (owned by a parallel worker).
+ * Vite bundles this via the import in alignPopover.ts. Mirrors the collection
+ * menu's palette. */
+.align-popover {
+  position: absolute;
+  z-index: 100;
+  min-width: 190px;
+  background: var(--vb-panel, #2b2b2b);
+  border: 1px solid var(--vb-border, #1a1a1a);
+  border-radius: 4px;
+  padding: 6px 0 8px;
+  font: var(--vb-font, 12px/1.4 system-ui, sans-serif);
+  color: var(--vb-text, #d0d0d0);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+.align-popover-heading {
+  padding: 3px 12px 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vb-muted, #8a8a8a);
+}
+.align-popover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 12px;
+}
+.align-popover-row > label {
+  color: var(--vb-muted, #9a9a9a);
+  white-space: nowrap;
+}
+.align-popover-row > select {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--vb-input, #232323);
+  color: inherit;
+  border: 1px solid var(--vb-border, #1a1a1a);
+  border-radius: 3px;
+  font: inherit;
+  padding: 2px 4px;
+}
+.align-popover-names {
+  padding: 0 12px 4px;
+  font-size: 10px;
+  color: var(--vb-muted, #7a7a7a);
+}
+.align-popover-apply {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 6px 12px 0;
+  padding: 5px 0;
+  border: none;
+  border-radius: 3px;
+  background: var(--vb-accent, #4772b3);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.align-popover-apply:hover {
+  filter: brightness(1.12);
+}

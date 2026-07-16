@@ -4,7 +4,7 @@ import type { SurfaceData } from '../scene/objectData';
 import { clampSurfaceSegs } from '../scene/objectData';
 import { interiorKnots, knotDomain } from './basis';
 import { curveDomain, curvePoint, fromCurveData } from './curve';
-import { fromSurfaceData, surfacePoint, type NSurface } from './surface';
+import { fromSurfaceData, surfaceNormal, surfacePoint, type NSurface } from './surface';
 
 /**
  * NURBS surface tessellation (NB-CORE): SurfaceData → EditableMesh, the derived
@@ -47,11 +47,44 @@ export function paramList(
   return out;
 }
 
-/** Midpoint-refine a parameter list until chord deviation ≤ tol (world units).
- *  `evalAt` maps a parameter to a representative 3D point (a probe row). */
+/** Refinement depth cap (matches the original bisection budget). */
+const ADAPT_MAX_DEPTH = 5;
+/** cos(15°): below this the surface normals at an interval's ends have turned
+ *  enough to warrant a split even when the chord test is satisfied. */
+const NORMAL_COS_TOL = 0.966;
+/** Hard cap on cross-direction probe count (evenly chosen from the current
+ *  cross params) — bounds the O(probes × intervals × depth) evaluation cost. */
+const MAX_PROBES = 9;
+
+/** Up to `cap` evenly-spaced entries from `list` (endpoints always included).
+ *  Deterministic; returns `list` unchanged when it already fits. */
+function pickProbes(list: number[], cap: number): number[] {
+  if (list.length <= cap) return list;
+  const out: number[] = [];
+  let last = -1;
+  for (let i = 0; i < cap; i++) {
+    const idx = Math.round((i * (list.length - 1)) / (cap - 1));
+    if (idx !== last) { out.push(list[idx]); last = idx; }
+  }
+  return out;
+}
+
+/**
+ * Midpoint-refine a parameter list. An interval [a,b] splits when EITHER
+ *  - the true midpoint deviates from the chord by more than `tol` world units
+ *    at any cross-direction probe (feature localized off-center still fires,
+ *    because we probe ALL current cross params, capped), OR
+ *  - the surface normals at the interval's ends deviate by more than ~15°
+ *    (cos < NORMAL_COS_TOL) at any probe — catches high-curvature ridges whose
+ *    chord deviation is tiny.
+ * `pointAt(t, c)` / `normalAt(t, c)` evaluate at the varying param `t` and the
+ * cross-direction param `c`.
+ */
 function refineParams(
   params: number[],
-  evalAt: (t: number) => Vec3[],
+  probes: number[],
+  pointAt: (t: number, cross: number) => Vec3,
+  normalAt: (t: number, cross: number) => Vec3,
   tol: number,
   maxDepth: number,
 ): number[] {
@@ -62,17 +95,15 @@ function refineParams(
     for (let i = 1; i < list.length; i++) {
       const a = list[i - 1], b = list[i];
       const mid = (a + b) / 2;
-      const pa = evalAt(a), pb = evalAt(b), pm = evalAt(mid);
-      // Max deviation of the true midpoint from the chord across probes.
-      let dev = 0;
-      for (let k = 0; k < pm.length; k++) {
-        const chordMid = pa[k].add(pb[k]).scale(0.5);
-        dev = Math.max(dev, chordMid.distanceTo(pm[k]));
+      let need = false;
+      for (const c of probes) {
+        const pa = pointAt(a, c), pb = pointAt(b, c), pm = pointAt(mid, c);
+        const chordMid = pa.add(pb).scale(0.5);
+        if (chordMid.distanceTo(pm) > tol) { need = true; break; }
+        const na = normalAt(a, c), nb = normalAt(b, c);
+        if (na.dot(nb) < NORMAL_COS_TOL) { need = true; break; }
       }
-      if (dev > tol) {
-        next.push(mid);
-        split = true;
-      }
+      if (need) { next.push(mid); split = true; }
       next.push(b);
     }
     list = next;
@@ -89,13 +120,24 @@ export function tessParams(s: NSurface, data: SurfaceData): { us: number[]; vs: 
   let vs = paramList(s.nv, s.pv, s.V, segsV);
   if (data.tess.mode === 'adaptive') {
     const tol = Math.max(1e-5, data.tess.tol);
-    const [ul, uh] = [s.U[s.pu], s.U[s.nu]];
-    const [vl, vh] = [s.V[s.pv], s.V[s.nv]];
-    // Probe cross-parameters: ends + middle of the other direction.
-    const vProbes = [vl, (vl + vh) / 2, vh];
-    const uProbes = [ul, (ul + uh) / 2, uh];
-    us = refineParams(us, (u) => vProbes.map((v) => surfacePoint(s, u, v)), tol, 5);
-    vs = refineParams(vs, (v) => uProbes.map((u) => surfacePoint(s, u, v)), tol, 5);
+    // Probe at ALL current cross-direction params (capped, evenly chosen) so a
+    // feature localized off-center still triggers refinement. The floor grids
+    // are the probe sets (captured before either direction refines) — keeps the
+    // two directions independent and the result deterministic.
+    const uProbes = pickProbes(us, MAX_PROBES);
+    const vProbes = pickProbes(vs, MAX_PROBES);
+    us = refineParams(
+      us, vProbes,
+      (u, v) => surfacePoint(s, u, v),
+      (u, v) => surfaceNormal(s, u, v),
+      tol, ADAPT_MAX_DEPTH,
+    );
+    vs = refineParams(
+      vs, uProbes,
+      (v, u) => surfacePoint(s, u, v),
+      (v, u) => surfaceNormal(s, u, v),
+      tol, ADAPT_MAX_DEPTH,
+    );
   }
   return { us, vs };
 }
@@ -149,14 +191,24 @@ export interface SurfaceTessResult {
   vs: number[];
 }
 
-/**
- * Tessellate a surface payload to an EditableMesh (quads, per-corner UVs
- * normalized over the domain). Returns an empty mesh for degenerate payloads.
- */
-export function tessellateSurface(data: SurfaceData): SurfaceTessResult {
-  const mesh = new EditableMesh();
+/** The tessellation grid, resolved once: welded vertex positions + the face
+ *  list (dedup'd, trim-classified). Shared by tessellateSurface (which builds
+ *  the EditableMesh) and tessStats (which only counts) so neither recomputes
+ *  the other's work and both agree exactly. */
+interface TessGrid {
+  us: number[];
+  vs: number[];
+  /** Unique welded vertex positions, in first-seen order (== addVert order). */
+  positions: Vec3[];
+  /** Faces as welded-position indices + their per-corner UVs. */
+  faces: { ids: number[]; uvs: [number, number][] }[];
+}
+
+/** Resolve the tessellation grid for a payload (params → welded verts → faces),
+ *  without allocating an EditableMesh. Returns null for degenerate payloads. */
+function buildTessGrid(data: SurfaceData): TessGrid | null {
   const s = fromSurfaceData(data);
-  if (!s) return { mesh, us: [], vs: [] };
+  if (!s) return null;
   const { us, vs } = tessParams(s, data);
   const [ul, uh, vl, vh] = [s.U[s.pu], s.U[s.nu], s.V[s.pv], s.V[s.nv]];
   const uSpanInv = uh - ul === 0 ? 1 : 1 / (uh - ul);
@@ -169,6 +221,7 @@ export function tessellateSurface(data: SurfaceData): SurfaceTessResult {
   // share one vert so the mesh is manifold at poles.
   const keyOf = (p: Vec3) => `${p.x.toFixed(9)},${p.y.toFixed(9)},${p.z.toFixed(9)}`;
   const weld = new Map<string, number>();
+  const positions: Vec3[] = [];
   const grid: number[][] = [];
   for (let i = 0; i < us.length; i++) {
     const row: number[] = [];
@@ -177,7 +230,8 @@ export function tessellateSurface(data: SurfaceData): SurfaceTessResult {
       const key = keyOf(p);
       let id = weld.get(key);
       if (id === undefined) {
-        id = mesh.addVert(p);
+        id = positions.length;
+        positions.push(p);
         weld.set(key, id);
       }
       row.push(id);
@@ -185,6 +239,7 @@ export function tessellateSurface(data: SurfaceData): SurfaceTessResult {
     grid.push(row);
   }
 
+  const faces: { ids: number[]; uvs: [number, number][] }[] = [];
   for (let i = 0; i < us.length - 1; i++) {
     for (let j = 0; j < vs.length - 1; j++) {
       if (loops.length) {
@@ -211,9 +266,36 @@ export function tessellateSurface(data: SurfaceData): SurfaceTessResult {
         }
       }
       if (new Set(dedupIds).size < 3) continue;
-      const f = mesh.addFace(dedupIds);
-      mesh.setFaceUVs(f, dedupUvs);
+      faces.push({ ids: dedupIds, uvs: dedupUvs });
     }
   }
-  return { mesh, us, vs };
+  return { us, vs, positions, faces };
+}
+
+/**
+ * Tessellate a surface payload to an EditableMesh (quads, per-corner UVs
+ * normalized over the domain). Returns an empty mesh for degenerate payloads.
+ */
+export function tessellateSurface(data: SurfaceData): SurfaceTessResult {
+  const mesh = new EditableMesh();
+  const grid = buildTessGrid(data);
+  if (!grid) return { mesh, us: [], vs: [] };
+  // addVert in first-seen order so vertIds line up 1:1 with grid.positions.
+  const ids = grid.positions.map((p) => mesh.addVert(p));
+  for (const face of grid.faces) {
+    const f = mesh.addFace(face.ids.map((i) => ids[i]));
+    mesh.setFaceUVs(f, face.uvs);
+  }
+  return { mesh, us: grid.us, vs: grid.vs };
+}
+
+/**
+ * Tessellation counts WITHOUT building an EditableMesh: shares buildTessGrid's
+ * grid step with tessellateSurface, so `verts`/`faces` match its output exactly.
+ * Feeds the Surface tab's live info row. Degenerate payloads report all zeros.
+ */
+export function tessStats(data: SurfaceData): { verts: number; faces: number; us: number; vs: number } {
+  const grid = buildTessGrid(data);
+  if (!grid) return { verts: 0, faces: 0, us: 0, vs: 0 };
+  return { verts: grid.positions.length, faces: grid.faces.length, us: grid.us.length, vs: grid.vs.length };
 }

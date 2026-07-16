@@ -3,6 +3,10 @@ import { VertexArray } from '../gl/VertexArray';
 import type { SurfaceData } from '../../core/scene/objectData';
 import type { SurfaceEditState } from '../../core/scene/SurfaceEdit';
 import type { Mat4 } from '../../core/math/mat4';
+import { fromSurfaceData, isoCurve } from '../../core/nurbs/surface';
+import { curveDomain, curvePoint } from '../../core/nurbs/curve';
+import { interiorKnots, knotDomain } from '../../core/nurbs/basis';
+import { isoparmsOn } from '../isoparmPrefs';
 
 /**
  * Surface Edit Mode overlay (NB-A2) — the control net of a NURBS surface: hull
@@ -39,6 +43,8 @@ void main() { outColor = vec4(v_color, 1.0); }`;
 const SEL: [number, number, number] = [0.996, 0.66, 0.2]; // selection orange
 const CTRL: [number, number, number] = [0.95, 0.95, 0.95]; // unselected point
 const LINE: [number, number, number] = [0.45, 0.45, 0.5]; // hull line
+const ISO: [number, number, number] = [0.32, 0.62, 0.72]; // isoparm grey-cyan
+const ISO_SEGS = 64; // samples per isoparametric curve
 
 interface NetBuffers {
   key: string;
@@ -46,12 +52,64 @@ interface NetBuffers {
   dotVa: VertexArray | null;
 }
 
+interface IsoBuffers {
+  key: string;
+  va: VertexArray | null;
+}
+
 export class SurfaceNetPass {
   private readonly shader: Shader;
   private readonly cache = new Map<number, NetBuffers>();
+  private readonly isoCache = new Map<number, IsoBuffers>();
 
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.shader = new Shader(gl, VERT, FRAG, 'surface-net');
+  }
+
+  /** Build (or reuse) the isoparm line buffer: the exact isoparametric curves
+   *  at every distinct interior knot in each direction + the 4 boundary curves,
+   *  each sampled at ISO_SEGS segments. Cached by surface signature. */
+  private rebuildIso(objectId: number, surface: SurfaceData): VertexArray | null {
+    const key = JSON.stringify(surface);
+    const cached = this.isoCache.get(objectId);
+    if (cached && cached.key === key) return cached.va;
+    cached?.va?.dispose();
+
+    const s = fromSurfaceData(surface);
+    let va: VertexArray | null = null;
+    if (s) {
+      const [ul, uh] = knotDomain(s.nu, s.pu, s.U);
+      const [vl, vh] = knotDomain(s.nv, s.pv, s.V);
+      // Iso-U curves (fixed u, running along V): both boundaries + interior U knots.
+      const uParams = [ul, ...interiorKnots(s.nu, s.pu, s.U).map((k) => k.u), uh];
+      // Iso-V curves (fixed v, running along U): both boundaries + interior V knots.
+      const vParams = [vl, ...interiorKnots(s.nv, s.pv, s.V).map((k) => k.u), vh];
+
+      const pos: number[] = [];
+      const col: number[] = [];
+      const sampleCurve = (dir: 'u' | 'v', t: number): void => {
+        const c = isoCurve(s, dir, t);
+        const [lo, hi] = curveDomain(c);
+        let prev = curvePoint(c, lo);
+        for (let i = 1; i <= ISO_SEGS; i++) {
+          const p = curvePoint(c, lo + ((hi - lo) * i) / ISO_SEGS);
+          pos.push(prev.x, prev.y, prev.z, p.x, p.y, p.z);
+          for (let k = 0; k < 2; k++) col.push(ISO[0], ISO[1], ISO[2]);
+          prev = p;
+        }
+      };
+      for (const u of uParams) sampleCurve('u', u);
+      for (const v of vParams) sampleCurve('v', v);
+
+      if (pos.length > 0) {
+        va = new VertexArray(this.gl, [
+          { location: 0, size: 3, data: new Float32Array(pos) },
+          { location: 1, size: 3, data: new Float32Array(col) },
+        ]);
+      }
+    }
+    this.isoCache.set(objectId, { key, va });
+    return va;
   }
 
   private rebuild(objectId: number, surface: SurfaceData, sel: SurfaceEditState | null): NetBuffers {
@@ -126,10 +184,16 @@ export class SurfaceNetPass {
     this.shader.use();
     this.shader.setMat4('u_modelView', modelView);
     this.shader.setMat4('u_proj', proj);
+    this.shader.setFloat('u_pointSize', 1.0);
 
-    // Hull lines first (under the dots).
+    // Isoparametric curves first (under net + dots) when enabled for this object.
+    if (isoparmsOn(objectId)) {
+      const isoVa = this.rebuildIso(objectId, surface);
+      if (isoVa) isoVa.draw(gl.LINES);
+    }
+
+    // Hull lines (under the dots).
     if (lineVa) {
-      this.shader.setFloat('u_pointSize', 1.0);
       lineVa.draw(gl.LINES);
     }
     // Control-point dots on top.

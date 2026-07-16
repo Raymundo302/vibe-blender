@@ -50,6 +50,7 @@ import { AddMenu } from '../ui/addMenu';
 import { PieMenu } from '../ui/pieMenu';
 import { cursorToOrigin, cursorToSelected, cursorToGrid, selectionToCursor, selectionToGrid } from '../tools/snapOps';
 import { CollectionMenu } from '../ui/collectionMenu';
+import { AlignPopover } from '../ui/alignPopover';
 import { KeyingMenu } from '../ui/keyingMenu';
 import { DeleteMenu, mergeAtCenter } from '../ui/deleteMenu';
 import { EdgeMenu } from '../ui/edgeMenu';
@@ -385,6 +386,7 @@ export class InputManager {
   private addMenu: AddMenu | null = null;
   private pieMenu: PieMenu | null = null;
   private collectionMenu: CollectionMenu | null = null;
+  private alignPopover: AlignPopover | null = null;
   private keyingMenu: KeyingMenu | null = null;
   private deleteMenu: DeleteMenu | null = null;
   private edgeMenu: EdgeMenu | null = null;
@@ -1630,6 +1632,37 @@ export class InputManager {
         objectIds: ids,
         setStatus: (t) => this.ctx.setStatus(t),
         onClose: () => { this.collectionMenu = null; },
+      });
+      return;
+    }
+    // Shift+M: Align curve ends (NB-B2 — G0..G3 continuity matching). Object
+    // mode, exactly two curve objects selected. Plain M is Move-to-Collection
+    // (above), so this uses Shift+M. The ACTIVE curve is the one that MOVES.
+    if (key === 'm' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (this.alignPopover) { this.alignPopover.close(); return; }
+      const scene = this.ctx.scene;
+      const curves = scene.selectedObjects.filter((o) => o.kind === 'curve' && o.curve);
+      if (curves.length !== 2) {
+        this.ctx.setStatus('Align: select exactly two curve objects');
+        return;
+      }
+      const src = scene.activeObject && scene.activeObject.kind === 'curve' ? scene.activeObject : null;
+      if (!src) {
+        this.ctx.setStatus('Align: the active object must be a curve (it is the one that moves)');
+        return;
+      }
+      const target = curves.find((o) => o.id !== src.id)!;
+      this.alignPopover = new AlignPopover({
+        parent: this.canvas.parentElement as HTMLElement,
+        x: this.pointer.x,
+        y: this.pointer.y,
+        scene,
+        undo: this.ctx.undo,
+        src,
+        target,
+        setStatus: (t) => this.ctx.setStatus(t),
+        onClose: () => { this.alignPopover = null; },
       });
       return;
     }

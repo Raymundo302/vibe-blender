@@ -12,6 +12,7 @@ import { PickingPass } from './passes/pickingPass';
 import { GizmoPass, GIZMO_PICK_BASE, GIZMO_PLANE_BASE, GIZMO_AXES, GIZMO_PLANES, gizmoScreenScale, type GizmoAxis, type GizmoPlane, type AxisColors } from './passes/gizmoPass';
 import { EditOverlayPass } from './passes/editOverlayPass';
 import { CurveEditPass } from './passes/curveEditPass';
+import { CombPass } from './passes/combPass';
 import { SurfaceNetPass } from './passes/surfaceNetPass';
 import { evaluateCurve, leftHandle, rightHandle } from '../core/curve/eval';
 import { WIRE_MIN_PX, WIRE_MAX_PX } from './passes/ribbon';
@@ -128,6 +129,7 @@ export class Renderer {
   private readonly gizmoPass: GizmoPass;
   private readonly editOverlayPass: EditOverlayPass;
   private readonly curveEditPass: CurveEditPass;
+  private readonly combPass: CombPass;
   private readonly surfaceNetPass: SurfaceNetPass;
   private readonly elementPickPass: ElementPickPass;
   private readonly renderedPass: RenderedPass;
@@ -251,6 +253,7 @@ export class Renderer {
     this.gizmoPass = new GizmoPass(gl);
     this.editOverlayPass = new EditOverlayPass(gl);
     this.curveEditPass = new CurveEditPass(gl);
+    this.combPass = new CombPass(gl);
     this.surfaceNetPass = new SurfaceNetPass(gl);
     this.elementPickPass = new ElementPickPass(gl, canvas.width, canvas.height);
     this.renderedPass = new RenderedPass(gl);
@@ -1218,6 +1221,11 @@ export class Renderer {
     // in EVERY shading mode (a curve has no mesh, so this is its only geometry).
     // After the solid/wire passes, before the grid so curves sit over surfaces.
     this.drawCurves(scene, visible, view, proj, camera.distance);
+
+    // Curvature combs (NB-B1): per-curve porcupine overlay for curves whose
+    // comb pref is ON. Drawn right after the curve ribbons, world-space, depth
+    // test on + blended (an APP-level display pref — see combPrefs.ts).
+    this.combPass.render(scene, visible, view, proj);
 
     // Grid (blended, after opaque) — Overlays › Grid toggles it (P12-2). Colors,
     // fade and the floor-lines toggle come from overlay prefs; workPlane (set

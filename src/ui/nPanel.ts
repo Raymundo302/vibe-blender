@@ -20,6 +20,7 @@ import {
   CURVE_DEGREE_MAX,
 } from '../core/nurbs/curveOps';
 import { viewPrefs, loadViewPrefs, saveViewPrefs } from '../render/viewPrefs';
+import { combFor, setComb, COMB_SCALE_RANGE, COMB_SAMPLES_RANGE } from '../render/combPrefs';
 
 /**
  * The N-panel (P6-2, tabs UR5-6) — Blender's viewport sidebar. Pressing N toggles
@@ -73,6 +74,10 @@ export class NPanel {
   private readonly curveRebuildDegInput: HTMLInputElement;
   private readonly curveInsertBtn: HTMLButtonElement;
   private readonly curveKnotsEl: HTMLSpanElement;
+  // NB-B1: Curvature Comb subsection (per-curve display prefs, NOT undoable).
+  private readonly curveCombOnInput: HTMLInputElement;
+  private readonly curveCombScaleInput: HTMLInputElement;
+  private readonly curveCombSamplesInput: HTMLInputElement;
 
   // --- View tab -----------------------------------------------------------
   private readonly viewBody: HTMLDivElement;
@@ -261,6 +266,55 @@ export class NPanel {
     this.curveKnotsEl.className = 'n-panel-value';
     this.curveKnotsEl.dataset.field = 'curve-knots';
     this.curveBody.appendChild(this.labelledRow('Knots', this.curveKnotsEl));
+
+    // --- NB-B1: Curvature Comb subsection -----------------------------------
+    // Per-curve porcupine display prefs (combPrefs, keyed by object id). These
+    // are DISPLAY prefs like the overlay toggles — persisted, NOT undoable.
+    const combTitle = document.createElement('div');
+    combTitle.className = 'properties-group-title';
+    combTitle.textContent = 'Curvature Comb';
+    this.curveBody.appendChild(combTitle);
+
+    this.curveCombOnInput = document.createElement('input');
+    this.curveCombOnInput.type = 'checkbox';
+    this.curveCombOnInput.className = 'n-panel-check';
+    this.curveCombOnInput.dataset.action = 'curve-comb-on';
+    this.curveCombOnInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return;
+      setComb(obj.id, { on: this.curveCombOnInput.checked }); // display pref, no undo
+      this.updateItem();
+    });
+    const combOnRow = document.createElement('label');
+    combOnRow.className = 'n-panel-check-row';
+    const combOnLabel = document.createElement('span');
+    combOnLabel.textContent = 'Show Comb';
+    combOnRow.append(this.curveCombOnInput, combOnLabel);
+    this.curveBody.appendChild(combOnRow);
+
+    this.curveCombScaleInput = this.numberInput(
+      'curve-comb-scale', COMB_SCALE_RANGE.min, COMB_SCALE_RANGE.max, 0.1);
+    this.curveCombScaleInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return this.updateItem();
+      const raw = parseFloat(this.curveCombScaleInput.value);
+      if (!Number.isFinite(raw)) return this.updateItem();
+      setComb(obj.id, { scale: raw }); // clamped in setComb; display pref, no undo
+      this.updateItem();
+    });
+    this.curveBody.appendChild(this.labelledRow('Scale', this.curveCombScaleInput));
+
+    this.curveCombSamplesInput = this.numberInput(
+      'curve-comb-samples', COMB_SAMPLES_RANGE.min, COMB_SAMPLES_RANGE.max, 1);
+    this.curveCombSamplesInput.addEventListener('change', () => {
+      const obj = this.scene.activeObject;
+      if (!obj || obj.kind !== 'curve' || !obj.curve) return this.updateItem();
+      const raw = parseFloat(this.curveCombSamplesInput.value);
+      if (!Number.isFinite(raw)) return this.updateItem();
+      setComb(obj.id, { samples: raw }); // clamped in setComb; display pref, no undo
+      this.updateItem();
+    });
+    this.curveBody.appendChild(this.labelledRow('Samples', this.curveCombSamplesInput));
 
     this.itemContent.appendChild(this.curveBody);
 
@@ -632,6 +686,18 @@ export class NPanel {
     const info = curveKnotInfo(c);
     const text = info ? `knots: ${info.knots} (spans: ${info.spans})` : '—';
     if (this.curveKnotsEl.textContent !== text) this.curveKnotsEl.textContent = text;
+
+    // NB-B1: Curvature Comb subsection ← per-object comb prefs (not undoable).
+    const comb = combFor(obj.id);
+    if (this.curveCombOnInput.checked !== comb.on) this.curveCombOnInput.checked = comb.on;
+    if (document.activeElement !== this.curveCombScaleInput) {
+      const s = String(comb.scale);
+      if (this.curveCombScaleInput.value !== s) this.curveCombScaleInput.value = s;
+    }
+    if (document.activeElement !== this.curveCombSamplesInput) {
+      const s = String(comb.samples);
+      if (this.curveCombSamplesInput.value !== s) this.curveCombSamplesInput.value = s;
+    }
   }
 
   private updateView(): void {

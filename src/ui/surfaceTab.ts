@@ -11,6 +11,8 @@ import { SurfaceCommand } from '../core/undo/surfaceCommands';
 import { setSurfaceDegree, rebuildSurfaceData, insertSurfaceKnotAt } from '../core/nurbs/edit';
 import { fromSurfaceData, type NSurface } from '../core/nurbs/surface';
 import { interiorKnots, knotDomain } from '../core/nurbs/basis';
+import { tessStats } from '../core/nurbs/tessellate';
+import { isoparmsOn, setIsoparms } from '../render/isoparmPrefs';
 import './surfaceTab.css';
 
 /**
@@ -77,6 +79,7 @@ class SurfaceTab {
 
   // Display
   private readonly showNet: HTMLInputElement;
+  private readonly showIsoparms: HTMLInputElement;
 
   // Selected Point
   private readonly selSection: HTMLDivElement;
@@ -84,6 +87,11 @@ class SurfaceTab {
 
   /** Active object id shown last frame; -1 means "force reseed the rebuild fields". */
   private lastId: number | null = -1 as unknown as number;
+
+  /** Memoize the tess info row: writeInfo runs every frame while the tab is
+   *  open, so only re-run tessStats (a full grid build) when the payload changes. */
+  private tessInfoKey = '';
+  private tessInfoText = '';
 
   constructor(
     container: HTMLElement,
@@ -181,6 +189,17 @@ class SurfaceTab {
       this.apply('Show Net', (d) => { const n = cloneSurfaceData(d); n.showNet = on; return n; });
     });
     this.body.append(this.row('Show Net', this.showNet));
+
+    // Isoparms — an app-level pref (isoparmPrefs), not payload state: it does
+    // NOT re-tessellate and is not undoable. The net pass reads it each frame.
+    this.showIsoparms = document.createElement('input');
+    this.showIsoparms.type = 'checkbox';
+    this.showIsoparms.dataset.field = 'show-isoparms';
+    this.showIsoparms.addEventListener('change', () => {
+      const obj = this.activeSurface();
+      if (obj) setIsoparms(obj.id, this.showIsoparms.checked);
+    });
+    this.body.append(this.row('Isoparms', this.showIsoparms));
 
     // --- Selected Point (edit mode with a selection) -----------------------
     this.selSection = document.createElement('div');
@@ -367,12 +386,15 @@ class SurfaceTab {
     this.tolRow.style.display = d.tess.mode === 'adaptive' ? '' : 'none';
 
     this.showNet.checked = !!d.showNet;
+    this.showIsoparms.checked = isoparmsOn(obj.id);
 
     this.writeInfo(obj);
     this.writeSelection();
   }
 
-  /** Points/Spans + tessellation vert/face readouts. */
+  /** Points/Spans + tessellation vert/face readouts. Tess counts come from
+   *  tessStats (the same grid step tessellateSurface uses), so the row updates
+   *  live as tess fields change — before the driver re-tessellates the mesh. */
   private writeInfo(obj: SceneObject): void {
     const d = obj.surface!;
     const s = fromSurfaceData(d);
@@ -382,9 +404,13 @@ class SurfaceTab {
     } else {
       this.shapeInfo.textContent = `Points: ${d.pointsU} × ${d.pointsV}`;
     }
-    const verts = obj.mesh ? obj.mesh.verts.size : 0;
-    const faces = obj.mesh ? obj.mesh.faces.size : 0;
-    this.tessInfo.textContent = `Mesh: ${verts} verts, ${faces} faces`;
+    const key = JSON.stringify(d);
+    if (key !== this.tessInfoKey) {
+      this.tessInfoKey = key;
+      const st = tessStats(d);
+      this.tessInfoText = `${st.verts} verts / ${st.faces} faces (grid ${st.us}×${st.vs})`;
+    }
+    this.tessInfo.textContent = this.tessInfoText;
   }
 
   /** Show the Selected Point section only while edit mode has a selection. */
