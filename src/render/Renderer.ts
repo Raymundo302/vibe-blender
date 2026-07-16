@@ -952,7 +952,7 @@ export class Renderer {
       this.aoPass.beginDepth(view, proj);
       const aoMeshes: SceneObject[] = [];
       for (const obj of visible) {
-        if (obj.kind !== 'mesh') continue;
+        if (obj.kind !== 'mesh' && obj.kind !== 'surface') continue; // NB-CORE: surfaces occlude like meshes
         // UR8-3 B: alphaBlend cutouts DON'T occlude — a floating transparent
         // plane must not sink AO into the surfaces behind it. UR10-3: glass is
         // transparent too, so it doesn't sink AO either.
@@ -1058,8 +1058,9 @@ export class Renderer {
       // World environment as the backdrop (flat / gradient / HDRI), then the
       // meshes over it. Other shading modes keep the theme clear color.
       this.syncHdriTexture(scene);
-      // Mesh objects + curve objects that materialize a tube (UR11-2 Pipe).
-      const meshes = visible.filter((o) => o.kind === 'mesh'
+      // Mesh objects + NURBS surfaces (NB-CORE: tessellation IS the mesh) +
+      // curve objects that materialize a tube (UR11-2 Pipe).
+      const meshes = visible.filter((o) => o.kind === 'mesh' || o.kind === 'surface'
         || (o.kind === 'curve' && o.evaluatedMesh(scene.modifierContext(o)).faces.size > 0));
       // UR8-3 B: alphaBlend cutouts draw in a blended SECOND pass and DON'T cast
       // shadows (a floating cutout casting a full quad shadow looks broken).
@@ -1374,7 +1375,7 @@ export class Renderer {
     this.wirePass.beginPrime();
     gl.colorMask(false, false, false, false);
     for (const obj of visible) {
-      if (obj.kind !== 'mesh'
+      if (obj.kind !== 'mesh' && obj.kind !== 'surface'
         && !(obj.kind === 'curve' && obj.evaluatedMesh(scene.modifierContext(obj)).faces.size > 0)) continue;
       this.wirePass.primeObject(viewProj.mul(scene.worldMatrix(obj)));
       this.gpuMesh(obj, scene).triangles.draw(gl.TRIANGLES);
@@ -1484,7 +1485,7 @@ export class Renderer {
     this.pickingPass.begin();
     gl.disable(gl.DEPTH_TEST);
     for (const obj of scene.objects) {
-      if (!scene.effectiveVisible(obj) || obj.kind !== 'mesh' || !typePickable(obj.kind)) continue;
+      if (!scene.effectiveVisible(obj) || (obj.kind !== 'mesh' && obj.kind !== 'surface') || !typePickable(obj.kind)) continue;
       this.pickingPass.drawObject(viewProj.mul(scene.worldMatrix(obj)), obj.id + 1);
       this.gpuMesh(obj, scene).edges.draw(gl.LINES);
     }

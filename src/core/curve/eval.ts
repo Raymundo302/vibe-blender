@@ -1,4 +1,5 @@
 import { Vec3 } from '../math/vec3';
+import { validKnots } from '../nurbs/basis';
 import { clampCurveResolution, type CurveData, type CurvePoint } from '../scene/objectData';
 
 /**
@@ -160,14 +161,26 @@ function evaluateNurbs(data: CurveData): Vec3[] {
     for (let i = 0; i <= n + p; i++) knots.push(i);
     uStart = p;
     uEnd = n;
+  } else if (data.knots && validKnots(n0, p, data.knots)) {
+    // Explicit knot vector (NB-CORE): written by knot insertion / degree ops /
+    // IGES import. Domain [U[p], U[n]] per the NURBS convention.
+    knots = data.knots;
+    uStart = knots[p];
+    uEnd = knots[n0];
   } else {
     knots = clampedKnots(n0, p);
     uStart = 0;
     uEnd = n0 - p;
   }
 
-  const spans = uEnd - uStart; // number of knot intervals in the domain
-  const total = Math.max(1, Math.round(spans)) * res;
+  // Number of DISTINCT knot intervals in the domain (with integer clamped-
+  // uniform knots this equals uEnd - uStart; explicit vectors can be scaled
+  // arbitrarily, e.g. IGES's [0,1], so count real spans instead).
+  let spans = 0;
+  for (let i = 0; i < knots.length - 1; i++) {
+    if (knots[i] >= uStart - 1e-12 && knots[i + 1] <= uEnd + 1e-12 && knots[i + 1] - knots[i] > 1e-12) spans++;
+  }
+  const total = Math.max(1, spans) * res;
   const out: Vec3[] = [];
   for (let s = 0; s <= total; s++) {
     const u = uStart + (uEnd - uStart) * (s / total);

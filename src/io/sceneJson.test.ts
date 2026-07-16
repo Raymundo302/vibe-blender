@@ -3,6 +3,7 @@ import { serializeScene, applySceneJson } from './sceneJson';
 import { Scene } from '../core/scene/Scene';
 import { OrbitCamera } from '../camera/OrbitCamera';
 import { makeCube } from '../core/mesh/primitives';
+import { regenerateSurfaceMesh } from '../tools/surfaceObject';
 import { Transform } from '../core/math/transform';
 import { Vec3 } from '../core/math/vec3';
 import { Quat } from '../core/math/quat';
@@ -206,6 +207,79 @@ describe('sceneJson v19 curve objects', () => {
     delete broken.objects[0].curve;
     expect(() => applySceneJson(JSON.stringify(broken), new Scene(), new OrbitCamera())).toThrow();
   });
+
+  it('round-trips an explicit curve knot vector (v21)', () => {
+    const scene = new Scene();
+    scene.addCurve('Nur', {
+      kind: 'nurbs', cyclic: false, resolution: 10, order: 3,
+      knots: [0, 0, 0, 0.4, 1, 1, 1],
+      points: [{ co: [-1, 0, 0] }, { co: [0, 1, 0] }, { co: [1, 0, 0] }, { co: [2, 1, 0] }],
+    });
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(dst.objects[0].curve!.knots).toEqual([0, 0, 0, 0.4, 1, 1, 1]);
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+});
+
+describe('sceneJson v21 surface objects (NB-CORE)', () => {
+  const patch = (): import('../core/scene/objectData').SurfaceData => ({
+    degreeU: 2, degreeV: 2, pointsU: 3, pointsV: 3,
+    points: [
+      { co: [-1, -1, 0] }, { co: [-1, 0, 0.4] }, { co: [-1, 1, 0] },
+      { co: [0, -1, 0.4], w: 0.8 }, { co: [0, 0, 1] }, { co: [0, 1, 0.4] },
+      { co: [1, -1, 0] }, { co: [1, 0, 0.4] }, { co: [1, 1, 0] },
+    ],
+    tess: { mode: 'spans', segsU: 6, segsV: 4, tol: 0.01 },
+  });
+
+  it('round-trips a surface byte-identically (payload + tessellated mesh)', () => {
+    const scene = new Scene();
+    const obj = scene.addSurface('Patch', patch());
+    regenerateSurfaceMesh(obj); // headless: run the driver's regen path once
+    expect(obj.mesh.faces.size).toBeGreaterThan(0);
+
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(dst.objects[0].kind).toBe('surface');
+    expect(dst.objects[0].surface).toEqual(scene.objects[0].surface);
+    expect(dst.objects[0].mesh.verts.size).toBe(obj.mesh.verts.size);
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+
+  it('round-trips knots, trims, surface curves and showNet', () => {
+    const scene = new Scene();
+    const data = patch();
+    data.knotsU = [0, 0, 0, 1, 1, 1];
+    data.trims = [{
+      hole: true,
+      curve: {
+        kind: 'nurbs', cyclic: false, resolution: 4, order: 2,
+        points: [{ co: [0.4, 0.4, 0] }, { co: [0.6, 0.4, 0] }, { co: [0.6, 0.6, 0] }, { co: [0.4, 0.4, 0] }],
+      },
+    }];
+    data.surfaceCurves = [{
+      name: 'Iso.001',
+      curve: { kind: 'nurbs', cyclic: false, resolution: 8, order: 2, points: [{ co: [0, 0.5, 0] }, { co: [1, 0.5, 0] }] },
+    }];
+    data.showNet = true;
+    scene.addSurface('Trimmed', data);
+    const s1 = serializeScene(scene, new OrbitCamera());
+    const dst = new Scene();
+    applySceneJson(s1, dst, new OrbitCamera());
+    expect(dst.objects[0].surface).toEqual(scene.objects[0].surface);
+    expect(serializeScene(dst, new OrbitCamera())).toBe(s1);
+  });
+
+  it('rejects a surface object with a wrong-sized net', () => {
+    const scene = new Scene();
+    scene.addSurface('Patch', patch());
+    const broken = JSON.parse(serializeScene(scene, new OrbitCamera()));
+    broken.objects[0].surface.points.pop();
+    expect(() => applySceneJson(JSON.stringify(broken), new Scene(), new OrbitCamera())).toThrow();
+  });
 });
 
 describe('sceneJson format v2 modifiers', () => {
@@ -213,7 +287,7 @@ describe('sceneJson format v2 modifiers', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const parsed = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(parsed.version).toBe(20);
+    expect(parsed.version).toBe(21);
     expect(parsed.objects[0].modifiers).toEqual([]);
   });
 
@@ -882,7 +956,7 @@ describe('sceneJson material shadeless (v10 / UR4-3)', () => {
     const scene = new Scene();
     scene.add('Cube', makeCube());
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(20);
+    expect(json.version).toBe(21);
   });
 
   it('round-trips a shadeless material', () => {
@@ -1077,7 +1151,7 @@ describe('sceneJson HTML plane (v13 / UR7-1)', () => {
     obj.html = { kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12 };
 
     const json = JSON.parse(serializeScene(scene, new OrbitCamera()));
-    expect(json.version).toBe(20);
+    expect(json.version).toBe(21);
     expect(json.objects[0].html).toEqual({
       kind: 'file', source: '<div>hi</div>', pageW: 800, pageH: 600, scrollY: 42, playing: true, fps: 12,
     });
@@ -1266,7 +1340,7 @@ describe('sceneJson shader-model migration (v20 / UR16-1)', () => {
     const scene = new Scene();
     applySceneJson(v19Scene({ shadeless: true, texKind: 'image', texDataUrl: 'data:x', alwaysTextured: true }), scene, new OrbitCamera());
     const a = serializeScene(scene, new OrbitCamera());
-    expect(JSON.parse(a).version).toBe(20);
+    expect(JSON.parse(a).version).toBe(21);
     const scene2 = new Scene();
     applySceneJson(a, scene2, new OrbitCamera());
     expect(serializeScene(scene2, new OrbitCamera())).toBe(a);

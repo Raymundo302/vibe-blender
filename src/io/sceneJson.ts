@@ -20,9 +20,13 @@ import type {
   Material,
   MaterialShader,
   ObjectKind,
+  SurfaceCurve,
+  SurfaceData,
+  SurfacePoint,
   TextData,
+  TrimLoop,
 } from '../core/scene/objectData';
-import { clampHtmlFps, clampFStop, clampCurveResolution, AREA_MIN_SIZE, clampIor, clampTransmission, materialShader, MATERIAL_SHADERS, type GlareSettings } from '../core/scene/objectData';
+import { clampHtmlFps, clampFStop, clampCurveResolution, clampSurfaceSegs, cloneSurfaceData, AREA_MIN_SIZE, clampIor, clampTransmission, materialShader, MATERIAL_SHADERS, type GlareSettings } from '../core/scene/objectData';
 import {
   createModifier,
   modifierTypes,
@@ -54,9 +58,13 @@ const FORMAT = 'vibe-blender-scene';
  *  SOCKET inputs (value/image/gradient) + an alpha channel, replacing the scattered
  *  baseColor/texKind/roughDataUrl/… fields. Pre-v20 materials migrate to shader
  *  'super' (or 'emit' when shadeless) with channels synthesized from the legacy
- *  fields — they render IDENTICALLY (the runtime fields are unchanged). */
-const VERSION = 20;
-const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+ *  fields — they render IDENTICALLY (the runtime fields are unchanged).
+ *  v21 (NB-CORE): NURBS — kind 'surface' objects with a `surface` payload
+ *  (control net + knots + tessellation options + trim loops + curves-on-
+ *  surface), and curves gain an optional explicit `knots` vector. Pre-v21
+ *  files have neither field and load unchanged. */
+const VERSION = 21;
+const SUPPORTED_VERSIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
 
 /** Round to 6 decimals and drop the trailing zeros (0.5, 1, -1 — never -0). */
 function num(n: number): number {
@@ -227,6 +235,9 @@ function serializeObject(obj: SceneObject, scene: Scene): Record<string, unknown
   // Curve payload (v19/UR11-1) — the source of truth for a curve object's
   // viewport polyline (the object carries an empty mesh).
   if (obj.curve) out.curve = serializeCurve(obj.curve);
+  // Surface payload (v21/NB-CORE) — the source of truth for a surface object's
+  // tessellated mesh (the mesh is serialized too; the driver re-derives it).
+  if (obj.surface) out.surface = serializeSurface(obj.surface);
   // HTML-plane payload (v13/UR7-1). kind 'file' serializes the full source text.
   if (obj.html) {
     out.html = {
@@ -283,6 +294,39 @@ function serializeCurve(c: CurveData): Record<string, unknown> {
     }),
   };
   if (c.order !== undefined) out.order = num(c.order);
+  // Explicit knot vector (v21/NB-CORE) — omitted when absent (pre-v21 shape).
+  if (c.knots) out.knots = c.knots.map(num);
+  return out;
+}
+
+/** Serialize a SurfaceData payload (v21/NB-CORE). */
+function serializeSurface(s: SurfaceData): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    degreeU: num(s.degreeU),
+    degreeV: num(s.degreeV),
+    pointsU: num(s.pointsU),
+    pointsV: num(s.pointsV),
+    points: s.points.map((p) => {
+      const e: Record<string, unknown> = { co: vec(new Vec3(p.co[0], p.co[1], p.co[2])) };
+      if (p.w !== undefined) e.w = num(p.w);
+      return e;
+    }),
+    tess: {
+      mode: s.tess.mode,
+      segsU: num(s.tess.segsU),
+      segsV: num(s.tess.segsV),
+      tol: num(s.tess.tol),
+    },
+  };
+  if (s.knotsU) out.knotsU = s.knotsU.map(num);
+  if (s.knotsV) out.knotsV = s.knotsV.map(num);
+  if (s.trims && s.trims.length) {
+    out.trims = s.trims.map((t) => ({ hole: t.hole, curve: serializeCurve(t.curve) }));
+  }
+  if (s.surfaceCurves && s.surfaceCurves.length) {
+    out.surfaceCurves = s.surfaceCurves.map((c) => ({ name: c.name, curve: serializeCurve(c.curve) }));
+  }
+  if (s.showNet) out.showNet = true;
   return out;
 }
 
@@ -521,6 +565,7 @@ interface ObjectData {
   html?: HtmlPlaneData;
   text?: TextData;
   curve?: CurveData;
+  surface?: SurfaceData;
 }
 interface SceneData {
   camera: { target: [number, number, number]; distance: number; yaw: number; pitch: number };
@@ -1103,6 +1148,77 @@ function parseCurve(v: unknown, i: number): CurveData {
     points,
   };
   if (c.order !== undefined) data.order = Math.max(2, Math.round(numField(c.order, `objects[${i}].curve.order`)));
+  // Explicit knot vector (v21/NB-CORE): numbers only here; structural validity
+  // (length/monotonicity) is re-checked at evaluation and falls back to the
+  // clamped-uniform vector, so a stale field can never crash a load.
+  if (c.knots !== undefined) {
+    if (!Array.isArray(c.knots)) fail(`objects[${i}].curve.knots must be an array`);
+    data.knots = (c.knots as unknown[]).map((k, ki) => numField(k, `objects[${i}].curve.knots[${ki}]`));
+  }
+  return data;
+}
+
+/** Parse an object's SurfaceData payload (kind 'surface' only, v21/NB-CORE). */
+function parseSurface(v: unknown, i: number): SurfaceData {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) fail(`objects[${i}].surface must be an object`);
+  const s = v as Record<string, unknown>;
+  const pointsU = Math.max(2, Math.round(numField(s.pointsU, `objects[${i}].surface.pointsU`)));
+  const pointsV = Math.max(2, Math.round(numField(s.pointsV, `objects[${i}].surface.pointsV`)));
+  if (!Array.isArray(s.points)) fail(`objects[${i}].surface.points must be an array`);
+  if ((s.points as unknown[]).length !== pointsU * pointsV) {
+    fail(`objects[${i}].surface.points must have pointsU*pointsV entries`);
+  }
+  const points: SurfacePoint[] = (s.points as unknown[]).map((pt, pi) => {
+    if (typeof pt !== 'object' || pt === null || Array.isArray(pt)) fail(`objects[${i}].surface.points[${pi}] must be an object`);
+    const p = pt as Record<string, unknown>;
+    const out: SurfacePoint = { co: numArray(p.co, 3, `objects[${i}].surface.points[${pi}].co`) as [number, number, number] };
+    if (p.w !== undefined) out.w = numField(p.w, `objects[${i}].surface.points[${pi}].w`);
+    return out;
+  });
+  const t = (typeof s.tess === 'object' && s.tess !== null ? s.tess : {}) as Record<string, unknown>;
+  const data: SurfaceData = {
+    degreeU: Math.max(1, Math.round(numField(s.degreeU, `objects[${i}].surface.degreeU`))),
+    degreeV: Math.max(1, Math.round(numField(s.degreeV, `objects[${i}].surface.degreeV`))),
+    pointsU,
+    pointsV,
+    points,
+    tess: {
+      mode: t.mode === 'adaptive' ? 'adaptive' : 'spans',
+      segsU: clampSurfaceSegs(t.segsU === undefined ? 8 : numField(t.segsU, `objects[${i}].surface.tess.segsU`)),
+      segsV: clampSurfaceSegs(t.segsV === undefined ? 8 : numField(t.segsV, `objects[${i}].surface.tess.segsV`)),
+      tol: t.tol === undefined ? 0.01 : Math.max(1e-5, numField(t.tol, `objects[${i}].surface.tess.tol`)),
+    },
+  };
+  // Knot vectors: numbers only; validity re-checked at evaluation (fallback =
+  // clamped-uniform), same contract as curve.knots.
+  if (s.knotsU !== undefined) {
+    if (!Array.isArray(s.knotsU)) fail(`objects[${i}].surface.knotsU must be an array`);
+    data.knotsU = (s.knotsU as unknown[]).map((k, ki) => numField(k, `objects[${i}].surface.knotsU[${ki}]`));
+  }
+  if (s.knotsV !== undefined) {
+    if (!Array.isArray(s.knotsV)) fail(`objects[${i}].surface.knotsV must be an array`);
+    data.knotsV = (s.knotsV as unknown[]).map((k, ki) => numField(k, `objects[${i}].surface.knotsV[${ki}]`));
+  }
+  if (s.trims !== undefined) {
+    if (!Array.isArray(s.trims)) fail(`objects[${i}].surface.trims must be an array`);
+    data.trims = (s.trims as unknown[]).map((tr, ti): TrimLoop => {
+      if (typeof tr !== 'object' || tr === null) fail(`objects[${i}].surface.trims[${ti}] must be an object`);
+      const trr = tr as Record<string, unknown>;
+      return { hole: trr.hole === true, curve: parseCurve(trr.curve, i) };
+    });
+  }
+  if (s.surfaceCurves !== undefined) {
+    if (!Array.isArray(s.surfaceCurves)) fail(`objects[${i}].surface.surfaceCurves must be an array`);
+    data.surfaceCurves = (s.surfaceCurves as unknown[]).map((sc, si): SurfaceCurve => {
+      if (typeof sc !== 'object' || sc === null) fail(`objects[${i}].surface.surfaceCurves[${si}] must be an object`);
+      const scc = sc as Record<string, unknown>;
+      return {
+        name: typeof scc.name === 'string' ? scc.name : `SurfaceCurve.${si}`,
+        curve: parseCurve(scc.curve, i),
+      };
+    });
+  }
+  if (s.showNet === true) data.showNet = true;
   return data;
 }
 
@@ -1123,8 +1239,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   // kind: absent (v1/v2) → 'mesh'; otherwise validated.
   let kind: ObjectKind = 'mesh';
   if (obj.kind !== undefined) {
-    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty' && obj.kind !== 'text' && obj.kind !== 'curve') {
-      fail(`objects[${i}].kind must be one of mesh, light, camera, empty, text, curve`);
+    if (obj.kind !== 'mesh' && obj.kind !== 'light' && obj.kind !== 'camera' && obj.kind !== 'empty' && obj.kind !== 'text' && obj.kind !== 'curve' && obj.kind !== 'surface') {
+      fail(`objects[${i}].kind must be one of mesh, light, camera, empty, text, curve, surface`);
     }
     kind = obj.kind;
   }
@@ -1250,6 +1366,8 @@ function parseObject(o: unknown, i: number): ObjectData {
   if (kind === 'text') data.text = parseText(obj.text, i);
   // Curve payload (v19/UR11-1) — required for kind 'curve'.
   if (kind === 'curve') data.curve = parseCurve(obj.curve, i);
+  // Surface payload (v21/NB-CORE) — required for kind 'surface'.
+  if (kind === 'surface') data.surface = parseSurface(obj.surface, i);
   // HTML plane (v13/UR7-1) — a mesh object with an html payload; absent in older
   // files, so pre-UR7 image planes stay plain static image planes.
   if (obj.html !== undefined) data.html = parseHtml(obj.html, i);
@@ -1462,9 +1580,10 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
   // before the first scene mutation, so a bad file can never half-load.
   const built = data.objects.map((od) => ({
     od,
-    // Mesh-kind AND text objects carry geometry; lights/cameras/empties get an
+    // Mesh-kind, text AND surface objects carry geometry (text/surface store
+    // their derived mesh for headless loads); lights/cameras/empties get an
     // empty mesh from the scene.addX helper.
-    mesh: od.kind === 'mesh' || od.kind === 'text' ? buildMesh(od.mesh) : null,
+    mesh: od.kind === 'mesh' || od.kind === 'text' || od.kind === 'surface' ? buildMesh(od.mesh) : null,
     modifiers: od.modifiers.map(buildModifier),
   }));
 
@@ -1550,6 +1669,13 @@ export function applySceneJson(json: string, scene: Scene, camera: OrbitCamera):
         ...od.curve!,
         points: od.curve!.points.map((p) => ({ ...p, co: [...p.co], ...(p.hl ? { hl: [...p.hl] } : {}), ...(p.hr ? { hr: [...p.hr] } : {}) })) as CurvePoint[],
       });
+    } else if (od.kind === 'surface') {
+      // Restore the payload AND the stored tessellation verbatim (the surface
+      // driver re-derives the mesh from the payload on the first frame; a
+      // headless/Node load has no driver, so the stored mesh stands in —
+      // the text-object contract).
+      obj = scene.addSurface(od.name, cloneSurfaceData(od.surface!));
+      obj.mesh = mesh!;
     } else if (od.kind === 'text') {
       // Restore the payload AND the last-generated mesh verbatim (byte-identical
       // round trips). The text driver re-derives the mesh from the payload on the

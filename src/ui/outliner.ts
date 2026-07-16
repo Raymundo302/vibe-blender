@@ -20,6 +20,7 @@ const KIND_GLYPH: Record<ObjectKind, string> = {
   empty: '✛', // plain-axes empty (UR5-7)
   text: '\u{1D413}', // 𝐓 — text object (UR8-2)
   curve: '∿', // ∿ — curve object (UR11-1)
+  surface: '▦', // ▦ — NURBS surface (NB-CORE): a control-net grid
 };
 
 /**

@@ -19,7 +19,7 @@ export interface TypeToggle {
 }
 
 /** The kinds exposed in the dropdown, in display order. */
-export const TYPE_KINDS: readonly ObjectKind[] = ['mesh', 'curve', 'text', 'light', 'camera', 'empty'];
+export const TYPE_KINDS: readonly ObjectKind[] = ['mesh', 'curve', 'surface', 'text', 'light', 'camera', 'empty'];
 
 export type ObjectTypePrefs = Record<ObjectKind, TypeToggle>;
 

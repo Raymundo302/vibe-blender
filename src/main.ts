@@ -28,6 +28,7 @@ import './ui/cameraTab'; // side-effect: registers the Camera data tab (P8-2)
 import './ui/worldTab'; // side-effect: registers the World tab (P10-4)
 import './ui/textTab'; // side-effect: registers the Text data tab (UR8-2)
 import { TextDriver, regenerateTextMesh } from './tools/textObject'; // UR8-2 text mesh regen
+import { SurfaceDriver, regenerateSurfaceMesh } from './tools/surfaceObject'; // NB-CORE surface tessellation
 import { applyAnimation } from './core/anim/sampler';
 import { initRenderEngine } from './renderEngine/init'; // F12 render engine (P8-4)
 import { AnimRender } from './renderEngine/animRender'; // 🎞 Render Animation (P16-1)
@@ -306,6 +307,10 @@ const htmlDriver = new HtmlPlaneDriver(scene, renderer);
 // its payload whenever the payload changes (incl. a sampled text.thickness).
 const textDriver = new TextDriver(scene);
 
+// NB-CORE: surface-object mesh regeneration — re-tessellates each NURBS
+// surface from its payload whenever the payload changes (same pattern).
+const surfaceDriver = new SurfaceDriver(scene);
+
 // 🎞 Render Animation (P16-1): frame loop → WebM / PNG-zip, modal + Ctrl+F12.
 const animRender = new AnimRender({
   scene, camera, renderer, gl: ctx.gl, canvas,
@@ -541,6 +546,22 @@ topbar.mountTabs(workspaces.createTabs());
     regenerate: (id: number) => { const o = scene.get(id); if (o) regenerateTextMesh(o); },
     setFrame: (f: number) => { scene.frameCurrent = f; applyAnimation(scene, f); textDriver.syncAll(); },
   },
+  // NB-CORE surface handle for e2e: synchronous re-tessellation + edit-state
+  // inspection (no RAF wait, no pixel picks).
+  surface: {
+    driver: surfaceDriver,
+    sync: () => surfaceDriver.syncAll(),
+    regenerate: (id: number) => { const o = scene.get(id); if (o) regenerateSurfaceMesh(o); },
+    editing: () => scene.surfaceEdit !== null,
+    pointCount: () => (scene.surfaceEditObject?.surface ?? scene.activeObject?.surface)?.points.length ?? -1,
+    selectPoint: (i: number) => {
+      const sel = scene.surfaceEdit;
+      if (!sel) return;
+      sel.points.add(i);
+      sel.touch();
+    },
+    selection: () => (scene.surfaceEdit ? [...scene.surfaceEdit.points].sort((a, b) => a - b) : []),
+  },
   // UR11-1 curve handle for e2e: inspect + drive curve edit without pixel picks.
   curve: {
     editing: () => scene.curveEdit !== null,
@@ -629,6 +650,7 @@ function syncInputCameraToView(): void {
 function frame(): void {
   htmlDriver.tick();
   textDriver.tick();
+  surfaceDriver.tick();
   syncInputCameraToView();
   renderer.render(scene, camera);
   workspaces.update();

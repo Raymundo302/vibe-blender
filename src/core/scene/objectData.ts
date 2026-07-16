@@ -8,7 +8,7 @@ import type { Transform } from '../math/transform';
  * and the path tracer (P8-4) can consume these without touching the renderer.
  */
 
-export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty' | 'text' | 'curve';
+export type ObjectKind = 'mesh' | 'light' | 'camera' | 'empty' | 'text' | 'curve' | 'surface';
 
 export type LightType = 'point' | 'sun' | 'spot' | 'area';
 
@@ -397,6 +397,14 @@ export interface CurveData {
   points: CurvePoint[];
   /** NURBS order k (degree+1), clamped 2..#points; default 4. Unused for bezier. */
   order?: number;
+  /**
+   * Explicit knot vector (NB-CORE), length #points + order. Absent → the
+   * clamped-uniform vector (every pre-NB payload, byte-identical behavior).
+   * Written by knot insertion / degree ops / IGES import; ignored (and
+   * regenerated clamped-uniform) when structurally invalid. Open curves only —
+   * cyclic keeps the periodic-lite wrap.
+   */
+  knots?: number[];
 }
 
 /** Resolution clamp bounds for a curve (eval segments per span). */
@@ -416,6 +424,7 @@ export function cloneCurveData(c: CurveData): CurveData {
     cyclic: c.cyclic,
     resolution: c.resolution,
     order: c.order,
+    ...(c.knots ? { knots: [...c.knots] } : {}),
     points: c.points.map((p) => ({
       co: [...p.co] as [number, number, number],
       ...(p.hl ? { hl: [...p.hl] as [number, number, number] } : {}),
@@ -423,6 +432,119 @@ export function cloneCurveData(c: CurveData): CurveData {
       ...(p.w !== undefined ? { w: p.w } : {}),
     })),
   };
+}
+
+// --- NURBS surfaces (NB-CORE) --------------------------------------------------
+
+/** One control point of a NURBS surface net: anchor + rational weight (default 1). */
+export interface SurfacePoint {
+  co: [number, number, number];
+  w?: number;
+}
+
+/** Surface tessellation options (the "Tessellation" section of the Surface tab).
+ *  'spans' = fixed segments per knot span per direction; 'adaptive' = per-span
+ *  refinement until the chord deviation is under `tol` world units. */
+export interface SurfaceTess {
+  mode: 'spans' | 'adaptive';
+  /** Segments per knot span in U/V ('spans' mode; also the adaptive floor). */
+  segsU: number;
+  segsV: number;
+  /** Max chord deviation in world units ('adaptive' mode). */
+  tol: number;
+}
+
+export const SURFACE_SEGS_MIN = 1;
+export const SURFACE_SEGS_MAX = 64;
+
+export function clampSurfaceSegs(n: number): number {
+  if (!Number.isFinite(n)) return 8;
+  return Math.max(SURFACE_SEGS_MIN, Math.min(SURFACE_SEGS_MAX, Math.round(n)));
+}
+
+export function defaultSurfaceTess(): SurfaceTess {
+  return { mode: 'spans', segsU: 8, segsV: 8, tol: 0.01 };
+}
+
+/**
+ * A trim loop in the surface's UV parameter domain (NB-C3 consumes; the data
+ * model + serialization live here from day one so IGES import can populate it).
+ * `curve` is a CurveData whose control points live in UV space (co = [u, v, 0]);
+ * it should be closed (cyclic or first==last). `hole` = the loop cuts a hole;
+ * false = the loop is the OUTER boundary (region outside it is discarded).
+ */
+export interface TrimLoop {
+  curve: CurveData;
+  hole: boolean;
+}
+
+/** A named curve living ON the surface in UV space (NB-C1: curves-on-surface;
+ *  projection output). Same UV convention as TrimLoop. */
+export interface SurfaceCurve {
+  name: string;
+  curve: CurveData;
+}
+
+/**
+ * NURBS-surface payload (NB-CORE): a rational tensor-product control net. The
+ * object's MESH is DERIVED from this by the surface driver (tessellation),
+ * exactly like text objects regenerate from TextData. Set iff kind 'surface'.
+ *
+ * Grid convention: points is row-major with flat index iu*pointsV + iv (iu
+ * along U, iv along V) — the same convention as core/nurbs/surface.ts.
+ * knotsU/knotsV absent → clamped-uniform (the common case; explicit vectors
+ * come from IGES import / knot insertion).
+ */
+export interface SurfaceData {
+  degreeU: number;
+  degreeV: number;
+  pointsU: number;
+  pointsV: number;
+  points: SurfacePoint[];
+  knotsU?: number[];
+  knotsV?: number[];
+  tess: SurfaceTess;
+  /** Trim loops in UV space (NB-C3). Absent/empty → untrimmed. */
+  trims?: TrimLoop[];
+  /** Curves-on-surface in UV space (NB-C1). */
+  surfaceCurves?: SurfaceCurve[];
+  /** Draw the control net in object mode (edit mode always shows it). */
+  showNet?: boolean;
+}
+
+/** Deep copy of a SurfaceData. */
+export function cloneSurfaceData(s: SurfaceData): SurfaceData {
+  return {
+    degreeU: s.degreeU,
+    degreeV: s.degreeV,
+    pointsU: s.pointsU,
+    pointsV: s.pointsV,
+    points: s.points.map((p) => ({
+      co: [...p.co] as [number, number, number],
+      ...(p.w !== undefined ? { w: p.w } : {}),
+    })),
+    ...(s.knotsU ? { knotsU: [...s.knotsU] } : {}),
+    ...(s.knotsV ? { knotsV: [...s.knotsV] } : {}),
+    tess: { ...s.tess },
+    ...(s.trims ? { trims: s.trims.map((t) => ({ curve: cloneCurveData(t.curve), hole: t.hole })) } : {}),
+    ...(s.surfaceCurves ? { surfaceCurves: s.surfaceCurves.map((c) => ({ name: c.name, curve: cloneCurveData(c.curve) })) } : {}),
+    ...(s.showNet !== undefined ? { showNet: s.showNet } : {}),
+  };
+}
+
+/** A simple default surface: a 4×4 bicubic patch spanning 2×2 world units in
+ *  the XY plane with a gentle center bump (so a fresh surface visibly IS one). */
+export function defaultSurfaceData(): SurfaceData {
+  const points: SurfacePoint[] = [];
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      const x = -1 + (2 * i) / 3;
+      const y = -1 + (2 * j) / 3;
+      const bump = (i === 1 || i === 2) && (j === 1 || j === 2) ? 0.5 : 0;
+      points.push({ co: [x, y, bump] });
+    }
+  }
+  return { degreeU: 3, degreeV: 3, pointsU: 4, pointsV: 4, points, tess: defaultSurfaceTess() };
 }
 
 // --- Materials ---------------------------------------------------------------
