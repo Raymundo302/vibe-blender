@@ -59,6 +59,7 @@ import { decodeTextureDataUrl } from './ui/materialTab';
 import { Autosave } from './io/autosave';
 import { RestoreToast } from './ui/restoreToast';
 import { exportObj, parseObj } from './io/obj';
+import { exportIges, importIges } from './io/iges'; // NB-D1 NURBS interchange
 import { EditableMesh } from './core/mesh/EditableMesh';
 import { AddObjectsCommand } from './core/undo/objectCommands';
 import { createNodesApi } from './core/nodes/api';
@@ -215,6 +216,60 @@ function importObjText(text: string): void {
   scene.activeId = added.at(-1)?.id ?? null;
   undo.push(new AddObjectsCommand('Import OBJ', scene, added));
   opCtx.setStatus(`Imported ${added.length} object${added.length === 1 ? '' : 's'}`);
+}
+
+// --- IGES export / import (NB-D1) -------------------------------------------
+/** Download all visible curves + surfaces as an IGES 5.3 file. */
+function exportIgesFile(): void {
+  const text = exportIges(scene);
+  const blob = new Blob([text], { type: 'model/iges' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'scene.igs';
+  a.click();
+  URL.revokeObjectURL(url);
+  opCtx.setStatus('Exported scene.igs');
+}
+
+/** Apply an IGES string: import entities (curves/surfaces, trims), select the
+ *  new objects (last = active) and push ONE undoable AddObjectsCommand. */
+function importIgesText(text: string): void {
+  const before = new Set(scene.objects.map((o) => o.id));
+  const result = importIges(text, scene);
+  const added = scene.objects.filter((o) => !before.has(o.id));
+  if (added.length > 0) {
+    scene.selection.clear();
+    for (const obj of added) scene.selection.add(obj.id);
+    scene.activeId = added.at(-1)?.id ?? null;
+    undo.push(new AddObjectsCommand('Import IGES', scene, added));
+  }
+  const skips = [...result.skipped.entries()].map(([t, n]) => `${n}×${t}`).join(', ');
+  opCtx.setStatus(`Imported ${result.curves} curve${result.curves === 1 ? '' : 's'}, `
+    + `${result.surfaces} surface${result.surfaces === 1 ? '' : 's'}`
+    + (skips ? ` (skipped: ${skips})` : ''));
+}
+
+/** Prompt for a .igs/.iges file and import it (thin DOM plumbing). */
+function importIgesFile(): void {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.igs,.iges';
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    file.text().then(
+      (text) => {
+        try {
+          importIgesText(text);
+        } catch (err) {
+          opCtx.setStatus(`Import failed: ${(err as Error).message}`);
+        }
+      },
+      () => opCtx.setStatus('Import failed: could not read file'),
+    );
+  });
+  input.click();
 }
 
 /** Prompt for a .obj file and import it (thin, untested DOM plumbing). */
@@ -505,6 +560,8 @@ const topbar = new Topbar(scene, {
   saveScene, openScene,
   exportObj: exportObjFile,
   importObj: importObjFile,
+  exportIges: exportIgesFile,
+  importIges: importIgesFile,
   toggleHelp: () => helpOverlay.toggle(),
   toggleRender: () => renderEngine.toggle(),
   toggleRenderAnimation: () => animRender.toggle(),
@@ -599,6 +656,8 @@ topbar.mountTabs(workspaces.createTabs());
     apply: (json: string) => loadSceneJson(json),
     exportObj: () => exportObj(scene),
     importObj: (text: string) => importObjText(text),
+    exportIges: () => exportIges(scene),
+    importIges: (text: string) => importIgesText(text),
   },
 };
 

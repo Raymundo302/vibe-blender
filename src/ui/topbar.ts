@@ -14,6 +14,8 @@ export interface TopbarActions {
   openScene(): void;
   exportObj(): void;
   importObj(): void;
+  exportIges(): void;
+  importIges(): void;
   /** Toggle the keyboard-shortcut overlay (also bound to F1). */
   toggleHelp(): void;
   /** Toggle the path-traced render window (F12's reliable stand-in). */
@@ -168,6 +170,9 @@ export class Topbar {
       ['open-scene', 'Open', () => this.actions.openScene()],
       ['import-obj', 'Import OBJ', () => this.actions.importObj()],
       ['export-obj', 'Export OBJ', () => this.actions.exportObj()],
+      // NB-D1: NURBS interchange — curves/surfaces as IGES 126/128 (+trims).
+      ['import-iges', 'Import IGES', () => this.actions.importIges()],
+      ['export-iges', 'Export IGES', () => this.actions.exportIges()],
     ];
     for (const [action, label, run] of items) {
       const btn = document.createElement('button');
