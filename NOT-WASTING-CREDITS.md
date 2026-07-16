@@ -83,4 +83,8 @@ value) / cost. Add new items at the appropriate rank, don't just append.
 - [ ] **In-app shortcut cheat overlay polish** for on-screen capture.
 
 ## Done
+- **NURBS toolkit (2026-07-16, tags nurbs-day-2026-07-16 / beta-build-v9).** Surfaces as a
+  first-class object kind + IGES io, trimming, projection, G0-G3 align, combs, degree/span
+  ops, exact rational primitives. Supersedes most of the old "Curve objects" ambitions
+  (extrude/bevel-profile curve→mesh still open; Pipe already covers tubes).
 (move checked items here: date, commit, one line)
