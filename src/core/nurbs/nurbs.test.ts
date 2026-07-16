@@ -533,7 +533,7 @@ describe('surface tessellation', () => {
     expect(mesh.faces.size).toBe(2);
   });
 
-  it('trim loops discard cells (v1 corner classification)', () => {
+  it('trim loops cut a respected hole (v2 boundary subdivision)', () => {
     const data = saddle();
     data.tess = { mode: 'spans', segsU: 8, segsV: 8, tol: 0.01 };
     const full = tessellateSurface(data).mesh.faces.size;
@@ -548,9 +548,21 @@ describe('surface tessellation', () => {
         ],
       },
     }];
-    const trimmed = tessellateSurface(data).mesh.faces.size;
-    expect(trimmed).toBeLessThan(full);
-    expect(trimmed).toBeGreaterThan(0);
+    // NB-C3 v2 SUBDIVIDES boundary cells (8×8) instead of discarding them whole,
+    // so the trimmed mesh has MANY MORE faces than the untrimmed one — the old
+    // v1 `trimmed < full` invariant is gone. What must hold: the hole is
+    // RESPECTED — no face lands inside it — and the mesh is non-empty.
+    const trimmed = tessellateSurface(data);
+    expect(trimmed.mesh.faces.size).toBeGreaterThan(0);
+    let inHole = 0;
+    for (const f of trimmed.mesh.faces.values()) {
+      const uvs = trimmed.mesh.uvs.get(f.id)!;
+      const cu = uvs.reduce((a, [u]) => a + u, 0) / uvs.length;
+      const cv = uvs.reduce((a, [, v]) => a + v, 0) / uvs.length;
+      if (cu > 0.35 && cu < 0.65 && cv > 0.35 && cv < 0.65) inHole++;
+    }
+    expect(inHole).toBe(0);
+    expect(full).toBeGreaterThan(0);
   });
 
   it('uv point-in-loop helpers', () => {

@@ -6,6 +6,7 @@ import type { Mat4 } from '../../core/math/mat4';
 import { fromSurfaceData, isoCurve } from '../../core/nurbs/surface';
 import { curveDomain, curvePoint } from '../../core/nurbs/curve';
 import { interiorKnots, knotDomain } from '../../core/nurbs/basis';
+import { evalSurfaceCurve3D } from '../../core/nurbs/cos';
 import { isoparmsOn } from '../isoparmPrefs';
 
 /**
@@ -44,7 +45,9 @@ const SEL: [number, number, number] = [0.996, 0.66, 0.2]; // selection orange
 const CTRL: [number, number, number] = [0.95, 0.95, 0.95]; // unselected point
 const LINE: [number, number, number] = [0.45, 0.45, 0.5]; // hull line
 const ISO: [number, number, number] = [0.32, 0.62, 0.72]; // isoparm grey-cyan
+const COS: [number, number, number] = [0.95, 0.6, 0.12]; // curve-on-surface warm amber
 const ISO_SEGS = 64; // samples per isoparametric curve
+const COS_SEGS = 96; // samples per curve-on-surface polyline
 
 interface NetBuffers {
   key: string;
@@ -61,6 +64,7 @@ export class SurfaceNetPass {
   private readonly shader: Shader;
   private readonly cache = new Map<number, NetBuffers>();
   private readonly isoCache = new Map<number, IsoBuffers>();
+  private readonly cosCache = new Map<number, IsoBuffers>();
 
   constructor(private readonly gl: WebGL2RenderingContext) {
     this.shader = new Shader(gl, VERT, FRAG, 'surface-net');
@@ -109,6 +113,39 @@ export class SurfaceNetPass {
       }
     }
     this.isoCache.set(objectId, { key, va });
+    return va;
+  }
+
+  /** Build (or reuse) the curve-on-surface line buffer: each `surfaceCurves`
+   *  entry sampled through the surface map into a warm-amber 3D polyline. Cached
+   *  by surface signature (surfaceCurves are part of the stringified payload). */
+  private rebuildCos(objectId: number, surface: SurfaceData): VertexArray | null {
+    const key = JSON.stringify(surface.surfaceCurves ?? []);
+    const cached = this.cosCache.get(objectId);
+    if (cached && cached.key === key) return cached.va;
+    cached?.va?.dispose();
+
+    let va: VertexArray | null = null;
+    const curves = surface.surfaceCurves ?? [];
+    if (curves.length > 0) {
+      const pos: number[] = [];
+      const col: number[] = [];
+      for (const sc of curves) {
+        const poly = evalSurfaceCurve3D(surface, sc.curve, COS_SEGS);
+        for (let i = 1; i < poly.length; i++) {
+          const a = poly[i - 1], b = poly[i];
+          pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+          for (let k = 0; k < 2; k++) col.push(COS[0], COS[1], COS[2]);
+        }
+      }
+      if (pos.length > 0) {
+        va = new VertexArray(this.gl, [
+          { location: 0, size: 3, data: new Float32Array(pos) },
+          { location: 1, size: 3, data: new Float32Array(col) },
+        ]);
+      }
+    }
+    this.cosCache.set(objectId, { key, va });
     return va;
   }
 
@@ -190,6 +227,15 @@ export class SurfaceNetPass {
     if (isoparmsOn(objectId)) {
       const isoVa = this.rebuildIso(objectId, surface);
       if (isoVa) isoVa.draw(gl.LINES);
+    }
+
+    // Curves-on-surface (NB-C1): warm-amber polylines lying on the surface. Drawn
+    // whenever the net pass runs (edit mode or object-mode showNet), on top of the
+    // isoparms, under the hull + dots. Same fractional eye-pull as the net wins the
+    // z-fight against the tessellated surface.
+    if ((surface.surfaceCurves?.length ?? 0) > 0) {
+      const cosVa = this.rebuildCos(objectId, surface);
+      if (cosVa) cosVa.draw(gl.LINES);
     }
 
     // Hull lines (under the dots).

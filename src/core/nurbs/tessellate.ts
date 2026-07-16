@@ -22,10 +22,22 @@ import { fromSurfaceData, surfaceNormal, surfacePoint, type NSurface } from './s
  * triangles; fully-degenerate cells are skipped. Shade Smooth on the object
  * gives the near-analytic normals (meshToGpu vertex averaging over the grid).
  *
- * TRIMS: when data.trims is non-empty, cells are classified against the trim
- * loops in UV space — a v1 whole-cell classification (kept cells must have all
- * corners inside the kept region). NB-C3 replaces this with boundary-following
- * triangulation; the entry point + loop sampling here are its interface.
+ * TRIMS (NB-C3 v2): when data.trims is non-empty the untrimmed grid is
+ * classified against the trim loops in UV space, then REFINED at the boundary.
+ * Each grid cell is classified by its 4 corners + center via `uvKept`:
+ *  - all 5 kept                → emit the whole quad (as the untrimmed path);
+ *  - all 5 discarded, no loop
+ *    segment crossing the cell  → skip;
+ *  - otherwise (BOUNDARY)       → uniformly subdivide the cell into an 8×8 grid
+ *    of sub-cells (depth-3 2×2 recursion), keep each sub-cell whose CENTER is
+ *    kept, then SNAP every kept sub-cell corner that lies within one sub-cell
+ *    diagonal of a loop polyline onto the nearest point of that polyline. The
+ *    snap is done in UV (memoized per UV node so shared corners weld and the
+ *    result is deterministic) and 3D positions are evaluated AFTER snapping, so
+ *    the mesh edge rides the true trim curve instead of stair-stepping. A snap
+ *    that inverts / degenerates a sub-cell's UV area drops that face (like the
+ *    pole-dedup drops collapsed cells).
+ * The untrimmed path is byte-for-byte unchanged from v1.
  */
 
 /** One direction's tessellation parameters: the sorted list of u values. */
@@ -204,19 +216,79 @@ interface TessGrid {
   faces: { ids: number[]; uvs: [number, number][] }[];
 }
 
-/** Resolve the tessellation grid for a payload (params → welded verts → faces),
- *  without allocating an EditableMesh. Returns null for degenerate payloads. */
-function buildTessGrid(data: SurfaceData): TessGrid | null {
-  const s = fromSurfaceData(data);
-  if (!s) return null;
-  const { us, vs } = tessParams(s, data);
-  const [ul, uh, vl, vh] = [s.U[s.pu], s.U[s.nu], s.V[s.pv], s.V[s.nv]];
-  const uSpanInv = uh - ul === 0 ? 1 : 1 / (uh - ul);
-  const vSpanInv = vh - vl === 0 ? 1 : 1 / (vh - vl);
+/** A sampled trim loop in UV: closed polyline + hole flag. */
+interface TrimLoopUv { pts: [number, number][]; hole: boolean }
 
-  // Trim loops sampled once (v1 cell classification; NB-C3 upgrades).
-  const loops = (data.trims ?? []).map((t) => ({ pts: sampleUvLoop(t.curve), hole: t.hole }));
+/** Dense loop sampling for the v2 boundary classifier + snapper. */
+const TRIM_LOOP_SEGS = 256;
+/** Boundary-cell subdivision (depth-3 2×2 recursion → 8×8 sub-cells). */
+const TRIM_SUBDIV = 8;
 
+/** Nearest point on segment (ax,ay)-(bx,by) to (u,v): [px, py, dist]. */
+function nearestOnSeg(
+  u: number, v: number, ax: number, ay: number, bx: number, by: number,
+): [number, number, number] {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((u - ax) * dx + (v - ay) * dy) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const px = ax + t * dx, py = ay + t * dy;
+  return [px, py, Math.hypot(u - px, v - py)];
+}
+
+/** Nearest point on ANY loop polyline to (u,v). */
+function nearestOnLoops(u: number, v: number, loops: TrimLoopUv[]): { pu: number; pv: number; dist: number } {
+  let best = Infinity, bu = u, bv = v;
+  for (const l of loops) {
+    const pts = l.pts;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [px, py, d] = nearestOnSeg(u, v, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+      if (d < best) { best = d; bu = px; bv = py; }
+    }
+  }
+  return { pu: bu, pv: bv, dist: best };
+}
+
+/** Do segments p1-p2 and p3-p4 intersect (proper or touching)? */
+function segsIntersect(
+  x1: number, y1: number, x2: number, y2: number,
+  x3: number, y3: number, x4: number, y4: number,
+): boolean {
+  const d = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) =>
+    (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+  const d1 = d(x3, y3, x4, y4, x1, y1);
+  const d2 = d(x3, y3, x4, y4, x2, y2);
+  const d3 = d(x1, y1, x2, y2, x3, y3);
+  const d4 = d(x1, y1, x2, y2, x4, y4);
+  if (((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))) return true;
+  // Collinear-touch cases are handled by the endpoint-in-rect test upstream.
+  return false;
+}
+
+/** Does any loop segment cross/touch the axis-aligned cell [u0,u1]×[v0,v1]? */
+function loopCrossesCell(loops: TrimLoopUv[], u0: number, u1: number, v0: number, v1: number): boolean {
+  for (const l of loops) {
+    const pts = l.pts;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const ax = pts[i][0], ay = pts[i][1], bx = pts[i + 1][0], by = pts[i + 1][1];
+      // Endpoint inside the cell.
+      if (ax >= u0 && ax <= u1 && ay >= v0 && ay <= v1) return true;
+      if (bx >= u0 && bx <= u1 && by >= v0 && by <= v1) return true;
+      // Segment cuts any cell edge.
+      if (segsIntersect(ax, ay, bx, by, u0, v0, u1, v0)) return true;
+      if (segsIntersect(ax, ay, bx, by, u1, v0, u1, v1)) return true;
+      if (segsIntersect(ax, ay, bx, by, u1, v1, u0, v1)) return true;
+      if (segsIntersect(ax, ay, bx, by, u0, v1, u0, v0)) return true;
+    }
+  }
+  return false;
+}
+
+/** Untrimmed grid build — byte-identical to the v1 output (no trim branch). */
+function buildUntrimmedGrid(
+  s: NSurface, us: number[], vs: number[],
+  ul: number, vl: number, uSpanInv: number, vSpanInv: number,
+): TessGrid {
   // Vertex grid, welded exactly: identical positions (collapsed pole rows)
   // share one vert so the mesh is manifold at poles.
   const keyOf = (p: Vec3) => `${p.x.toFixed(9)},${p.y.toFixed(9)},${p.z.toFixed(9)}`;
@@ -242,13 +314,6 @@ function buildTessGrid(data: SurfaceData): TessGrid | null {
   const faces: { ids: number[]; uvs: [number, number][] }[] = [];
   for (let i = 0; i < us.length - 1; i++) {
     for (let j = 0; j < vs.length - 1; j++) {
-      if (loops.length) {
-        // v1 trim: keep the cell only when all four corners are kept.
-        const corners: [number, number][] = [
-          [us[i], vs[j]], [us[i + 1], vs[j]], [us[i + 1], vs[j + 1]], [us[i], vs[j + 1]],
-        ];
-        if (!corners.every(([u, v]) => uvKept(u, v, loops))) continue;
-      }
       const ids = [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]];
       const uvs: [number, number][] = [
         [(us[i] - ul) * uSpanInv, (vs[j] - vl) * vSpanInv],
@@ -270,6 +335,130 @@ function buildTessGrid(data: SurfaceData): TessGrid | null {
     }
   }
   return { us, vs, positions, faces };
+}
+
+/**
+ * Trimmed grid build (NB-C3 v2): full quads for interior cells, refined +
+ * edge-snapped sub-cells along the boundary. Verts are welded on demand (by
+ * exact 3D position), so no orphan interior verts survive. UVs = normalized
+ * domain coords of the POST-SNAP UV position.
+ */
+function buildTrimmedGrid(
+  s: NSurface, us: number[], vs: number[],
+  ul: number, vl: number, uSpanInv: number, vSpanInv: number,
+  loops: TrimLoopUv[],
+): TessGrid {
+  const keyOf = (p: Vec3) => `${p.x.toFixed(9)},${p.y.toFixed(9)},${p.z.toFixed(9)}`;
+  const weld = new Map<string, number>();
+  const positions: Vec3[] = [];
+  const uvId = (u: number, v: number): number => {
+    const p = surfacePoint(s, u, v);
+    const key = keyOf(p);
+    let id = weld.get(key);
+    if (id === undefined) { id = positions.length; positions.push(p); weld.set(key, id); }
+    return id;
+  };
+  const normUV = (u: number, v: number): [number, number] => [(u - ul) * uSpanInv, (v - vl) * vSpanInv];
+
+  // Snap memo, keyed by UV node — guarantees a shared sub-cell corner welds
+  // (same snapped UV → same 3D position) and makes the whole build deterministic.
+  // Only DISCARD-side corners (a corner poking into the trimmed-away region) are
+  // pulled OUT onto the loop; keep-side corners never move inward. This rides the
+  // true trim curve without chord-sagging a kept face's centroid across the loop.
+  const snapMemo = new Map<string, [number, number]>();
+  const snapCorner = (u: number, v: number, diag: number): [number, number] => {
+    const key = `${u.toFixed(9)},${v.toFixed(9)}`;
+    const hit = snapMemo.get(key);
+    if (hit) return hit;
+    let res: [number, number] = [u, v];
+    if (!uvKept(u, v, loops)) {
+      const { pu, pv, dist } = nearestOnLoops(u, v, loops);
+      if (dist <= diag) res = [pu, pv];
+    }
+    snapMemo.set(key, res);
+    return res;
+  };
+
+  const faces: { ids: number[]; uvs: [number, number][] }[] = [];
+  const emit = (corners: [number, number][]): void => {
+    // UV signed-area guard: drop inverted / degenerate faces (the snap guard).
+    let area2 = 0;
+    let cUsum = 0, cVsum = 0;
+    for (let k = 0; k < corners.length; k++) {
+      const [x1, y1] = corners[k], [x2, y2] = corners[(k + 1) % corners.length];
+      area2 += x1 * y2 - x2 * y1;
+      cUsum += x1; cVsum += y1;
+    }
+    if (area2 <= 1e-12) return;
+    // Snapping can pull a boundary sub-cell's POST-SNAP centroid a hair across
+    // the trim curve; drop any face whose centroid isn't kept so no face lands
+    // inside a hole / outside an outer loop.
+    if (!uvKept(cUsum / corners.length, cVsum / corners.length, loops)) return;
+    const ids = corners.map(([u, v]) => uvId(u, v));
+    const uvs = corners.map(([u, v]) => normUV(u, v));
+    const dedupIds: number[] = [];
+    const dedupUvs: [number, number][] = [];
+    for (let k = 0; k < ids.length; k++) {
+      if (ids[k] !== ids[(k + 1) % ids.length]) { dedupIds.push(ids[k]); dedupUvs.push(uvs[k]); }
+    }
+    if (new Set(dedupIds).size < 3) return;
+    faces.push({ ids: dedupIds, uvs: dedupUvs });
+  };
+
+  for (let i = 0; i < us.length - 1; i++) {
+    for (let j = 0; j < vs.length - 1; j++) {
+      const u0 = us[i], u1 = us[i + 1], v0 = vs[j], v1 = vs[j + 1];
+      const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2;
+      const corners: [number, number][] = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+      const keptCorners = corners.map(([u, v]) => uvKept(u, v, loops));
+      const keptCenter = uvKept(cu, cv, loops);
+      const allKept = keptCenter && keptCorners.every((k) => k);
+      const noneKept = !keptCenter && keptCorners.every((k) => !k);
+
+      if (allKept) {
+        emit(corners); // whole quad, unsnapped
+        continue;
+      }
+      if (noneKept && !loopCrossesCell(loops, u0, u1, v0, v1)) {
+        continue; // fully discarded, loop misses the cell entirely
+      }
+      // BOUNDARY: uniform 8×8 subdivision; keep sub-cells by center; snap corners.
+      const du = (u1 - u0) / TRIM_SUBDIV, dv = (v1 - v0) / TRIM_SUBDIV;
+      const diag = Math.hypot(du, dv);
+      for (let a = 0; a < TRIM_SUBDIV; a++) {
+        for (let b = 0; b < TRIM_SUBDIV; b++) {
+          const scu = u0 + (a + 0.5) * du, scv = v0 + (b + 0.5) * dv;
+          if (!uvKept(scu, scv, loops)) continue;
+          const sc: [number, number][] = [
+            snapCorner(u0 + a * du, v0 + b * dv, diag),
+            snapCorner(u0 + (a + 1) * du, v0 + b * dv, diag),
+            snapCorner(u0 + (a + 1) * du, v0 + (b + 1) * dv, diag),
+            snapCorner(u0 + a * du, v0 + (b + 1) * dv, diag),
+          ];
+          emit(sc);
+        }
+      }
+    }
+  }
+  return { us, vs, positions, faces };
+}
+
+/** Resolve the tessellation grid for a payload (params → welded verts → faces),
+ *  without allocating an EditableMesh. Returns null for degenerate payloads. */
+function buildTessGrid(data: SurfaceData): TessGrid | null {
+  const s = fromSurfaceData(data);
+  if (!s) return null;
+  const { us, vs } = tessParams(s, data);
+  const [ul, uh, vl, vh] = [s.U[s.pu], s.U[s.nu], s.V[s.pv], s.V[s.nv]];
+  const uSpanInv = uh - ul === 0 ? 1 : 1 / (uh - ul);
+  const vSpanInv = vh - vl === 0 ? 1 : 1 / (vh - vl);
+
+  const trims = data.trims ?? [];
+  if (trims.length === 0) {
+    return buildUntrimmedGrid(s, us, vs, ul, vl, uSpanInv, vSpanInv);
+  }
+  const loops: TrimLoopUv[] = trims.map((t) => ({ pts: sampleUvLoop(t.curve, TRIM_LOOP_SEGS), hole: t.hole }));
+  return buildTrimmedGrid(s, us, vs, ul, vl, uSpanInv, vSpanInv, loops);
 }
 
 /**

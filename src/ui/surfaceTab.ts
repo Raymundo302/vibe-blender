@@ -1,6 +1,7 @@
 import type { Scene, SceneObject } from '../core/scene/Scene';
 import type { UndoStack } from '../core/undo/UndoStack';
 import {
+  cloneCurveData,
   cloneSurfaceData,
   clampSurfaceSegs,
   type SurfaceData,
@@ -8,8 +9,13 @@ import {
 } from '../core/scene/objectData';
 import { registerPropertiesTab, type PropertiesTabContext } from './propertiesEditor';
 import { SurfaceCommand } from '../core/undo/surfaceCommands';
+import { AddObjectsCommand } from '../core/undo/objectCommands';
 import { setSurfaceDegree, rebuildSurfaceData, insertSurfaceKnotAt } from '../core/nurbs/edit';
-import { fromSurfaceData, type NSurface } from '../core/nurbs/surface';
+import { fromSurfaceData, surfaceDomain, type NSurface } from '../core/nurbs/surface';
+import { isoparmSurfaceCurve, extractSurfaceCurveToCurveData } from '../core/nurbs/cos';
+import { projectCurveObjectToSurface, type ProjectCurveOpts } from '../core/nurbs/projectCurve';
+import { Vec3 } from '../core/math/vec3';
+import { addTrimFromSurfaceCurve, removeTrim, clearTrims, isClosedUvCurve } from '../core/nurbs/trimOps';
 import { interiorKnots, knotDomain } from '../core/nurbs/basis';
 import { tessStats } from '../core/nurbs/tessellate';
 import { isoparmsOn, setIsoparms } from '../render/isoparmPrefs';
@@ -81,6 +87,16 @@ class SurfaceTab {
   private readonly showNet: HTMLInputElement;
   private readonly showIsoparms: HTMLInputElement;
 
+  // Surface Curves + Trims (dynamic lists)
+  private readonly cosList: HTMLDivElement;
+  private readonly isoDir: HTMLSelectElement;
+  private readonly isoParam: HTMLInputElement;
+  private readonly projMode: HTMLSelectElement;
+  private readonly trimsList: HTMLDivElement;
+  private readonly clearAllBtn: HTMLButtonElement;
+  /** Signature of the last-rendered curve/trim lists (skip DOM churn). */
+  private lastListKey = '';
+
   // Selected Point
   private readonly selSection: HTMLDivElement;
   private readonly weightInput: HTMLInputElement;
@@ -97,6 +113,7 @@ class SurfaceTab {
     container: HTMLElement,
     private readonly scene: Scene,
     private readonly undo: UndoStack,
+    private readonly setStatus?: (text: string) => void,
   ) {
     this.empty = document.createElement('div');
     this.empty.className = 'properties-empty';
@@ -200,6 +217,60 @@ class SurfaceTab {
       if (obj) setIsoparms(obj.id, this.showIsoparms.checked);
     });
     this.body.append(this.row('Isoparms', this.showIsoparms));
+
+    // --- Surface Curves ----------------------------------------------------
+    this.body.append(this.sectionTitle('Surface Curves'));
+    this.cosList = document.createElement('div');
+    this.cosList.className = 'surface-tab-cos-list';
+    this.body.append(this.cosList);
+
+    // Add-Isoparm controls: direction toggle + 0..1 param (mapped to the real
+    // domain on Add) + Add button.
+    const isoRow = document.createElement('div');
+    isoRow.className = 'surface-tab-iso-row';
+    this.isoDir = document.createElement('select');
+    this.isoDir.className = 'surface-tab-select';
+    this.isoDir.dataset.field = 'iso-dir';
+    for (const [value, label] of [['u', 'U'], ['v', 'V']] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.isoDir.append(opt);
+    }
+    this.isoParam = this.numInput('iso-param', '0.05', '0', '1');
+    this.isoParam.value = '0.5';
+    const addIsoBtn = this.button('add-isoparm', 'Add');
+    addIsoBtn.addEventListener('click', () => this.addIsoparm());
+    isoRow.append(this.isoDir, this.isoParam, addIsoBtn);
+    this.body.append(isoRow);
+
+    // Project (NB-C2 glue): projects the OTHER selected curve object onto this
+    // surface as a new surface curve. Mode: closest-point or straight down −Z.
+    const projRow = document.createElement('div');
+    projRow.className = 'surface-tab-iso-row';
+    this.projMode = document.createElement('select');
+    this.projMode.className = 'surface-tab-select';
+    this.projMode.dataset.field = 'proj-mode';
+    for (const [value, label] of [['closest', 'Closest'], ['down', 'Down −Z']] as const) {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      this.projMode.append(opt);
+    }
+    const projBtn = this.button('project-curve', 'Project Curve');
+    projBtn.title = 'Select a curve object too (active = this surface), then project it onto the surface';
+    projBtn.addEventListener('click', () => this.projectSelectedCurve());
+    projRow.append(this.projMode, projBtn);
+    this.body.append(projRow);
+
+    // --- Trims -------------------------------------------------------------
+    this.body.append(this.sectionTitle('Trims'));
+    this.trimsList = document.createElement('div');
+    this.trimsList.className = 'surface-tab-trims-list';
+    this.body.append(this.trimsList);
+    this.clearAllBtn = this.button('clear-trims', 'Clear All');
+    this.clearAllBtn.addEventListener('click', () => this.clearAllTrims());
+    this.body.append(this.clearAllBtn);
 
     // --- Selected Point (edit mode with a selection) -----------------------
     this.selSection = document.createElement('div');
@@ -337,6 +408,181 @@ class SurfaceTab {
     });
   }
 
+  // --- Surface Curves + Trims ----------------------------------------------
+
+  /**
+   * Project the selected CURVE object onto the active surface (NB-C2 wrapper),
+   * appending the result as a surface curve — one undo step. The curve is the
+   * first selected curve object that isn't the active surface; 'down' mode
+   * projects along world −Z.
+   */
+  private projectSelectedCurve(): void {
+    const obj = this.activeSurface();
+    if (!obj || !obj.surface) return;
+    const curveObj = this.scene.selectedObjects.find(
+      (o) => o.id !== obj.id && o.kind === 'curve' && o.curve,
+    );
+    if (!curveObj) {
+      this.setStatus?.('Project: select a curve object along with the surface');
+      return;
+    }
+    const opts: ProjectCurveOpts = this.projMode.value === 'down'
+      ? { mode: 'direction', dir: new Vec3(0, 0, -1) }
+      : { mode: 'closest' };
+    const sc = projectCurveObjectToSurface(this.scene, curveObj, obj, opts);
+    if (!sc) {
+      this.setStatus?.('Project: the curve does not land on the surface');
+      return;
+    }
+    this.undo.push(SurfaceCommand.capture('Project Curve', obj, () => {
+      const scs = obj.surface!.surfaceCurves ?? [];
+      scs.push(sc);
+      obj.surface!.surfaceCurves = scs;
+    }));
+    this.setStatus?.(`Projected ${curveObj.name} → ${sc.name}`);
+    this.refresh();
+  }
+
+  /** Append a new isoparm surface curve at the 0..1 slider param, mapped into the
+   *  real domain. Numbered "IsoU.NNN"/"IsoV.NNN". */
+  private addIsoparm(): void {
+    const obj = this.activeSurface();
+    if (!obj || !obj.surface) return;
+    const s = fromSurfaceData(obj.surface);
+    if (!s) return;
+    const dir = this.isoDir.value === 'v' ? 'v' : 'u';
+    let param = parseFloat(this.isoParam.value);
+    if (!Number.isFinite(param)) return this.refresh();
+    param = Math.max(0, Math.min(1, param));
+    const [ul, uh, vl, vh] = surfaceDomain(s);
+    const t = dir === 'u' ? ul + param * (uh - ul) : vl + param * (vh - vl);
+    const sc = isoparmSurfaceCurve(obj.surface, dir, t);
+    this.apply('Add Isoparm', (d) => {
+      const n = cloneSurfaceData(d);
+      const list = n.surfaceCurves ?? [];
+      const num = String(list.length + 1).padStart(3, '0');
+      list.push({ name: `${sc.name}.${num}`, curve: cloneCurveData(sc.curve) });
+      n.surfaceCurves = list;
+      return n;
+    });
+  }
+
+  /** Delete the surface curve at `index`. */
+  private deleteCurve(index: number): void {
+    this.apply('Delete Surface Curve', (d) => {
+      const n = cloneSurfaceData(d);
+      if (!n.surfaceCurves) return n;
+      n.surfaceCurves.splice(index, 1);
+      if (n.surfaceCurves.length === 0) delete n.surfaceCurves;
+      return n;
+    });
+  }
+
+  /** Lift the surface curve at `index` into a standalone scene CURVE object at
+   *  the surface's world transform (AddObjectsCommand — a separate undo step). */
+  private extractCurve(index: number): void {
+    const obj = this.activeSurface();
+    if (!obj || !obj.surface) return;
+    const sc = obj.surface.surfaceCurves?.[index];
+    if (!sc) return;
+    const data = extractSurfaceCurveToCurveData(obj.surface, sc.curve);
+    const curveObj = this.scene.addCurve(sc.name, data);
+    curveObj.transform = this.scene.worldTransformOf(obj);
+    this.scene.selectOnly(curveObj.id);
+    this.undo.push(new AddObjectsCommand('Extract Surface Curve', this.scene, [curveObj]));
+    this.refresh();
+  }
+
+  /** Promote the surface curve at `index` to a trim (hole = cut it out). */
+  private trimCurve(index: number, hole: boolean): void {
+    this.apply('Trim Surface', (d) => addTrimFromSurfaceCurve(d, index, hole) ?? d);
+  }
+
+  /** Demote the trim at `index` back to a surface curve. */
+  private untrimAt(index: number): void {
+    this.apply('Untrim', (d) => removeTrim(d, index) ?? d);
+  }
+
+  /** Drop every trim loop. */
+  private clearAllTrims(): void {
+    this.apply('Clear Trims', (d) => clearTrims(d));
+  }
+
+  private smallBtn(action: string, text: string): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'surface-tab-mini-btn';
+    btn.dataset.action = action;
+    btn.textContent = text;
+    return btn;
+  }
+
+  /** Rebuild the Surface Curves + Trims list rows (guarded by a payload+id key,
+   *  so it only touches the DOM when the lists actually change). */
+  private rebuildLists(obj: SceneObject): void {
+    const d = obj.surface!;
+    const curves = d.surfaceCurves ?? [];
+    const trims = d.trims ?? [];
+    const key = `${obj.id}:${JSON.stringify(curves)}:${JSON.stringify(trims.map((t) => t.hole))}`;
+    if (key === this.lastListKey) return;
+    this.lastListKey = key;
+
+    // Surface Curves list
+    this.cosList.textContent = '';
+    if (curves.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'surface-tab-info';
+      empty.textContent = 'No surface curves';
+      this.cosList.append(empty);
+    } else {
+      curves.forEach((sc, i) => {
+        const row = document.createElement('div');
+        row.className = 'surface-tab-cos-row';
+        row.dataset.cosRow = String(i);
+        const name = document.createElement('span');
+        name.className = 'surface-tab-cos-name';
+        name.textContent = sc.name;
+        const closed = isClosedUvCurve(sc.curve);
+        const extractBtn = this.smallBtn('extract', 'Extract');
+        extractBtn.addEventListener('click', () => this.extractCurve(i));
+        const trimBtn = this.smallBtn('trim', 'Trim');
+        trimBtn.disabled = !closed;
+        trimBtn.addEventListener('click', () => this.trimCurve(i, false));
+        const holeBtn = this.smallBtn('hole', 'Hole');
+        holeBtn.disabled = !closed;
+        holeBtn.addEventListener('click', () => this.trimCurve(i, true));
+        const del = this.smallBtn('del-cos', '✕');
+        del.addEventListener('click', () => this.deleteCurve(i));
+        row.append(name, extractBtn, trimBtn, holeBtn, del);
+        this.cosList.append(row);
+      });
+    }
+
+    // Trims list
+    this.trimsList.textContent = '';
+    if (trims.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'surface-tab-info';
+      empty.textContent = 'No trims';
+      this.trimsList.append(empty);
+      this.clearAllBtn.style.display = 'none';
+    } else {
+      trims.forEach((tl, i) => {
+        const row = document.createElement('div');
+        row.className = 'surface-tab-trim-row';
+        row.dataset.trimRow = String(i);
+        const tag = document.createElement('span');
+        tag.className = `surface-tab-trim-tag ${tl.hole ? 'is-hole' : 'is-keep'}`;
+        tag.textContent = tl.hole ? 'hole' : 'keep';
+        const untrim = this.smallBtn('untrim', 'Untrim');
+        untrim.addEventListener('click', () => this.untrimAt(i));
+        row.append(tag, untrim);
+        this.trimsList.append(row);
+      });
+      this.clearAllBtn.style.display = '';
+    }
+  }
+
   // --- Refresh -------------------------------------------------------------
 
   update(): void {
@@ -351,6 +597,7 @@ class SurfaceTab {
     this.body.style.display = '';
     const switched = obj.id !== this.lastId;
     this.lastId = obj.id;
+    this.rebuildLists(obj);
     if (!switched && this.isPanelFocused()) {
       // Still keep the always-live readouts + the selection section fresh.
       this.writeInfo(obj);
@@ -437,7 +684,10 @@ class SurfaceTab {
 
   private refresh(): void {
     const obj = this.activeSurface();
-    if (obj && obj.surface) this.writeFields(obj, false);
+    if (obj && obj.surface) {
+      this.rebuildLists(obj);
+      this.writeFields(obj, false);
+    }
   }
 }
 
@@ -446,5 +696,5 @@ registerPropertiesTab({
   icon: '◧', // ◧
   title: 'Surface',
   build: (container: HTMLElement, ctx: PropertiesTabContext) =>
-    new SurfaceTab(container, ctx.scene, ctx.undo),
+    new SurfaceTab(container, ctx.scene, ctx.undo, ctx.setStatus),
 });

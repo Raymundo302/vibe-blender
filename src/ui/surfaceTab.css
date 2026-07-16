@@ -47,3 +47,55 @@
   border-top: 1px solid #333;
   padding-top: 2px;
 }
+
+/* Surface Curves + Trims lists (NB-C1) */
+.surface-tab-cos-list,
+.surface-tab-trims-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 2px 0 4px 0;
+}
+.surface-tab-cos-row,
+.surface-tab-trim-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.surface-tab-cos-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: #e6b47a;
+}
+.surface-tab-mini-btn {
+  background: #3a3a3a;
+  color: #f0f0f0;
+  border: 1px solid #4a4a4a;
+  border-radius: 3px;
+  padding: 2px 5px;
+  cursor: pointer;
+  font-size: 10px;
+  flex: 0 0 auto;
+}
+.surface-tab-mini-btn:hover { background: #474747; }
+.surface-tab-mini-btn:disabled { opacity: 0.35; cursor: default; }
+.surface-tab-iso-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.surface-tab-iso-row .surface-tab-select { flex: 0 0 48px; }
+.surface-tab-trim-tag {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.surface-tab-trim-tag.is-hole { color: #e07a7a; }
+.surface-tab-trim-tag.is-keep { color: #7ac07a; }
