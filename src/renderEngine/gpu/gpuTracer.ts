@@ -98,6 +98,12 @@ interface GpuScene {
   atlas: WebGLTexture;
   camera: SnapCamera;
   world: SnapWorld;
+  /** Equirect world texture for HDRI mode (2026-07-16 — closes the documented
+   *  v1 "mode 2 falls back to gradient" gap), or null when world.hdri absent.
+   *  NEAREST + REPEAT-u/CLAMP-v to match the CPU sampleEquirect exactly. */
+  hdriTex: WebGLTexture | null;
+  /** The HdriImage the texture was built from (re-upload only on change). */
+  hdriSrc: import('../../core/scene/worldData').HdriImage | null;
 }
 
 export class GpuTracer {
@@ -290,7 +296,31 @@ export class GpuTracer {
       gl.deleteTexture(dt.tex);
     }
     gl.deleteTexture(this.scene.atlas);
+    if (this.scene.hdriTex) gl.deleteTexture(this.scene.hdriTex);
     this.scene = null;
+  }
+
+  /**
+   * Upload a decoded HDRI (3 floats/pixel, linear light) as an RGB32F equirect
+   * texture. NEAREST filtering + REPEAT in u / CLAMP in v mirror the CPU
+   * sampleEquirect (floor-pixel lookup, wrapped seam, clamped poles) so the
+   * GPU/CPU parity harness sees the same sky. Returns null when no HDRI.
+   */
+  private createHdriTexture(
+    gl: WebGL2RenderingContext,
+    img: import('../../core/scene/worldData').HdriImage | null,
+  ): WebGLTexture | null {
+    if (!img || img.width <= 0 || img.height <= 0) return null;
+    const tex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB32F, img.width, img.height, 0, gl.RGB, gl.FLOAT, img.data);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
   }
 
   /** Replace an existing data texture in place (delete old, upload new). */
@@ -338,6 +368,8 @@ export class GpuTracer {
         atlas: this.createAtlasTexture(gl, packImageAtlas(snap.materials)),
         camera: snap.camera,
         world,
+        hdriTex: this.createHdriTexture(gl, world.hdri),
+        hdriSrc: world.hdri,
       };
       this.geoKey = geometrySignature(snap);
       this.matKey = materialsSignature(snap.materials);
@@ -387,6 +419,13 @@ export class GpuTracer {
     }
     s.camera = snap.camera;
     s.world = world;
+    // HDRI equirect: re-upload only when the decoded blob itself changed
+    // (world edits are otherwise plain uniforms — the incremental contract).
+    if (s.hdriSrc !== world.hdri) {
+      if (s.hdriTex) gl.deleteTexture(s.hdriTex);
+      s.hdriTex = this.createHdriTexture(gl, world.hdri);
+      s.hdriSrc = world.hdri;
+    }
     this.geoKey = geoKey;
     this.matKey = matKey;
     this.lightKey = lightKey;
@@ -461,9 +500,14 @@ export class GpuTracer {
     gl.uniform1i(this.u('uNumEmitters'), this.scene.numEmitters);
     gl.uniform1f(this.u('uEmitTotalArea'), this.scene.emitTotalArea);
 
-    // World/sky (flat/gradient; hdri falls back to gradient — documented).
+    // World/sky: flat / gradient / hdri (equirect texture on unit 11;
+    // hdri WITHOUT decoded pixels still falls back to the gradient).
     const wld = this.scene.world;
     gl.uniform1i(this.u('uWorldMode'), wld.mode);
+    gl.uniform1i(this.u('uHasHdri'), this.scene.hdriTex ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE0 + 11);
+    gl.bindTexture(gl.TEXTURE_2D, this.scene.hdriTex);
+    gl.uniform1i(this.u('uHdri'), 11);
     gl.uniform3f(this.u('uWorldColor'), wld.color[0], wld.color[1], wld.color[2]);
     gl.uniform3f(this.u('uWorldHorizon'), wld.horizon[0], wld.horizon[1], wld.horizon[2]);
     gl.uniform3f(this.u('uWorldZenith'), wld.zenith[0], wld.zenith[1], wld.zenith[2]);

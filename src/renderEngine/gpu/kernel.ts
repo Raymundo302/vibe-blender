@@ -28,8 +28,9 @@
  *     cannot run in GLSL — a node material falls back to its flat baseColor/rough/
  *     metal, no procedural pattern. (buildEmitters already excludes node emitters,
  *     so mesh-light NEE agrees.)
- *   • HDRI world: equirect texture upload not built in v1 — mode 2 falls back to
- *     the gradient (exactly what the CPU does when hdri pixels are absent).
+ *   • HDRI world: equirect RGB32F texture (unit 11), CPU-matching UV + NEAREST
+ *     (2026-07-16 — the v1 gradient fallback now only fires when the decoded
+ *     pixels are absent, exactly like the CPU).
  *   • SSS is ported (wrapped-diffuse direct + dipole-ish dip continuation).
  *
  * highp EVERYWHERE (repo AO-saga lesson: lowp/mediump samplers on real drivers
@@ -83,11 +84,14 @@ uniform float uFovY;
 uniform float uAperture;
 uniform float uFocus;
 
-// World/sky (flat/gradient; hdri falls back to gradient — documented).
+// World/sky: flat / gradient / hdri (equirect texture; hdri without decoded
+// pixels falls back to the gradient, matching the CPU worldSky).
 uniform int   uWorldMode;
 uniform vec3  uWorldColor;
 uniform vec3  uWorldHorizon;
 uniform vec3  uWorldZenith;
+uniform sampler2D uHdri; // equirect (RGB32F, NEAREST, wrap-u/clamp-v)
+uniform int   uHasHdri;  // 1 when uHdri holds real pixels
 uniform float uWorldStrength;
 
 uniform vec2  uResolution;
@@ -307,9 +311,18 @@ float hitTexAlpha(int mat, int tri, vec2 bary) {
   return texture(uAtlas, vec3(uv, layer)).a;
 }
 
-// ---- world/sky (flat / gradient; hdri → gradient fallback) -----------------
+// ---- world/sky (flat / gradient / hdri equirect) ----------------------------
+// HDRI mirrors the CPU equirectUV: u = 0.5 + atan2(dx, -dy)/2π (wrapped seam),
+// v = 0.5 − asin(dz)/π (clamped poles); NEAREST texel = the CPU's floor-pixel
+// lookup. hdri mode WITHOUT pixels (uHasHdri 0) falls to the gradient.
 vec3 worldSky(vec3 d) {
   if (uWorldMode == 0) return uWorldColor * uWorldStrength;
+  if (uWorldMode == 2 && uHasHdri == 1) {
+    vec3 nd = d / max(length(d), 1e-8);
+    float u = 0.5 + atan(nd.x, -nd.y) / 6.283185307179586;
+    float v = 0.5 - asin(clamp(nd.z, -1.0, 1.0)) / 3.141592653589793;
+    return texture(uHdri, vec2(u, v)).rgb * uWorldStrength;
+  }
   float t = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   return mix(uWorldHorizon, uWorldZenith, t) * uWorldStrength;
 }
