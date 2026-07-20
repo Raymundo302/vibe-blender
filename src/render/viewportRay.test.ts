@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { adaptBatchPolls, adaptStrips, initialStrips } from './viewportRay';
+import { adaptBatchPolls, initialRows, rowsForSample } from './viewportRay';
 
 // 2026-07-20 pacing pass — the fenced batch adapter is a pure function so the
 // heuristic is testable without a GL context. WebGL submission is async (wall
@@ -42,29 +42,36 @@ describe('adaptBatchPolls (fenced GPU batch adapter)', () => {
   });
 });
 
-// Band tiling — each sample splits into scissored row-bands, ONE in flight at a
-// time (~45ms each): a 2s full-res donut sample as a single job tripped the
-// amdgpu watchdog (context loss) and froze rAF/compositor for its full length —
-// even split into 64 flushed draws queued together (measured on the Vega 7).
-describe('band tiling (initialStrips / adaptStrips)', () => {
-  it('initialStrips: ~32k px per band, clamped to [1, 256]', () => {
-    expect(initialStrips(64 * 64)).toBe(1);            // tiny e2e canvases
-    expect(initialStrips(988 * 490)).toBe(15);         // viewport-ish
-    expect(initialStrips(1920 * 1080)).toBe(64);       // F12 1080p
-    expect(initialStrips(8192 * 8192)).toBe(256);      // clamped
+// Row slicing — each sample renders as scissored row-slices via the tracer's
+// row cursor, ONE ~45ms slice in flight at a time: a 2s full-res donut sample
+// as a single job tripped the amdgpu watchdog (context loss) and froze the
+// rAF/compositor for its full length — even split into 64 flushed draws queued
+// together (measured on the Vega 7). The cursor lets the slice height adapt
+// after EVERY submission, so even an 8s 1080p sample settles onto the target
+// within a few slices.
+describe('row slicing (initialRows / adaptRows)', () => {
+  it('initialRows: ~32k px per slice, clamped to [1, h]', () => {
+    expect(initialRows(64, 64)).toBe(64);        // tiny e2e canvases → whole frame
+    expect(initialRows(988, 490)).toBe(34);      // viewport-ish
+    expect(initialRows(1920, 1080)).toBe(18);    // F12 1080p
+    expect(initialRows(100000, 100)).toBe(1);    // floor
   });
 
-  it('adaptStrips: splits finer when a band runs long', () => {
-    expect(adaptStrips(4, 250)).toBe(8);
-    expect(adaptStrips(256, 500)).toBe(256); // clamped at max
+  it('rowsForSample: ~half-target uniform slices from the whole-sample cost', () => {
+    // 490-row viewport, 2400ms donut sample → ~4-row slices (~22ms of the
+    // cheapest region, ≤ ~45ms in the most expensive — 2× headroom).
+    expect(rowsForSample(490, 2400)).toBe(4);
+    // 1080-row F12, 8s sample → 3-row slices.
+    expect(rowsForSample(1080, 8000)).toBe(3);
+    // Never 0, even for absurd costs.
+    expect(rowsForSample(100, 1000000)).toBe(1);
+    // Never the full height unless the sample is cheap (no accidental
+    // monolithic samples mid-flight).
+    expect(rowsForSample(490, 68)).toBe(162);
   });
 
-  it('adaptStrips: merges when bands are cheap (fewer submissions)', () => {
-    expect(adaptStrips(8, 10)).toBe(4);
-    expect(adaptStrips(1, 1)).toBe(1); // floor
-  });
-
-  it('adaptStrips: holds in the comfortable band', () => {
-    expect(adaptStrips(8, 30)).toBe(8);
+  it('rowsForSample: a cheap whole sample → whole-sample batch units', () => {
+    expect(rowsForSample(490, 30)).toBe(490);
+    expect(rowsForSample(490, 67)).toBe(490); // ≤ 1.5× target
   });
 });

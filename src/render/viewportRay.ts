@@ -65,41 +65,59 @@ export function adaptBatchPolls(current: number, polls: number, maxBatch: number
   return Math.max(1, Math.min(maxBatch, next));
 }
 
-// --- sample band-tiling (2026-07-20) ------------------------------------------
+// --- sample row-slicing (2026-07-20) ------------------------------------------
 // A heavy scene can cost SECONDS of GPU per fullscreen sample. One draw that
 // size is a single unpreemptable GPU job: it can trip the amdgpu watchdog
 // (context loss → stranded on the CPU tracer), and — measured on the Vega 7 —
 // the browser's WHOLE frame pipeline stalls behind whatever is queued, even
 // when the sample is split into many flushed draws submitted together. So each
-// sample is tiled into scissored row-bands and the driver keeps exactly ONE
-// band in flight (fence-gated), sized to ~BAND_TARGET_MS of GPU.
+// sample renders as scissored row-slices via the tracer's row cursor, exactly
+// ONE ~ROW_TARGET_MS slice in flight (fence-gated). The cursor makes the slice
+// size adaptable after EVERY submission (slices need not be uniform), so even
+// an 8-second 1080p sample settles onto the target within a few slices.
 
-/** Aim each band at roughly this much GPU time — the worst case the compositor
- *  (and this page's rAF) waits behind the tracer. */
-const BAND_TARGET_MS = 45;
-const BAND_MIN_MS = 12;
-const BANDS_MAX = 256;
+/** Aim each slice at roughly this much GPU time — the worst case the desktop
+ *  compositor (and this page's rAF) waits behind the tracer. */
+const ROW_TARGET_MS = 45;
 
-/** First-guess band count from the pixel count (~32k px per band) — refined by
- *  adaptStrips() as soon as real fence timings exist. */
-export function initialStrips(pixels: number): number {
-  return Math.max(1, Math.min(BANDS_MAX, Math.ceil(pixels / 32768)));
+/** First-guess slice height (~32k px per slice) — refined by adaptRows() as
+ *  soon as real fence timings exist. */
+export function initialRows(w: number, h: number): number {
+  return Math.max(1, Math.min(h, Math.ceil(32768 / Math.max(1, w))));
 }
 
-/** Pure band-count adapter: per-band GPU time over target → split finer;
- *  comfortably under → merge (fewer submissions). Clamped to [1, BANDS_MAX]. */
-export function adaptStrips(current: number, perStripMs: number): number {
-  let next = current;
-  if (perStripMs > BAND_TARGET_MS) next = current * 2;
-  else if (perStripMs < BAND_MIN_MS) next = current >> 1;
-  return Math.max(1, Math.min(BANDS_MAX, next));
+/**
+ * Slice height for the NEXT sample from the measured cost of the LAST complete
+ * sample: uniform slices sized to ~HALF the target (2× headroom for region
+ * cost variance — sky rows are ~8× cheaper than subject rows, and any scheme
+ * that grows a slice inside a cheap region then crosses into an expensive one
+ * fires a multi-second monolithic slice; measured live 2026-07-20). A sample
+ * cheap enough overall returns the full height → whole-sample batch units.
+ */
+export function rowsForSample(h: number, sampleMs: number): number {
+  if (sampleMs <= ROW_TARGET_MS * 1.5) return h;
+  return Math.max(1, Math.min(h - 1, Math.floor((h * ROW_TARGET_MS * 0.5) / sampleMs)));
 }
 
 /** How often the FULL content signature (a buildSnapshot + hash sweep — ~100ms
- *  on a heavy scene) runs while the viewport is otherwise idle. Edits that the
- *  cheap per-frame keys can't see (direct mutations outside the undo stack)
- *  reset within this window instead of instantly. */
-const CONTENT_CHECK_MS = 500;
+ *  on a heavy scene) runs as a safety net. Almost every real edit is caught
+ *  INSTANTLY by the cheap per-frame keys (undo position + the same mesh/
+ *  modifier version counters the raster viewport trusts for its GPU caches +
+ *  transforms + light/camera payloads); this sweep only exists for direct
+ *  mutations those can't see (e.g. scripted per-field material pokes), so it
+ *  can be rare — a periodic 100ms main-thread stall was Ray's "clicking any
+ *  tab is slow in GPU mode" (2026-07-20). */
+const CONTENT_CHECK_MS = 3000;
+
+/** FNV-1a over a string (small payload JSON in the cheap content key). */
+function strHash(s: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
 
 /** The camera pose the tracer uses, extracted from the resolved viewport view so
  *  the traced image aligns pixel-for-pixel with the depth-primed overlays. */
@@ -127,16 +145,17 @@ export class ViewportRay {
   private lastPresentTs = 0;
   private presentedSpp = 0;
   private rgbScratch: Float32Array | null = null;
-  /** Band-tiling state: bands per sample (0 = derive from pixel count on the
-   *  next accumulation), the cursor of the next band to submit, the band count
-   *  locked for the CURRENT sample (strips may only change between samples),
-   *  accumulated band time for the sample, and submit bookkeeping. */
-  private strips = 0;
-  private band = 0;
-  private curBands = 1;
-  private bandMsAcc = 0;
+  /** Row-slicing state: rows per fenced slice (0 = derive from the pixel count
+   *  on the next accumulation) + submit bookkeeping. unitRows >= the buffer
+   *  height means whole-sample units (gpuBatch batches of cheap samples). */
+  private unitRows = 0;
   private submitTs = 0;
   private submitN = 0;
+  /** Accumulated slice time of the sample in progress (row mode) — the ONLY
+   *  evidence allowed to switch back to whole-sample units. Per-region slice
+   *  costs vary wildly (sky rows are ~8× cheaper than donut rows), so growing
+   *  into batch mode mid-sample fires a multi-second monolithic draw. */
+  private sampleMsAcc = 0;
   /** Moving-camera resolution divisor (2 = half res). Doubles up to 8 when even
    *  a single reduced-res sample is too slow to track the camera. */
   private movingDiv = 2;
@@ -146,8 +165,11 @@ export class ViewportRay {
    *  edits from the undo position (wired by main.ts) + coarse scene fields. */
   private cheapCamK = 0;
   private cheapEditK = 0;
+  private cheapContentK = 0;
   private lastContentTs = 0;
   private readonly camScratch = new Float32Array(20);
+  private readonly matScratch = new Float32Array(16);
+  private readonly worldScratch = new Float32Array(12);
   /** App-level undo position probe (undo isn't reachable from the Scene). */
   undoProbe: (() => number) | null = null;
   /** Bumped on every new presented image — the Renderer only re-uploads the
@@ -243,8 +265,10 @@ export class ViewportRay {
     // ticks in microseconds.
     const camK = this.cheapCamKey(rv);
     const editK = this.cheapEditKey(scene);
+    const contentK = this.cheapContentKey(scene);
     const cameraChanged = this.active && camK !== this.cheapCamK;
-    const editChanged = this.active && editK !== this.cheapEditK;
+    const editChanged = (this.active && editK !== this.cheapEditK)
+      || (this.active && contentK !== this.cheapContentK);
     // Interaction degradation: while the camera moves, reduced resolution +
     // 1 spp. The divisor adapts (2→8) so heavy scenes keep tracking the camera.
     const moving = cameraChanged;
@@ -269,6 +293,7 @@ export class ViewportRay {
 
     this.cheapCamK = camK;
     this.cheapEditK = editK;
+    this.cheapContentK = contentK;
     this.active = true;
     this.engine = engine;
     this.currentGlare = this.glareForFrame(scene);
@@ -332,13 +357,55 @@ export class ViewportRay {
   }
 
   /** Per-frame edit key: undo position (all command-based edits) + coarse scene
-   *  fields. Direct mutations that bypass the undo stack are caught by the
-   *  CONTENT_CHECK_MS full sweep instead. */
+   *  fields. Direct mutations that bypass the undo stack are caught by
+   *  cheapContentKey (versions) or the CONTENT_CHECK_MS full sweep. */
   private cheapEditKey(scene: Scene): number {
     let h = combine(scene.objects.length >>> 0, scene.frameCurrent | 0);
     h = combine(h, (scene.activeCamera?.id ?? -1) >>> 0);
     if (this.undoProbe) h = combine(h, this.undoProbe() >>> 0);
     return h >>> 0;
+  }
+
+  /**
+   * Per-frame content key WITHOUT building a snapshot (2026-07-20): the exact
+   * mesh/modifier version counters the raster viewport keys its GPU caches on
+   * (any visible-geometry change MUST bump them or the solid viewport would go
+   * stale too), plus world transforms, assignment/visibility flags, light and
+   * camera payloads, and the world environment. Runs in microseconds where the
+   * old every-500ms buildSnapshot sweep cost ~100ms on a heavy scene. A change
+   * here triggers the FULL signature sweep the same frame, which stays the
+   * arbiter of what actually re-packs.
+   */
+  private cheapContentKey(scene: Scene): number {
+    let h = 0x51ed270b;
+    const s = this.matScratch;
+    for (const obj of scene.objects) {
+      h = combine(h, obj.id >>> 0);
+      h = combine(h, ((obj.visible ? 1 : 0) | ((obj.collectionId ?? -1) << 1)) >>> 0);
+      h = combine(h, ((obj.materialId ?? -1) + 2) >>> 0);
+      const editing = scene.editMode?.objectId === obj.id;
+      const mesh = editing ? obj.mesh : obj.evaluatedMesh(scene.modifierContext(obj));
+      h = combine(h, mesh.version >>> 0);
+      h = combine(h, obj.modifiersVersion >>> 0);
+      h = combine(h, obj.shadeSmooth ? 1 : 0);
+      const wm = scene.worldMatrix(obj).m;
+      for (let i = 0; i < 16; i++) s[i] = wm[i];
+      h = combine(h, hashBits(s));
+      if (obj.light) h = combine(h, strHash(JSON.stringify(obj.light)));
+      if (obj.camera) h = combine(h, strHash(JSON.stringify(obj.camera)));
+    }
+    for (const c of scene.collections) {
+      h = combine(h, ((c.id << 1) | (c.visible ? 1 : 0)) >>> 0);
+    }
+    const wv = scene.world;
+    const ws = this.worldScratch;
+    ws[0] = wv.mode === 'flat' ? 0 : wv.mode === 'gradient' ? 1 : 2;
+    ws[1] = wv.strength;
+    ws[2] = wv.color[0]; ws[3] = wv.color[1]; ws[4] = wv.color[2];
+    ws[5] = wv.horizon[0]; ws[6] = wv.horizon[1]; ws[7] = wv.horizon[2];
+    ws[8] = wv.zenith[0]; ws[9] = wv.zenith[1]; ws[10] = wv.zenith[2];
+    ws[11] = wv.hdri ? 1 : 0;
+    return combine(h, hashBits(ws)) >>> 0;
   }
 
   /** Content signature reusing the GPU repack's EXACT granularity (geometry +
@@ -372,13 +439,11 @@ export class ViewportRay {
         // nothing (skips the BVH rebuild); a content change re-packs what changed.
         gpu.setSnapshot(snap, this.gpuStarted);
         this.gpuStarted = true;
-        gpu.beginProgressive(tw, th, RAY_SEED); // also aborts stale fences/readbacks
+        gpu.beginProgressive(tw, th, RAY_SEED); // also aborts stale fences/readbacks + row cursor
         this.gpuBatch = 1;
         this.gpuInFlight = false;
         this.idleGap = 0;
         this.presentedSpp = 0;
-        this.band = 0;
-        this.bandMsAcc = 0;
         this.spp = 0;
         return;
       }
@@ -423,20 +488,27 @@ export class ViewportRay {
       if (gpu.batchPending()) { this.stats.skips++; return; }
       this.gpuInFlight = false;
       const unitMs = performance.now() - this.submitTs;
-      if (this.curBands > 1) {
-        // One band landed; adapt tiling only at the sample boundary.
-        this.bandMsAcc += unitMs;
-        this.band = (this.band + 1) % this.curBands;
-        if (this.band === 0) {
-          this.spp = gpu.accumulatedSamples;
-          this.strips = adaptStrips(this.strips, this.bandMsAcc / this.curBands);
-          this.bandMsAcc = 0;
+      this.spp = gpu.accumulatedSamples; // only advances on completed samples
+      if (this.unitRows < this.lastH) {
+        // Row-slice unit. GROWING is only allowed at sample boundaries from
+        // the whole sample's measured cost (per-slice growth is unsafe —
+        // region costs lie; see rowsForSample), but SHRINKING mid-sample is
+        // safe and tames the first sample's initial-guess slices quickly.
+        this.sampleMsAcc += unitMs;
+        if (unitMs > ROW_TARGET_MS * 2) this.unitRows = Math.max(1, this.unitRows >> 1);
+        if (gpu.rowCursor === 0) {
+          this.unitRows = rowsForSample(this.lastH, this.sampleMsAcc);
+          this.sampleMsAcc = 0;
         }
       } else {
-        this.spp = gpu.accumulatedSamples;
+        // Whole-sample unit(s): grow the batch while cheap; if even a single
+        // sample blows the target, drop into row-slicing sized by its cost.
         const cap = viewPrefs.limitGpuLoad ? GPU_LIMIT_BATCH_MAX : GPU_BATCH_MAX;
         this.gpuBatch = adaptBatchPolls(this.gpuBatch, gpu.lastFencePolls, cap);
-        this.strips = adaptStrips(this.strips, unitMs / Math.max(1, this.submitN));
+        if (this.submitN === 1 && unitMs > ROW_TARGET_MS * 2) {
+          this.unitRows = rowsForSample(this.lastH, unitMs);
+          this.gpuBatch = 1;
+        }
       }
       this.idleGap = viewPrefs.limitGpuLoad ? GPU_LIMIT_IDLE_GAP : GPU_IDLE_GAP;
     }
@@ -446,17 +518,20 @@ export class ViewportRay {
       && (this.presentedSpp === 0 || this.converged || now - this.lastPresentTs > PRESENT_MS)) {
       if (gpu.requestReadback()) this.stats.readbacks++;
     }
+    // While a readback drains, submit NOTHING: getBufferSubData blocks the main
+    // thread until everything queued before it completes (measured: ~1.4s
+    // stalls when slices kept piling in behind the readPixels). An empty queue
+    // makes the eventual copy instant — worth pausing ≤ a frame or two per
+    // present (presents only fire when a sample completed anyway).
+    if (gpu.readbackPending) return;
 
     if (this.converged) return;
     if (this.idleGap > 0) { this.idleGap--; this.stats.gaps++; return; }
-    if (this.band === 0) {
-      // Sample boundary — safe to (re)size the tiling and check the cap.
-      if (gpu.accumulatedSamples >= RAY_MAX_SPP) return;
-      if (!this.strips) this.strips = initialStrips(this.lastW * this.lastH);
-      this.curBands = Math.min(this.strips, this.lastH);
-    }
-    if (this.curBands > 1) {
-      gpu.accumulateBandFenced(this.band, this.curBands);
+    if (gpu.rowCursor === 0 && gpu.accumulatedSamples >= RAY_MAX_SPP) return;
+    if (!this.unitRows) this.unitRows = initialRows(this.lastW, this.lastH);
+    if (this.unitRows < this.lastH) {
+      gpu.accumulateRowsFenced(this.unitRows);
+      this.submitN = 1;
     } else {
       const batch = Math.min(this.gpuBatch, RAY_MAX_SPP - gpu.accumulatedSamples);
       gpu.accumulateFenced(batch, 1);
@@ -477,9 +552,12 @@ export class ViewportRay {
     const gpu = this.gpu;
     if (!gpu || !gpu.available) return;
     if (gpu.contextLost) { this.gpuDead = true; this.engine = 'cpu'; return; }
-    if (!this.strips) this.strips = initialStrips(this.lastW * this.lastH);
+    // Still strip-tiled (single GPU jobs stay small for the watchdog) even
+    // though the step itself is synchronous.
+    const rows = this.unitRows > 0 ? this.unitRows : initialRows(this.lastW, this.lastH);
+    const strips = Math.max(1, Math.ceil(this.lastH / Math.max(1, rows)));
     const t0 = performance.now();
-    gpu.accumulate(1, this.strips);
+    gpu.accumulate(1, strips);
     this.spp = gpu.accumulatedSamples;
     const avg = gpu.readbackProgressive(); // sync — bounded by the reduced res
     if (avg) this.presentAvg(avg, this.spp, this.lastW, this.lastH);
@@ -541,30 +619,23 @@ export class ViewportRay {
   flushSync(): void {
     const gpu = this.gpu;
     if (this.engine !== 'gpu' || !gpu || !gpu.available || gpu.contextLost) return;
-    const t0 = performance.now();
     gpu.finishPending();
-    // Mid-sample? Complete the remaining bands synchronously so every
-    // tick+flush nets at least one whole sample.
-    while (this.band > 0 && !gpu.contextLost) {
-      gpu.accumulateBandFenced(this.band, this.curBands);
-      this.band = (this.band + 1) % this.curBands;
+    // Mid-sample? Complete the remaining rows in one slice so every tick+flush
+    // nets at least one whole sample.
+    if (gpu.rowCursor > 0) {
+      gpu.accumulateRowsFenced(Math.max(1, this.lastH)); // clamps to the end row
       gpu.finishPending();
     }
-    gpu.tryReadback(); // drain any completed-but-unconsumed async readback
+    gpu.cancelReadback(); // an in-progress incremental readback is superseded
     this.gpuInFlight = false;
     this.idleGap = 0;
-    this.bandMsAcc = 0;
     this.spp = gpu.accumulatedSamples;
-    // Synchronous callers pay the full cost anyway — adapt from the measured
-    // sync time so tick+flush loops merge bands / grow the batch and converge
-    // fast (the pre-fence sync behavior).
-    if (this.curBands > 1) {
-      this.strips = adaptStrips(this.strips, (performance.now() - t0) / this.curBands);
-      this.curBands = Math.min(this.strips, Math.max(1, this.lastH));
-    } else {
-      this.gpuBatch = adaptBatchPolls(this.gpuBatch, 1,
-        viewPrefs.limitGpuLoad ? GPU_LIMIT_BATCH_MAX : GPU_BATCH_MAX);
-    }
+    // Synchronous callers pay the full cost anyway — jump straight to
+    // whole-sample units and grow the batch, so tick+flush loops converge fast
+    // (the pre-fence sync behavior). Async use re-slices if it's ever slow.
+    this.unitRows = Math.max(1, this.lastH);
+    this.gpuBatch = adaptBatchPolls(this.gpuBatch, 1,
+      viewPrefs.limitGpuLoad ? GPU_LIMIT_BATCH_MAX : GPU_BATCH_MAX);
     const avg = gpu.readbackProgressive();
     if (avg) this.presentAvg(avg, this.spp, this.lastW, this.lastH);
   }

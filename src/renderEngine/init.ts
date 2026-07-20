@@ -4,7 +4,7 @@ import { RenderWindow } from './renderWindow';
 import { buildSnapshot } from './snapshot';
 import { getGpuTracer } from './gpu/sharedTracer';
 import { viewPrefs, loadViewPrefs, saveViewPrefs, type RenderEngine } from '../render/viewPrefs';
-import { adaptBatchPolls, adaptStrips, initialStrips } from '../render/viewportRay';
+import { adaptBatchPolls, initialRows, rowsForSample } from '../render/viewportRay';
 
 /** Everything the render engine needs from the app shell. */
 export interface RenderEngineContext {
@@ -190,17 +190,15 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     let inFlight = false;
     let idleGap = 0;
     let presentedSamples = 0;
-    // Band-tile each sample and keep ONE band in flight (2026-07-20): the
+    // Row-slice each sample and keep ONE slice in flight (2026-07-20): the
     // browser's frame pipeline stalls behind the QUEUED TOTAL of GPU work
     // (regardless of job boundaries), and a multi-second monolithic sample can
-    // trip the amdgpu watchdog. Band count adapts from fence timing; cheap
-    // scenes merge back to whole-sample batches.
-    let strips = initialStrips(w * h);
-    let band = 0;
-    let curBands = 1;
-    let bandMsAcc = 0;
+    // trip the amdgpu watchdog. The tracer's row cursor lets the slice height
+    // adapt after EVERY submission; cheap scenes grow to whole-sample batches.
+    let unitRows = initialRows(w, h);
     let submitTs = 0;
     let submitN = 0;
+    let sampleMsAcc = 0;
     gpuLastMaxBatch = 0;
 
     const onLost = (): void => {
@@ -228,26 +226,41 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
         if (tracer.batchPending()) { gpuRAF = requestAnimationFrame(step); return; }
         inFlight = false;
         const unitMs = now - submitTs;
-        if (curBands > 1) {
-          bandMsAcc += unitMs;
-          band = (band + 1) % curBands;
-          if (band === 0) {
-            strips = adaptStrips(strips, bandMsAcc / curBands);
-            bandMsAcc = 0;
+        if (unitRows < h) {
+          // Growing only at sample boundaries from the whole sample's cost
+          // (per-slice growth is unsafe — region costs lie; rowsForSample);
+          // shrinking mid-sample is safe and tames the first sample fast.
+          sampleMsAcc += unitMs;
+          if (unitMs > 90) unitRows = Math.max(1, unitRows >> 1);
+          if (tracer.rowCursor === 0) {
+            unitRows = rowsForSample(h, sampleMsAcc);
+            sampleMsAcc = 0;
           }
         } else {
           batch = adaptBatchPolls(batch, tracer.lastFencePolls, batchCap);
-          strips = adaptStrips(strips, unitMs / Math.max(1, submitN));
+          if (submitN === 1 && unitMs > 90) { unitRows = rowsForSample(h, unitMs); batch = 1; }
         }
         if (limit) idleGap = GPU_LIMIT_IDLE_GAP;
       }
 
-      const done = band === 0 && tracer.accumulatedSamples >= maxSamples;
+      const done = tracer.rowCursor === 0 && tracer.accumulatedSamples >= maxSamples;
       if (!done) {
         if (idleGap > 0) { idleGap--; gpuRAF = requestAnimationFrame(step); return; }
-        if (band === 0) curBands = Math.min(strips, h);
-        if (curBands > 1) {
-          tracer.accumulateBandFenced(band, curBands);
+        // Blit cadence: request the readback on an EMPTY queue and let it drain
+        // before submitting more work — getBufferSubData blocks the main thread
+        // until everything queued before it completes, so slices piling in
+        // behind the readPixels turned the eventual copy into a ~1.4s stall.
+        if (now - lastBlit > GPU_BLIT_MS && !tracer.readbackPending
+          && tracer.accumulatedSamples > presentedSamples) {
+          tracer.requestReadback();
+          lastBlit = now;
+          gpuRAF = requestAnimationFrame(step);
+          return;
+        }
+        if (tracer.readbackPending) { gpuRAF = requestAnimationFrame(step); return; }
+        if (unitRows < h) {
+          tracer.accumulateRowsFenced(unitRows);
+          submitN = 1;
           if (gpuLastMaxBatch < 1) gpuLastMaxBatch = 1;
         } else {
           const thisBatch = Math.min(batch, maxSamples - tracer.accumulatedSamples);
@@ -258,11 +271,6 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
         if (tracer.contextLost) { onLost(); return; }
         inFlight = true;
         submitTs = now;
-        if (now - lastBlit > GPU_BLIT_MS && !tracer.readbackPending) {
-          // Safe mid-sample: readbacks see the last COMPLETE sample (progSrc).
-          tracer.requestReadback();
-          lastBlit = now;
-        }
         gpuRAF = requestAnimationFrame(step);
         return;
       }

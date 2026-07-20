@@ -223,24 +223,20 @@ runE2e(async (t) => {
       `maxBlockDiff ${orbitDiff.toFixed(4)}, engine ${await t.evaluate('window.__app.viewportRay.engine()')}`);
     t.check('(2c) still rendering after orbit (spp > 0)', sppAfter > 0, `spp ${sppAfter}`);
 
-    // (3) edit a material color → reset + the new color appears. The edit here
-    // is a DIRECT mutation (no undo command), which the driver's cheap per-frame
-    // keys can't see — it lands via the CONTENT_CHECK_MS (500ms) full sweep
-    // (2026-07-20 snapshot throttle), so wait that window out before the tick.
+    // (3) edit a material color → reset + the new color appears. The materialId
+    // reassignment is caught INSTANTLY by the cheap per-frame content key
+    // (2026-07-20 — version counters, no snapshot build); pure per-field pokes
+    // on an already-assigned material would land via the rare full sweep.
     await t.evaluate('window.__converge(16, 60)');
     const beforeColor = await t.evaluate('window.__rayCenter()');
-    await t.evaluate(`(() => {
+    const sppAfterMat = await t.evaluate(`(() => {
       const a = window.__app, S = a.scene;
       const mat = S.addMaterial('RayRed'); mat.baseColor = [0.85, 0.05, 0.05];
       const cube = S.objects.find(o => o.name === 'Cube'); cube.materialId = mat.id;
-    })()`);
-    await t.sleep(700);
-    const sppAfterMat = await t.evaluate(`(() => {
-      const a = window.__app;
-      a.renderer.render(a.scene, a.camera); // content sweep fires → reset
+      a.renderer.render(a.scene, a.camera); // content changed → reset
       return a.renderer.viewportRay.spp;
     })()`);
-    t.check('(3a) material edit RESETS the accumulation (≤500ms sweep)', sppAfterMat < 16, `spp ${sppAfterMat}`);
+    t.check('(3a) material edit RESETS the accumulation', sppAfterMat < 16, `spp ${sppAfterMat}`);
     await t.evaluate('window.__converge(16, 60)');
     const afterColor = await t.evaluate('window.__rayCenter()');
     t.check('(3b) new red material appears in the traced image',
