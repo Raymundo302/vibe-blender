@@ -87,6 +87,11 @@ const scene = new Scene();
 const viewportHeader = new ViewportHeader(scene, shadingMenu);
 const camera = new OrbitCamera();
 const undo = new UndoStack();
+// Viewport raytraced mode (2026-07-20): cheap per-frame edit detection — every
+// command-based edit bumps the undo position, so the driver resets instantly
+// without rebuilding a full snapshot each frame (direct mutations are caught by
+// its 500ms content sweep instead).
+renderer.viewportRay.undoProbe = () => undo.position;
 
 // --- Dirty-state tracking (UR14-1 item 18) ----------------------------------
 // The Save button shows a dot whenever the undo position differs from the last
@@ -595,6 +600,12 @@ topbar.mountTabs(workspaces.createTabs());
     converged: () => renderer.viewportRay.converged,
     gpuAvailable: () => renderer.viewportRay.gpuAvailable,
     gpuReason: () => renderer.viewportRay.gpuReason,
+    /** Sync escape hatch for the fenced GPU pipeline (2026-07-20): completes
+     *  in-flight work + presents, so tick loops read synchronously. */
+    flushSync: () => renderer.viewportRay.flushSync(),
+    /** Pacing counters {submits, skips, gaps, readbacks, presents}. */
+    stats: () => ({ ...renderer.viewportRay.stats }),
+    imageVersion: () => renderer.viewportRay.imageVersion,
   },
   // UR8-2 text handle for e2e: force a synchronous mesh rebuild (no RAF wait)
   // and apply-a-frame-then-sync (for keyed text.thickness scrub checks).

@@ -237,7 +237,7 @@ runE2e(async (t) => {
   if (gpuAvail) {
     await t.evaluate(`(() => { const a = window.__app; a.shadePrefs.renderedMode = 'ray'; a.shadePrefs.rayEngine = 'gpu'; })()`);
     await t.sleep(120);
-    await t.evaluate(`(() => { const a = window.__app; for (let i=0;i<64 && a.renderer.viewportRay.spp<48;i++) a.renderer.render(a.scene, a.camera); })()`);
+    await t.evaluate(`(() => { const a = window.__app; for (let i=0;i<64 && a.renderer.viewportRay.spp<48;i++) { a.renderer.render(a.scene, a.camera); a.renderer.viewportRay.flushSync(); } })()`);
     const gpuSplit = await t.evaluate(`(() => {
       const vr = window.__app.renderer.viewportRay;
       if (!vr.imageBytes) return null;

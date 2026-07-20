@@ -140,6 +140,8 @@ export class Renderer {
   private readonly glarePass: GlarePass;
   /** Fullscreen present of the viewport raytraced accumulation (UR15-1). */
   private readonly rayPresentPass: RayPresentPass;
+  /** Last viewportRay.imageVersion uploaded to the present texture. */
+  private rayImageVersion = -1;
   /** Progressive path-trace driver for Rendered → Raytraced mode (UR15-1). */
   readonly viewportRay = new ViewportRay();
   private readonly sdfAtlas: SdfAtlas;
@@ -1441,7 +1443,9 @@ export class Renderer {
     const ok = this.viewportRay.tick(scene, camera, { view, eye, fovY }, canvas.width, canvas.height);
     const img = this.viewportRay.imageBytes;
     if (ok && img) {
-      this.rayPresentPass.draw(img, this.viewportRay.imageW, this.viewportRay.imageH, canvas.width, canvas.height);
+      const dirty = this.viewportRay.imageVersion !== this.rayImageVersion;
+      this.rayImageVersion = this.viewportRay.imageVersion;
+      this.rayPresentPass.draw(img, this.viewportRay.imageW, this.viewportRay.imageH, canvas.width, canvas.height, dirty);
     }
     // Depth prime: rasterize scene depth-only (color untouched) so overlays sit
     // over the traced image with correct occlusion.

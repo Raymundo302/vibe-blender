@@ -143,6 +143,23 @@ export class GpuTracer {
 
   private lost = false;
 
+  // --- polite pacing state (2026-07-20 UI-smoothness pass) --------------------
+  // One fenced accumulation batch in flight at a time + async PBO readbacks.
+  // Unbounded per-rAF submissions used to queue seconds of GPU work: the desktop
+  // compositor (same iGPU) starved behind it and the amdgpu watchdog killed the
+  // context mid-accumulation on the Vega 7 (→ permanent CPU fallback).
+  private batchFence: WebGLSync | null = null;
+  private fencePolls = 0;
+  private rbBuf: WebGLBuffer | null = null;
+  private rbBufBytes = 0;
+  private rbFence: WebGLSync | null = null;
+  private rbW = 0;
+  private rbH = 0;
+  private rbInv = 0;
+  private rbSamples = 0;
+  private rbRaw: Float32Array | null = null;
+  private rbOut: Float32Array | null = null;
+
   constructor(canvas?: HTMLCanvasElement | OffscreenCanvas) {
     this.canvas =
       canvas ??
@@ -536,12 +553,16 @@ export class GpuTracer {
   /** Flip readPixels rows (bottom-up) to row 0 = TOP and scale by `inv`. */
   private flipScale(raw: Float32Array, w: number, h: number, inv: number): Float32Array {
     const buf = new Float32Array(w * h * 4);
+    this.flipScaleInto(raw, buf, w, h, inv);
+    return buf;
+  }
+
+  private flipScaleInto(raw: Float32Array, out: Float32Array, w: number, h: number, inv: number): void {
     for (let y = 0; y < h; y++) {
       const srcRow = (h - 1 - y) * w * 4;
       const dstRow = y * w * 4;
-      for (let x = 0; x < w * 4; x++) buf[dstRow + x] = raw[srcRow + x] * inv;
+      for (let x = 0; x < w * 4; x++) out[dstRow + x] = raw[srcRow + x] * inv;
     }
-    return buf;
   }
 
   render(w: number, h: number, samples = 16, seed = 1, jitter = true): Float32Array | null {
@@ -594,6 +615,7 @@ export class GpuTracer {
   beginProgressive(w: number, h: number, seed = 1): boolean {
     const gl = this.gl;
     if (!gl || !this.program || !this.scene) return false;
+    this.abortPacing(); // any in-flight fence/readback belongs to the old accum
     this.ensureAccum(gl, w, h);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.accumFbo[0]);
     gl.clearColor(0, 0, 0, 0);
@@ -607,11 +629,25 @@ export class GpuTracer {
     return true;
   }
 
-  /** Accumulate `n` more sample passes onto the progressive buffer. */
-  accumulate(n: number): void {
+  /**
+   * Accumulate `n` more sample passes onto the progressive buffer.
+   *
+   * `strips` > 1 tiles EACH sample into that many scissored row-bands with a
+   * flush between bands (2026-07-20). A heavy scene at viewport res can cost
+   * SECONDS of GPU per fullscreen sample — as ONE draw that is a single GPU job,
+   * which trips the amdgpu watchdog (context loss → the Vega 7 "GPU render kills
+   * the app" bug) and blocks the desktop compositor for its whole duration.
+   * Split into bands, each flush submits a separate bounded job: the watchdog
+   * never fires and the compositor can interleave. Sample math is UNTOUCHED —
+   * scissoring only masks which fragments run, every pixel computes the same
+   * value, so totals stay bit-identical for any strip count.
+   */
+  accumulate(n: number, strips = 1): void {
     const gl = this.gl;
     if (!gl || !this.scene || n <= 0) return;
     if (!this.bindScene(gl, this.progW, this.progH, true, this.progSeed)) return;
+    const bands = Math.max(1, Math.min(strips | 0, this.progH));
+    if (bands > 1) gl.enable(gl.SCISSOR_TEST);
     let src = this.progSrc;
     let dst = 1 - src;
     for (let i = 0; i < n; i++) {
@@ -619,9 +655,22 @@ export class GpuTracer {
       gl.uniform1i(this.u('uSampleIndex'), this.progSamples + i);
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, this.accumTex[src]);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      if (bands > 1) {
+        // All bands of one sample read src and fill dst completely, THEN the
+        // ping-pong swaps — partial-frame state never leaks across samples.
+        for (let s = 0; s < bands; s++) {
+          const y0 = Math.floor((s * this.progH) / bands);
+          const y1 = Math.floor(((s + 1) * this.progH) / bands);
+          gl.scissor(0, y0, this.progW, y1 - y0);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          gl.flush();
+        }
+      } else {
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
       const tmp = src; src = dst; dst = tmp;
     }
+    if (bands > 1) gl.disable(gl.SCISSOR_TEST);
     this.progSamples += n;
     this.progSrc = src;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -645,6 +694,178 @@ export class GpuTracer {
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, raw);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return this.flipScale(raw, w, h, 1 / this.progSamples);
+  }
+
+  // --- polite pacing (2026-07-20) ---------------------------------------------
+  // The interactive drivers (viewport raytraced + F12 progressive) submit at most
+  // ONE fenced batch at a time and read back asynchronously through a PIXEL_PACK
+  // buffer, so the main thread never blocks on the GPU and the command queue can
+  // never pile up. Sample math is untouched — accumulate() is accumulate() — so
+  // determinism (bit-identical totals for a given spp) is preserved.
+
+  /** accumulate(n, strips) + fence + flush. Callers poll batchPending() and
+   *  MUST NOT submit another batch until it reports false. */
+  accumulateFenced(n: number, strips = 1): void {
+    const gl = this.gl;
+    if (!gl || this.contextLost) return;
+    this.accumulate(n, strips);
+    if (this.batchFence) gl.deleteSync(this.batchFence);
+    this.batchFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    this.fencePolls = 0;
+    gl.flush();
+  }
+
+  /**
+   * Draw ONE scissored row-band (band ∈ [0, bands)) of the CURRENT sample, then
+   * fence + flush. THE in-flight unit for heavy scenes: a full sample can cost
+   * seconds of GPU, and the browser's whole frame pipeline stalls behind
+   * whatever is queued — measured on the Vega 7: even 64 flushed strip draws
+   * queued together froze rAF for the full 2.4s sample. So the driver submits
+   * ONE band at a time and waits for its fence before the next.
+   *
+   * The ping-pong swaps (and progSamples increments) only when the LAST band is
+   * submitted — partial samples never leak: readbacks read accumFbo[progSrc],
+   * which always holds the last COMPLETE sample. Every pixel computes the same
+   * value as an untiled pass, so totals stay bit-identical.
+   */
+  accumulateBandFenced(band: number, bands: number): void {
+    const gl = this.gl;
+    if (!gl || !this.scene || this.contextLost) return;
+    if (!this.bindScene(gl, this.progW, this.progH, true, this.progSeed)) return;
+    const src = this.progSrc;
+    const dst = 1 - src;
+    const y0 = Math.floor((band * this.progH) / bands);
+    const y1 = Math.floor(((band + 1) * this.progH) / bands);
+    if (y1 > y0) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.accumFbo[dst]);
+      gl.uniform1i(this.u('uSampleIndex'), this.progSamples);
+      gl.activeTexture(gl.TEXTURE7);
+      gl.bindTexture(gl.TEXTURE_2D, this.accumTex[src]);
+      gl.enable(gl.SCISSOR_TEST);
+      gl.scissor(0, y0, this.progW, y1 - y0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+    gl.bindVertexArray(null);
+    if (band >= bands - 1) {
+      this.progSrc = dst;
+      this.progSamples++;
+    }
+    if (this.batchFence) gl.deleteSync(this.batchFence);
+    this.batchFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    this.fencePolls = 0;
+    gl.flush();
+  }
+
+  /** Non-blocking: true while the last fenced batch is still executing on the
+   *  GPU. Each call counts one poll — lastFencePolls after completion tells the
+   *  pacer how many frames the batch spanned. */
+  batchPending(): boolean {
+    const gl = this.gl;
+    if (!gl || !this.batchFence) return false;
+    if (this.contextLost) { this.batchFence = null; return false; }
+    this.fencePolls++;
+    if (gl.getSyncParameter(this.batchFence, gl.SYNC_STATUS) === gl.SIGNALED) {
+      gl.deleteSync(this.batchFence);
+      this.batchFence = null;
+      return false;
+    }
+    return true;
+  }
+
+  /** How many batchPending() polls the last completed batch took (1 = done by
+   *  the very next poll — comfortably inside one frame). */
+  get lastFencePolls(): number {
+    return this.fencePolls;
+  }
+
+  /** BLOCK until any in-flight fenced work completes — the e2e/sync escape
+   *  hatch (synchronous suites tick + flush in a loop). Production never calls
+   *  this on a hot path. */
+  finishPending(): void {
+    const gl = this.gl;
+    if (!gl || this.contextLost) { this.batchFence = null; return; }
+    if (this.batchFence || this.rbFence) gl.finish();
+    if (this.batchFence) { gl.deleteSync(this.batchFence); this.batchFence = null; }
+  }
+
+  /** Queue an ASYNC readback of the progressive accumulation (nothing blocks;
+   *  poll tryReadback() for the result). The averaging scale + size are
+   *  snapshotted now. False when there is nothing to read or one is queued. */
+  requestReadback(): boolean {
+    const gl = this.gl;
+    if (!gl || this.progSamples === 0 || this.contextLost) return false;
+    if (this.rbFence) return false;
+    const w = this.progW, h = this.progH;
+    const bytes = w * h * 4 * 4;
+    if (!this.rbBuf || this.rbBufBytes !== bytes) {
+      if (this.rbBuf) gl.deleteBuffer(this.rbBuf);
+      this.rbBuf = gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.rbBuf);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ);
+      this.rbBufBytes = bytes;
+    } else {
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.rbBuf);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.accumFbo[this.progSrc]);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    this.rbFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    this.rbW = w;
+    this.rbH = h;
+    this.rbInv = 1 / this.progSamples;
+    this.rbSamples = this.progSamples;
+    gl.flush();
+    return true;
+  }
+
+  /** True while a queued async readback has not landed yet. */
+  get readbackPending(): boolean {
+    return this.rbFence !== null;
+  }
+
+  /** Sample count / size the last completed tryReadback() was averaged over. */
+  get lastReadbackSamples(): number {
+    return this.rbSamples;
+  }
+  get lastReadbackW(): number {
+    return this.rbW;
+  }
+  get lastReadbackH(): number {
+    return this.rbH;
+  }
+
+  /** Poll the queued async readback: null while pending; on completion returns
+   *  the averaged RGBA buffer (row 0 = TOP). The buffer is REUSED between calls
+   *  — consume it before the next tryReadback(). */
+  tryReadback(): Float32Array | null {
+    const gl = this.gl;
+    if (!gl || !this.rbFence) return null;
+    if (this.contextLost) { this.rbFence = null; return null; }
+    if (gl.getSyncParameter(this.rbFence, gl.SYNC_STATUS) !== gl.SIGNALED) return null;
+    gl.deleteSync(this.rbFence);
+    this.rbFence = null;
+    const w = this.rbW, h = this.rbH, n = w * h * 4;
+    if (!this.rbRaw || this.rbRaw.length !== n) this.rbRaw = new Float32Array(n);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.rbBuf);
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.rbRaw, 0, n);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+    if (!this.rbOut || this.rbOut.length !== n) this.rbOut = new Float32Array(n);
+    this.flipScaleInto(this.rbRaw, this.rbOut, w, h, this.rbInv);
+    return this.rbOut;
+  }
+
+  /** Drop any in-flight fence/readback (stale after a beginProgressive). */
+  private abortPacing(): void {
+    const gl = this.gl;
+    if (gl && !this.contextLost) {
+      if (this.batchFence) gl.deleteSync(this.batchFence);
+      if (this.rbFence) gl.deleteSync(this.rbFence);
+    }
+    this.batchFence = null;
+    this.rbFence = null;
   }
 
   /**

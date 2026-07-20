@@ -4,7 +4,7 @@ import { RenderWindow } from './renderWindow';
 import { buildSnapshot } from './snapshot';
 import { getGpuTracer } from './gpu/sharedTracer';
 import { viewPrefs, loadViewPrefs, saveViewPrefs, type RenderEngine } from '../render/viewPrefs';
-import { adaptBatch } from '../render/viewportRay';
+import { adaptBatchPolls, adaptStrips, initialStrips } from '../render/viewportRay';
 
 /** Everything the render engine needs from the app shell. */
 export interface RenderEngineContext {
@@ -50,13 +50,17 @@ export function getLastRender(): HTMLCanvasElement | null {
 
 /** Base RNG seed shared by both backends (matches animRender ANIM_SEED_BASE). */
 const RENDER_SEED = 0x1234567;
-/** Progressive GPU render: samples per rAF batch when NOT limiting GPU load. */
+/** Progressive GPU render: per-batch spp CAP when NOT limiting GPU load. Since
+ *  the 2026-07-20 pacing pass batches are FENCED (one in flight, sized by real
+ *  fence timing via adaptBatchPolls) so the queue can never pile up — the cap
+ *  only bounds the adaptation. */
 const GPU_BATCH = 16;
-/** Limit GPU load (UR16-3): adapt the per-batch spp to keep each accumulate()
- *  tick under ~8 ms of GPU work (Ray's Vega mouse-stutter guard), capped small. */
-const GPU_LIMIT_TARGET_MS = 8;
+/** Limit GPU load (UR16-3): smaller batch cap + an idle frame between batches
+ *  (Ray's Vega mouse-stutter guard — guaranteed compositor headroom). */
 const GPU_LIMIT_BATCH_MAX = 8;
-/** Steady readback cadence (~4 Hz) — blit far less often than we accumulate. */
+const GPU_LIMIT_IDLE_GAP = 1;
+/** Steady readback cadence (~4 Hz) — blit far less often than we accumulate.
+ *  Readbacks are ASYNC (PBO + fence): presented when they land, never blocking. */
 const GPU_BLIT_MS = 250;
 
 export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls {
@@ -175,11 +179,28 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     if (!tracer.beginProgressive(w, h, RENDER_SEED)) { startCpuRender(snapshot); return; }
     let lastBlit = 0;
     const maxSamples = win.samples;
-    // Limit GPU load (UR16-3): adapt the per-batch spp to keep each tick ≤ ~8 ms
-    // of GPU work and yield between batches (already per-rAF) so the compositor
-    // stays responsive on a weak GPU. Off → the historical fixed batch.
+    // Fenced pacing (2026-07-20): ONE batch in flight, sized by real fence
+    // timing. The old loop submitted a fixed batch per rAF with no backpressure —
+    // the GPU queue grew unboundedly, the compositor starved behind it, and the
+    // amdgpu watchdog could kill the context. Limit GPU load → smaller cap + an
+    // idle frame between batches.
     const limit = viewPrefs.limitGpuLoad;
-    let batch = limit ? 2 : GPU_BATCH;
+    const batchCap = limit ? GPU_LIMIT_BATCH_MAX : GPU_BATCH;
+    let batch = limit ? 1 : 4;
+    let inFlight = false;
+    let idleGap = 0;
+    let presentedSamples = 0;
+    // Band-tile each sample and keep ONE band in flight (2026-07-20): the
+    // browser's frame pipeline stalls behind the QUEUED TOTAL of GPU work
+    // (regardless of job boundaries), and a multi-second monolithic sample can
+    // trip the amdgpu watchdog. Band count adapts from fence timing; cheap
+    // scenes merge back to whole-sample batches.
+    let strips = initialStrips(w * h);
+    let band = 0;
+    let curBands = 1;
+    let bandMsAcc = 0;
+    let submitTs = 0;
+    let submitN = 0;
     gpuLastMaxBatch = 0;
 
     const onLost = (): void => {
@@ -192,22 +213,64 @@ export function initRenderEngine(ctx: RenderEngineContext): RenderEngineControls
     const step = (): void => {
       if (myToken !== gpuToken) return; // superseded / cancelled
       if (tracer.contextLost) { onLost(); return; }
-      const remaining = maxSamples - tracer.accumulatedSamples;
-      const thisBatch = Math.min(batch, remaining);
-      if (thisBatch > gpuLastMaxBatch) gpuLastMaxBatch = thisBatch;
-      const t0 = performance.now();
-      tracer.accumulate(thisBatch);
-      if (tracer.contextLost) { onLost(); return; }
       const now = performance.now();
-      // Adapt the next batch under the load limiter (bounded small); fixed otherwise.
-      if (limit) batch = adaptBatch(batch, now - t0, GPU_LIMIT_TARGET_MS, GPU_LIMIT_BATCH_MAX);
-      const done = tracer.accumulatedSamples >= maxSamples;
-      if (now - lastBlit > GPU_BLIT_MS || done) {
-        const buf = tracer.readbackProgressive();
-        if (buf) presentGpu(buf, tracer.accumulatedSamples, now - startTime);
-        lastBlit = now;
+
+      // Present a completed async readback, if one landed.
+      const buf = tracer.tryReadback();
+      if (buf) {
+        presentedSamples = tracer.lastReadbackSamples;
+        presentGpu(buf, presentedSamples, now - startTime);
       }
-      if (!done) gpuRAF = requestAnimationFrame(step);
+
+      // While the fenced unit executes, yield the WHOLE frame to the rest of
+      // the machine (compositor included) — just come back next rAF.
+      if (inFlight) {
+        if (tracer.batchPending()) { gpuRAF = requestAnimationFrame(step); return; }
+        inFlight = false;
+        const unitMs = now - submitTs;
+        if (curBands > 1) {
+          bandMsAcc += unitMs;
+          band = (band + 1) % curBands;
+          if (band === 0) {
+            strips = adaptStrips(strips, bandMsAcc / curBands);
+            bandMsAcc = 0;
+          }
+        } else {
+          batch = adaptBatchPolls(batch, tracer.lastFencePolls, batchCap);
+          strips = adaptStrips(strips, unitMs / Math.max(1, submitN));
+        }
+        if (limit) idleGap = GPU_LIMIT_IDLE_GAP;
+      }
+
+      const done = band === 0 && tracer.accumulatedSamples >= maxSamples;
+      if (!done) {
+        if (idleGap > 0) { idleGap--; gpuRAF = requestAnimationFrame(step); return; }
+        if (band === 0) curBands = Math.min(strips, h);
+        if (curBands > 1) {
+          tracer.accumulateBandFenced(band, curBands);
+          if (gpuLastMaxBatch < 1) gpuLastMaxBatch = 1;
+        } else {
+          const thisBatch = Math.min(batch, maxSamples - tracer.accumulatedSamples);
+          if (thisBatch > gpuLastMaxBatch) gpuLastMaxBatch = thisBatch;
+          tracer.accumulateFenced(thisBatch, 1);
+          submitN = thisBatch;
+        }
+        if (tracer.contextLost) { onLost(); return; }
+        inFlight = true;
+        submitTs = now;
+        if (now - lastBlit > GPU_BLIT_MS && !tracer.readbackPending) {
+          // Safe mid-sample: readbacks see the last COMPLETE sample (progSrc).
+          tracer.requestReadback();
+          lastBlit = now;
+        }
+        gpuRAF = requestAnimationFrame(step);
+        return;
+      }
+
+      // Accumulation finished — get the final image out, then stop looping.
+      if (presentedSamples >= maxSamples) return;
+      if (!tracer.readbackPending) tracer.requestReadback();
+      gpuRAF = requestAnimationFrame(step);
     };
     gpuRAF = requestAnimationFrame(step);
   };

@@ -60,12 +60,21 @@ runE2e(async (t) => {
       for (let b = 0; b < out.length; b++) out[b] = cnt[b] ? out[b] / cnt[b] : 0;
       return out;
     };
-    // Force n accumulation ticks (each render() = one tick).
-    window.__tick = (n) => { const a = window.__app; for (let i = 0; i < n; i++) a.renderer.render(a.scene, a.camera); };
+    // Force n accumulation ticks (each render() = one tick). flushSync completes
+    // the fenced GPU batch + presents synchronously (2026-07-20 pacing pass), so
+    // spp/imageBytes read as if the pipeline were synchronous — the suite's
+    // semantics predate the fences and keep working unchanged.
+    window.__tick = (n) => {
+      const a = window.__app;
+      for (let i = 0; i < n; i++) { a.renderer.render(a.scene, a.camera); a.renderer.viewportRay.flushSync(); }
+    };
     // Tick until spp >= target (or maxTicks), return the reached spp.
     window.__converge = (target, maxTicks) => {
       const a = window.__app;
-      for (let i = 0; i < maxTicks && a.renderer.viewportRay.spp < target; i++) a.renderer.render(a.scene, a.camera);
+      for (let i = 0; i < maxTicks && a.renderer.viewportRay.spp < target; i++) {
+        a.renderer.render(a.scene, a.camera);
+        a.renderer.viewportRay.flushSync();
+      }
       return a.renderer.viewportRay.spp;
     };
     // 32² block luminance of the CURRENT viewport ray image.
@@ -214,17 +223,24 @@ runE2e(async (t) => {
       `maxBlockDiff ${orbitDiff.toFixed(4)}, engine ${await t.evaluate('window.__app.viewportRay.engine()')}`);
     t.check('(2c) still rendering after orbit (spp > 0)', sppAfter > 0, `spp ${sppAfter}`);
 
-    // (3) edit a material color → reset + the new color appears.
+    // (3) edit a material color → reset + the new color appears. The edit here
+    // is a DIRECT mutation (no undo command), which the driver's cheap per-frame
+    // keys can't see — it lands via the CONTENT_CHECK_MS (500ms) full sweep
+    // (2026-07-20 snapshot throttle), so wait that window out before the tick.
     await t.evaluate('window.__converge(16, 60)');
     const beforeColor = await t.evaluate('window.__rayCenter()');
-    const sppAfterMat = await t.evaluate(`(() => {
+    await t.evaluate(`(() => {
       const a = window.__app, S = a.scene;
       const mat = S.addMaterial('RayRed'); mat.baseColor = [0.85, 0.05, 0.05];
       const cube = S.objects.find(o => o.name === 'Cube'); cube.materialId = mat.id;
-      a.renderer.render(a.scene, a.camera); // content changed → reset
+    })()`);
+    await t.sleep(700);
+    const sppAfterMat = await t.evaluate(`(() => {
+      const a = window.__app;
+      a.renderer.render(a.scene, a.camera); // content sweep fires → reset
       return a.renderer.viewportRay.spp;
     })()`);
-    t.check('(3a) material edit RESETS the accumulation', sppAfterMat < 16, `spp ${sppAfterMat}`);
+    t.check('(3a) material edit RESETS the accumulation (≤500ms sweep)', sppAfterMat < 16, `spp ${sppAfterMat}`);
     await t.evaluate('window.__converge(16, 60)');
     const afterColor = await t.evaluate('window.__rayCenter()');
     t.check('(3b) new red material appears in the traced image',

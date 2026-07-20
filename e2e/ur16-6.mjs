@@ -122,7 +122,7 @@ runE2e(async (t) => {
     const sp = window.__app.shadePrefs;
     window.__app.renderer.shadingMode = 'rendered'; sp.renderedMode = 'ray'; sp.rayEngine = 'gpu'; sp.ao = false;
   })()`);
-  await t.evaluate('for (let i=0;i<80 && window.__app.renderer.viewportRay.spp<24;i++) window.__app.renderer.render(window.__app.scene, window.__app.camera);');
+  await t.evaluate('for (let i=0;i<80 && window.__app.renderer.viewportRay.spp<24;i++) { window.__app.renderer.render(window.__app.scene, window.__app.camera); window.__app.renderer.viewportRay.flushSync(); }');
   const rvCorner = await livePx(...CORNER);
   const rvCenter = await livePx(...CENTER);
   const greenish = (p) => p[1] > 90 && p[1] > p[0] + 40 && p[1] > p[2] + 40;
@@ -194,7 +194,7 @@ runE2e(async (t) => {
     window.__app.renderer.shadingMode = 'rendered'; sp.renderedMode = 'ray'; sp.rayEngine = 'gpu'; sp.ao = false;
     const cam = window.__app.camera; cam.yaw = 0.5; cam.pitch = 0.9; cam.distance = 8;
   })()`);
-  await t.evaluate('for (let i=0;i<120 && window.__app.renderer.viewportRay.spp<128;i++) window.__app.renderer.render(window.__app.scene, window.__app.camera);');
+  await t.evaluate('for (let i=0;i<120 && window.__app.renderer.viewportRay.spp<128;i++) { window.__app.renderer.render(window.__app.scene, window.__app.camera); window.__app.renderer.viewportRay.flushSync(); }');
   await t.sleep(150);
   await t.evaluate('window.__app.renderer.render(window.__app.scene, window.__app.camera)');
   await t.screenshot('e2e/screenshots/ur16-6-cutout-fragment.png');

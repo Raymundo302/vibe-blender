@@ -5,6 +5,7 @@ import { applyAnimation } from '../core/anim/sampler';
 import { buildSnapshot } from './snapshot';
 import { prepareScene, renderSample } from './tracer';
 import { getGpuTracer } from './gpu/sharedTracer';
+import { initialStrips } from '../render/viewportRay';
 import { tonemapAccumToRgba } from './renderWindow';
 import { viewPrefs, saveViewPrefs, type AnimFormat } from '../render/viewPrefs';
 import './animRender.css';
@@ -749,18 +750,24 @@ export class AnimRender {
     const snap = buildSnapshot(scene, camera);
     tracer.setSnapshot(snap, !fullRepack); // incremental for frames after the first
     if (!tracer.beginProgressive(w, h, seedForFrame(frame))) return null;
-    const BATCH = 8;
-    let lastYield = performance.now();
+    // Fenced band pacing (2026-07-20): submission is async, so the old 30ms
+    // wall-clock yield measured nothing and the whole frame could pile onto the
+    // GPU queue (freezing the compositor and risking the amdgpu watchdog). One
+    // scissored row-band in flight at a time, fence-awaited — bands=1 degrades
+    // to a plain fenced whole-sample draw.
+    const bands = Math.min(initialStrips(w * h), h);
     while (tracer.accumulatedSamples < samples) {
       if (this.cancelled) return null;
-      if (tracer.contextLost) throw new Error('GPU context lost mid-render');
-      tracer.accumulate(Math.min(BATCH, samples - tracer.accumulatedSamples));
-      const now = performance.now();
-      if (now - lastYield > 30 || tracer.accumulatedSamples >= samples) {
-        onSample(Math.min(samples, tracer.accumulatedSamples), samples);
-        await raf();
-        lastYield = performance.now();
+      for (let b = 0; b < bands; b++) {
+        if (tracer.contextLost) throw new Error('GPU context lost mid-render');
+        tracer.accumulateBandFenced(b, bands);
+        while (tracer.batchPending()) {
+          if (this.cancelled) return null;
+          if (tracer.contextLost) throw new Error('GPU context lost mid-render');
+          await raf();
+        }
       }
+      onSample(Math.min(samples, tracer.accumulatedSamples), samples);
     }
     if (this.cancelled) return null;
     const avg = tracer.readbackProgressive(); // averaged RGBA, top-left origin

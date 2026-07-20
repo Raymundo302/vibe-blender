@@ -50,15 +50,17 @@ export class RayPresentPass {
   }
 
   /** Upload the traced RGBA byte image (row 0 = top) and draw it fullscreen over
-   *  the whole `canvasW×canvasH` viewport. Restores depth-test state on exit. */
-  draw(bytes: Uint8ClampedArray, imgW: number, imgH: number, canvasW: number, canvasH: number): void {
+   *  the whole `canvasW×canvasH` viewport. Restores depth-test state on exit.
+   *  `dirty=false` skips the upload and redraws the already-uploaded texture —
+   *  a converged still frame costs one quad, not a full-image upload/frame. */
+  draw(bytes: Uint8ClampedArray, imgW: number, imgH: number, canvasW: number, canvasH: number, dirty = true): void {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.tex);
     if (imgW !== this.texW || imgH !== this.texH) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, imgW, imgH, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
       this.texW = imgW;
       this.texH = imgH;
-    } else {
+    } else if (dirty) {
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, imgW, imgH, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
     }
 
